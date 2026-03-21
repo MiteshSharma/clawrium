@@ -99,7 +99,6 @@ def test_detect_gpu_none():
     assert result['vendor'] is None
 
 
-@pytest.mark.xfail(reason="Not implemented - Task 2")
 def test_gather_hardware_full(monkeypatch):
     """Test full hardware gathering via ansible-runner."""
     from clawrium.core.hardware import gather_hardware
