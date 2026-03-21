@@ -144,3 +144,124 @@ def list() -> None:
         )
 
     console.print(table)
+
+
+@host_app.command()
+def remove(
+    hostname: str = typer.Argument(..., help="Host hostname or alias to remove"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+) -> None:
+    """Remove a host from the fleet.
+
+    Prompts for confirmation unless --force is specified.
+    """
+    # Find host by hostname or alias
+    host = get_host(hostname)
+    if not host:
+        console.print(f"[red]Error:[/red] Host '{hostname}' not found")
+        raise typer.Exit(code=1)
+
+    display_name = host.get('alias') or host['hostname']
+
+    # Confirmation (per D-18)
+    if not force:
+        confirmed = typer.confirm(f"Remove host '{display_name}'? This cannot be undone.")
+        if not confirmed:
+            console.print("Cancelled.")
+            raise typer.Abort()
+
+    # Remove by actual hostname
+    success = remove_host(host['hostname'])
+    if success:
+        console.print(f"[green]Host '{display_name}' removed successfully.[/green]")
+    else:
+        console.print(f"[red]Error:[/red] Failed to remove host")
+        raise typer.Exit(code=1)
+
+
+@host_app.command()
+def status(
+    hostname: str = typer.Argument(..., help="Host hostname or alias to check"),
+    refresh: bool = typer.Option(False, "--refresh", "-r", help="Re-detect hardware capabilities"),
+) -> None:
+    """Check status of a host.
+
+    Shows connection status, hostname verification, and last seen time.
+    Use --refresh to update hardware information.
+    """
+    # Find host
+    host = get_host(hostname)
+    if not host:
+        console.print(f"[red]Error:[/red] Host '{hostname}' not found")
+        raise typer.Exit(code=1)
+
+    display_name = host.get('alias') or host['hostname']
+    console.print(f"Checking status of '{display_name}'...")
+
+    # Test connection
+    success, message = test_ssh_connection(
+        hostname=host['hostname'],
+        port=host.get('port', 22),
+        user=host.get('user', 'xclm'),
+        key_filename=host.get('key_path')
+    )
+
+    # Display status table
+    table = Table(title=f"Host Status: {display_name}")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value")
+
+    if success:
+        table.add_row("Connection", "[green]Connected[/green]")
+    else:
+        table.add_row("Connection", f"[red]Disconnected[/red] ({message})")
+
+    table.add_row("Hostname", host['hostname'])
+    table.add_row("Port", str(host.get('port', 22)))
+    table.add_row("User", host.get('user', 'xclm'))
+
+    meta = host.get('metadata', {})
+    table.add_row("Added", meta.get('added_at', 'Unknown'))
+    table.add_row("Last Seen", meta.get('last_seen', 'Unknown'))
+    table.add_row("Tags", ', '.join(meta.get('tags', [])) or '-')
+
+    hw = host.get('hardware', {})
+    if hw:
+        table.add_row("Architecture", hw.get('architecture', '?'))
+        table.add_row("CPU Cores", str(hw.get('processor_cores', '?')))
+        table.add_row("Memory", f"{round(hw.get('memtotal_mb', 0) / 1024, 1)} GB")
+        gpu = hw.get('gpu', {})
+        if gpu.get('present'):
+            table.add_row("GPU", f"{gpu.get('vendor', 'unknown').upper()}")
+        else:
+            table.add_row("GPU", "None detected")
+
+    console.print(table)
+
+    # Refresh hardware if requested (per D-06)
+    if refresh and success:
+        console.print("\nRefreshing hardware information...")
+        try:
+            new_hardware = gather_hardware(
+                hostname=host['hostname'],
+                user=host.get('user', 'xclm'),
+                port=host.get('port', 22),
+                ssh_key=host.get('key_path')
+            )
+
+            # Update host record
+            hosts = load_hosts()
+            for h in hosts:
+                if h['hostname'] == host['hostname']:
+                    h['hardware'] = new_hardware
+                    h['metadata']['last_seen'] = datetime.now(timezone.utc).isoformat()
+                    break
+
+            from clawrium.core.hosts import save_hosts
+            save_hosts(hosts)
+
+            console.print(f"[green]Hardware information updated.[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] Could not refresh hardware: {e}")
+    elif refresh and not success:
+        console.print("[yellow]Cannot refresh hardware: host is not connected[/yellow]")

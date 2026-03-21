@@ -85,7 +85,6 @@ def test_host_list_table(isolated_config: Path, sample_host_data: dict):
     assert "testhost" in result.output.lower() or "192.168.1.100" in result.output
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_remove_with_confirmation(isolated_config: Path, sample_host_data: dict, monkeypatch):
     """clm host remove prompts for confirmation."""
     # Setup: create hosts.json with sample data
@@ -100,7 +99,6 @@ def test_host_remove_with_confirmation(isolated_config: Path, sample_host_data: 
     assert "confirm" in result.output.lower() or "remove" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_remove_force(isolated_config: Path, sample_host_data: dict):
     """clm host remove --force skips confirmation."""
     # Setup: create hosts.json with sample data
@@ -116,7 +114,6 @@ def test_host_remove_force(isolated_config: Path, sample_host_data: dict):
     assert "removed" in result.output.lower() or "success" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_remove_not_found(isolated_config: Path):
     """clm host remove nonexistent shows error, exits 1."""
     # Ensure config dir exists but no hosts
@@ -128,7 +125,6 @@ def test_host_remove_not_found(isolated_config: Path):
     assert "not found" in result.output.lower() or "error" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_status_connected(isolated_config: Path, sample_host_data: dict, mock_ssh_client):
     """clm host status with reachable host shows 'Connected'."""
     # Setup: create hosts.json with sample data
@@ -137,14 +133,13 @@ def test_host_status_connected(isolated_config: Path, sample_host_data: dict, mo
     hosts_file = isolated_config / "hosts.json"
     hosts_file.write_text(json.dumps([sample_host_data]))
 
-    with patch('paramiko.SSHClient', return_value=mock_ssh_client):
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
         result = runner.invoke(app, ["host", "status", "192.168.1.100"], env=os.environ)
 
         assert result.exit_code == 0
         assert "connected" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_status_disconnected(isolated_config: Path, sample_host_data: dict, mock_ssh_client_fail):
     """clm host status with unreachable host shows 'Disconnected'."""
     # Setup: create hosts.json with sample data
@@ -153,14 +148,13 @@ def test_host_status_disconnected(isolated_config: Path, sample_host_data: dict,
     hosts_file = isolated_config / "hosts.json"
     hosts_file.write_text(json.dumps([sample_host_data]))
 
-    with patch('paramiko.SSHClient', return_value=mock_ssh_client_fail):
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client_fail):
         result = runner.invoke(app, ["host", "status", "192.168.1.100"], env=os.environ)
 
         # May exit 0 and show "disconnected" status, or exit 1 depending on design
         assert "disconnected" in result.output.lower() or "failed" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_status_refresh(isolated_config: Path, sample_host_data: dict, mock_ssh_client, mock_ansible_runner):
     """clm host status --refresh updates hardware info."""
     # Setup: create hosts.json with sample data
@@ -169,8 +163,8 @@ def test_host_status_refresh(isolated_config: Path, sample_host_data: dict, mock
     hosts_file = isolated_config / "hosts.json"
     hosts_file.write_text(json.dumps([sample_host_data]))
 
-    with patch('paramiko.SSHClient', return_value=mock_ssh_client):
-        with patch('ansible_runner.run', return_value=mock_ansible_runner):
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
+        with patch('clawrium.core.hardware.ansible_runner.run', return_value=mock_ansible_runner):
             result = runner.invoke(app, ["host", "status", "192.168.1.100", "--refresh"], env=os.environ)
 
             assert result.exit_code == 0
