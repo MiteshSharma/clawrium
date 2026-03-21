@@ -34,8 +34,8 @@ def test_host_add_success(isolated_config: Path, mock_ssh_client, mock_ansible_r
 
 def test_host_add_with_flags(isolated_config: Path, mock_ssh_client, mock_ansible_runner):
     """clm host add with flags uses provided values."""
-    # Setup: create keypair (required before host add)
-    create_test_keypair(isolated_config, "192.168.1.100")
+    # Setup: create keypair for alias (key_id = alias when alias provided)
+    create_test_keypair(isolated_config, "myhost")
 
     with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
         with patch('clawrium.core.hardware.ansible_runner.run', return_value=mock_ansible_runner):

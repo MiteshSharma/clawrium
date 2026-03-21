@@ -23,6 +23,7 @@ from clawrium.core.ssh_connection import (
     HostKeyVerificationRequired,
 )
 from clawrium.core.hardware import gather_hardware
+from clawrium.core.names import is_ip_address, generate_random_name
 
 __all__ = ["host_app"]
 
@@ -188,11 +189,15 @@ def add(
     Tests SSH connection before saving. Detects hardware capabilities
     automatically after successful connection.
     """
+    # Determine key_id: use alias if provided, else hostname argument
+    # key_id is what user provided to 'clm host init'
+    key_lookup_id = alias if alias else hostname
+
     # Check for per-host keypair (enforces init-first workflow)
-    host_key = get_host_private_key(hostname)
+    host_key = get_host_private_key(key_lookup_id)
     if not host_key:
-        console.print(f"[red]Error:[/red] No keypair found for '{hostname}'")
-        console.print(f"Run 'clm host init {hostname}' first to generate keys")
+        console.print(f"[red]Error:[/red] No keypair found for '{key_lookup_id}'")
+        console.print(f"Run 'clm host init {key_lookup_id}' first to generate keys")
         raise typer.Exit(code=1)
 
     # Check for duplicate
@@ -289,6 +294,7 @@ def add(
 
     host = {
         "hostname": final_hostname,  # Resolved hostname for direct connections
+        "key_id": key_lookup_id,  # Key storage identifier (alias, hostname, or generated name)
         "port": final_port,
         "user": final_user,
         "auth_method": "key",
@@ -382,12 +388,12 @@ def remove(
     # Remove by actual hostname
     success = remove_host(host['hostname'])
     if success:
-        # Also delete per-host keys
-        actual_hostname = host['hostname']
-        keys_deleted = delete_host_keys(actual_hostname)
+        # Also delete per-host keys using key_id
+        key_id = host.get('key_id') or host['hostname']  # Fallback for old records
+        keys_deleted = delete_host_keys(key_id)
         console.print(f"[green]Host '{display_name}' removed successfully.[/green]")
         if keys_deleted:
-            console.print(f"[dim]Keypair for '{actual_hostname}' deleted.[/dim]")
+            console.print(f"[dim]Keypair for '{key_id}' deleted.[/dim]")
     else:
         console.print("[red]Error:[/red] Failed to remove host")
         raise typer.Exit(code=1)
@@ -417,12 +423,12 @@ def status(
     display_name = host.get('alias') or host['hostname']
     console.print(f"Checking status of '{display_name}'...")
 
-    # Get per-host key
-    actual_hostname = host['hostname']
-    host_key = get_host_private_key(actual_hostname)
+    # Get per-host key using key_id
+    key_id = host.get('key_id') or host['hostname']  # Fallback for old records
+    host_key = get_host_private_key(key_id)
     if host_key is None:
-        console.print(f"[red]Error:[/red] No keypair found for '{actual_hostname}'")
-        console.print(f"Run 'clm host init {actual_hostname}' to regenerate keys")
+        console.print(f"[red]Error:[/red] No keypair found for '{key_id}'")
+        console.print(f"Run 'clm host init {key_id}' to regenerate keys")
         raise typer.Exit(code=1)
     ssh_key = str(host_key)
 
