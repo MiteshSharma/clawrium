@@ -51,7 +51,7 @@ def extract_hardware_from_facts(facts: dict) -> dict:
         "processor_count": facts.get("ansible_processor_count", 0),
         "memtotal_mb": facts.get("ansible_memtotal_mb", 0),
         "mounts": [],
-        "os": facts.get("ansible_distribution", "unknown").lower(),
+        "os": (facts.get("ansible_distribution") or "unknown").lower(),
         "os_version": str(facts.get("ansible_distribution_version", "unknown")),
     }
 

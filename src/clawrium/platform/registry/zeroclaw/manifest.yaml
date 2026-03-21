@@ -2,7 +2,7 @@ name: zeroclaw
 description: "Lightweight AI assistant for edge devices and Raspberry Pi"
 entries:
   - version: "0.2.0"
-    os: raspbian
+    os: debian
     os_version: "11"
     arch: armv7l
     requirements:
@@ -12,7 +12,7 @@ entries:
         python: ">=3.9"
         nodejs: ">=18.0.0"
   - version: "0.2.0"
-    os: raspbian
+    os: debian
     os_version: "12"
     arch: armv7l
     requirements:

@@ -5,14 +5,45 @@ manifests and extract their requirements and platform compatibility.
 """
 
 import logging
-from pathlib import Path
+import re
 from typing import TypedDict
 
 import yaml
-from packaging.version import Version
-from packaging.specifiers import SpecifierSet
+from packaging.version import Version, InvalidVersion
 
 logger = logging.getLogger(__name__)
+
+
+class InvalidClawNameError(Exception):
+    """Raised when claw name contains invalid characters."""
+
+    pass
+
+
+def validate_claw_name(claw_name: str) -> None:
+    """Validate claw name to prevent path traversal attacks.
+
+    Args:
+        claw_name: Name of the claw to validate
+
+    Raises:
+        InvalidClawNameError: If claw name contains invalid characters
+    """
+    if not claw_name:
+        raise InvalidClawNameError("Claw name cannot be empty")
+
+    # Only allow alphanumeric, underscore, and hyphen
+    if not re.match(r"^[a-zA-Z0-9_-]+$", claw_name):
+        raise InvalidClawNameError(
+            f"Claw name '{claw_name}' contains invalid characters. "
+            "Only alphanumeric, underscore, and hyphen are allowed."
+        )
+
+    # Reject path traversal attempts
+    if ".." in claw_name or "/" in claw_name or "\\" in claw_name:
+        raise InvalidClawNameError(
+            f"Claw name '{claw_name}' contains path traversal characters"
+        )
 
 
 class Requirements(TypedDict):
@@ -73,7 +104,11 @@ def load_manifest(claw_name: str) -> ClawManifest:
     Raises:
         ManifestNotFoundError: If claw directory doesn't exist
         ManifestParseError: If YAML is invalid
+        InvalidClawNameError: If claw name contains invalid characters
     """
+    # Validate claw name to prevent path traversal
+    validate_claw_name(claw_name)
+
     try:
         # Use importlib.resources to read manifest from package
         from importlib.resources import files
@@ -158,7 +193,17 @@ def get_claw_info(claw_name: str) -> dict:
     manifest = load_manifest(claw_name)
 
     # Find latest version (highest semver)
-    versions = [Version(entry["version"]) for entry in manifest["entries"]]
+    versions = []
+    for entry in manifest["entries"]:
+        try:
+            versions.append(Version(entry["version"]))
+        except InvalidVersion:
+            logger.warning("Invalid version '%s' in manifest for %s", entry["version"], claw_name)
+            continue
+
+    if not versions:
+        raise ManifestParseError(f"No valid versions found in manifest for '{claw_name}'")
+
     latest_version = str(max(versions))
 
     # Build supported platforms list
@@ -174,25 +219,6 @@ def get_claw_info(claw_name: str) -> dict:
         "latest_version": latest_version,
         "supported_platforms": sorted(platforms),
     }
-
-
-def _check_dependency_version(required: str, installed: str | None) -> bool:
-    """Check if installed version satisfies requirement.
-
-    Args:
-        required: Version specifier string (e.g., ">=20.0.0")
-        installed: Installed version string or None if not installed
-
-    Returns:
-        True if installed version satisfies requirement, False otherwise
-    """
-    if installed is None:
-        return False
-    try:
-        spec = SpecifierSet(required)
-        return Version(installed) in spec
-    except Exception:
-        return False
 
 
 def check_compatibility(
@@ -251,7 +277,7 @@ def check_compatibility(
         elif entry["os_version"] != hardware.get("os_version"):
             reasons.append(
                 f"Requires {entry['os']} {entry['os_version']}, "
-                f"host has {hardware.get('os')} {hardware.get('os_version', 'unknown')}"
+                f"host has {hardware.get('os', 'unknown')} {hardware.get('os_version', 'unknown')}"
             )
 
         # Check architecture match
@@ -260,27 +286,23 @@ def check_compatibility(
                 f"Requires {entry['arch']}, host has {hardware.get('architecture', 'unknown')}"
             )
 
-        # Check memory requirement
-        min_memory = entry["requirements"]["min_memory_mb"]
+        # Check memory requirement (use .get() for safety)
+        requirements = entry.get("requirements", {})
+        min_memory = requirements.get("min_memory_mb", 0)
         host_memory = hardware.get("memtotal_mb", 0)
         if host_memory < min_memory:
             reasons.append(
                 f"Requires {min_memory}MB RAM, host has {host_memory}MB"
             )
 
-        # Check GPU requirement
-        if entry["requirements"]["gpu_required"]:
+        # Check GPU requirement (use .get() for safety)
+        if requirements.get("gpu_required", False):
             gpu = hardware.get("gpu", {})
             if not gpu.get("present"):
                 reasons.append("Requires GPU, host has none")
 
-        # Check dependencies (if any)
-        dependencies = entry["requirements"].get("dependencies", {})
-        for dep_name, dep_version in dependencies.items():
-            # For now, we don't have installed dependency info in hardware dict
-            # This would need to be added in future phases
-            # For v1, we'll skip dependency checking
-            pass
+        # TODO: Dependency checking deferred to future phase
+        # Hardware dict doesn't include installed package versions yet
 
         # If this entry matches all requirements, return success
         if not reasons:

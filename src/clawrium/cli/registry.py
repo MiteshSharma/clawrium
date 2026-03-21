@@ -2,6 +2,7 @@
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from clawrium.core.registry import (
@@ -9,6 +10,8 @@ from clawrium.core.registry import (
     get_claw_info,
     load_manifest,
     ManifestNotFoundError,
+    ManifestParseError,
+    InvalidClawNameError,
 )
 
 __all__ = ["registry_app"]
@@ -58,12 +61,18 @@ def show(
     try:
         manifest = load_manifest(claw_name)
     except ManifestNotFoundError:
-        console.print(f"[red]Error:[/red] Claw '{claw_name}' not found in registry")
+        console.print(f"[red]Error:[/red] Claw '{escape(claw_name)}' not found in registry")
+        raise typer.Exit(code=1)
+    except ManifestParseError as e:
+        console.print(f"[red]Error:[/red] Registry manifest is corrupted: {escape(str(e))}")
+        raise typer.Exit(code=1)
+    except InvalidClawNameError as e:
+        console.print(f"[red]Error:[/red] {escape(str(e))}")
         raise typer.Exit(code=1)
 
-    # Header info
-    console.print(f"\n[bold cyan]{manifest['name']}[/bold cyan]")
-    console.print(f"{manifest['description']}\n")
+    # Header info (escape manifest fields to prevent markup injection)
+    console.print(f"\n[bold cyan]{escape(manifest['name'])}[/bold cyan]")
+    console.print(f"{escape(manifest.get('description', ''))}\n")
 
     # Supported platforms table
     table = Table(title="Supported Platforms")
