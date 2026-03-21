@@ -201,6 +201,75 @@ def test_host_status_disconnected(isolated_config: Path, sample_host_data: dict,
         assert "disconnected" in result.output.lower() or "failed" in result.output.lower()
 
 
+def test_host_add_stores_key_id_from_alias(isolated_config: Path, mock_ssh_client, mock_ansible_runner):
+    """clm host add with alias stores key_id = alias."""
+    create_test_keypair(isolated_config, "myserver")
+
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
+        with patch('clawrium.core.hardware.ansible_runner.run', return_value=mock_ansible_runner):
+            result = runner.invoke(
+                app,
+                ["host", "add", "192.168.1.100", "--alias", "myserver"],
+                env=os.environ
+            )
+
+            assert result.exit_code == 0
+
+            # Verify key_id is stored
+            import json
+            hosts = json.loads((isolated_config / "hosts.json").read_text())
+            assert hosts[0].get("key_id") == "myserver"
+
+
+def test_host_add_stores_key_id_from_hostname(isolated_config: Path, mock_ssh_client, mock_ansible_runner):
+    """clm host add without alias stores key_id = hostname."""
+    create_test_keypair(isolated_config, "webserver")
+
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
+        with patch('clawrium.core.hardware.ansible_runner.run', return_value=mock_ansible_runner):
+            result = runner.invoke(
+                app,
+                ["host", "add", "webserver"],
+                env=os.environ
+            )
+
+            assert result.exit_code == 0
+
+            import json
+            hosts = json.loads((isolated_config / "hosts.json").read_text())
+            # key_id should be the hostname when no alias provided
+            assert hosts[0].get("key_id") == "webserver"
+
+
+def test_host_status_uses_key_id(isolated_config: Path, mock_ssh_client):
+    """clm host status looks up keys by key_id, not hostname."""
+    # Create keypair under alias name, not IP
+    create_test_keypair(isolated_config, "myserver")
+
+    # Create host record with key_id and alias
+    import json
+    host_data = {
+        'hostname': '192.168.1.100',
+        'alias': 'myserver',  # Need alias so get_host can find it
+        'key_id': 'myserver',
+        'port': 22,
+        'user': 'xclm',
+        'auth_method': 'key',
+        'hardware': {},
+        'metadata': {'added_at': '2026-03-21', 'last_seen': '2026-03-21', 'tags': []}
+    }
+    hosts_file = isolated_config / "hosts.json"
+    isolated_config.mkdir(parents=True, exist_ok=True)
+    hosts_file.write_text(json.dumps([host_data]))
+
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
+        result = runner.invoke(app, ["host", "status", "myserver"], env=os.environ)
+
+        # Should succeed because key lookup uses key_id "myserver", not hostname "192.168.1.100"
+        assert result.exit_code == 0
+        assert "connected" in result.output.lower()
+
+
 def test_host_status_refresh(isolated_config: Path, sample_host_data: dict, mock_ssh_client, mock_ansible_runner):
     """clm host status --refresh updates hardware info."""
     # Setup: create hosts.json with sample data and keypair
