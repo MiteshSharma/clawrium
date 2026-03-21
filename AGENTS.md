@@ -63,5 +63,5 @@ Warnings:
 Suggestions:
 <good to have improvements>
 
-Co-Authored-By: ATX CI <atx-ci@noreply.github.com> (@atx-ci)
+Co-Authored-By: atx-ci <269048218+atx-ci@users.noreply.github.com>
 ```
