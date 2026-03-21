@@ -44,10 +44,13 @@ Plans:
   3. User can list all hosts with hardware information displayed
   4. User can check status of any host (SSH connectivity, service health)
   5. User can remove a host and all associated resources are cleaned up
-**Plans**: TBD
+**Plans**: 4 plans
 
 Plans:
-- [ ] 02-01: TBD
+- [ ] 02-01-PLAN.md — Test scaffolding with SSH and Ansible mock fixtures
+- [ ] 02-02-PLAN.md — Host storage and SSH connection testing modules
+- [ ] 02-03-PLAN.md — Hardware capability detection via ansible-runner
+- [ ] 02-04-PLAN.md — CLI host commands (add, list, remove, status)
 
 ### Phase 3: Registry & Compatibility
 **Goal**: Users can browse available claw types and validate compatibility before installation
@@ -98,7 +101,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation Setup | 2/2 | Complete   | 2026-03-21 |
-| 2. Host Management | 0/0 | Not started | - |
+| 2. Host Management | 0/4 | Planned | - |
 | 3. Registry & Compatibility | 0/0 | Not started | - |
 | 4. Secrets Management | 0/0 | Not started | - |
 | 5. Installation & Fleet Status | 0/0 | Not started | - |
