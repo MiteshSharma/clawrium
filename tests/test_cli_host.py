@@ -11,22 +11,20 @@ from clawrium.cli.main import app
 runner = CliRunner()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_add_success(isolated_config: Path, mock_ssh_client, mock_ansible_runner):
     """clm host add with valid connection saves host."""
-    with patch('paramiko.SSHClient', return_value=mock_ssh_client):
-        with patch('ansible_runner.run', return_value=mock_ansible_runner):
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
+        with patch('clawrium.core.hardware.ansible_runner.run', return_value=mock_ansible_runner):
             result = runner.invoke(app, ["host", "add", "192.168.1.100"], env=os.environ)
 
             assert result.exit_code == 0
             assert "192.168.1.100" in result.output or "success" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_add_with_flags(isolated_config: Path, mock_ssh_client, mock_ansible_runner):
     """clm host add with flags uses provided values."""
-    with patch('paramiko.SSHClient', return_value=mock_ssh_client):
-        with patch('ansible_runner.run', return_value=mock_ansible_runner):
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client):
+        with patch('clawrium.core.hardware.ansible_runner.run', return_value=mock_ansible_runner):
             result = runner.invoke(
                 app,
                 ["host", "add", "192.168.1.100", "--user", "xclm", "--port", "22", "--alias", "myhost"],
@@ -36,17 +34,15 @@ def test_host_add_with_flags(isolated_config: Path, mock_ssh_client, mock_ansibl
             assert result.exit_code == 0
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_add_connection_failed(isolated_config: Path, mock_ssh_client_fail):
     """clm host add with connection failure shows error, exits 1."""
-    with patch('paramiko.SSHClient', return_value=mock_ssh_client_fail):
+    with patch('clawrium.core.ssh_connection.paramiko.SSHClient', return_value=mock_ssh_client_fail):
         result = runner.invoke(app, ["host", "add", "badhost"], env=os.environ)
 
         assert result.exit_code == 1
         assert "authentication" in result.output.lower() or "failed" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_add_duplicate(isolated_config: Path, sample_host_data: dict):
     """Adding same hostname twice shows error, exits 1."""
     # Setup: create hosts.json with existing host

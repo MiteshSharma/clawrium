@@ -3,6 +3,7 @@
 import typer
 
 from clawrium.cli.init import init as init_command
+from clawrium.cli.host import host_app
 
 __all__ = ["app"]
 
@@ -26,6 +27,10 @@ def main(ctx: typer.Context) -> None:
 def init() -> None:
     """Initialize Clawrium and check dependencies."""
     init_command()
+
+
+# Register host subcommands
+app.add_typer(host_app, name="host")
 
 
 if __name__ == "__main__":
