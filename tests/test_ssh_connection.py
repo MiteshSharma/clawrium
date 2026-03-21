@@ -144,6 +144,42 @@ def test_ssh_connection_ssh_exception():
         assert "ssh connection failed" in message.lower()
 
 
+def test_ssh_connection_raises_host_key_verification_required():
+    """test_ssh_connection propagates HostKeyVerificationRequired for TOFU flow."""
+    mock_client = Mock(spec=paramiko.SSHClient)
+
+    # Simulate StrictHostKeyPolicy raising HostKeyVerificationRequired
+    def raise_verification(*args, **kwargs):
+        raise HostKeyVerificationRequired("testhost", "ssh-rsa", "aa:bb:cc:dd")
+
+    mock_client.connect.side_effect = raise_verification
+
+    with patch('paramiko.SSHClient', return_value=mock_client):
+        with pytest.raises(HostKeyVerificationRequired) as exc_info:
+            ssh_test_connection("testhost", 22, "xclm")
+
+        assert exc_info.value.hostname == "testhost"
+        assert exc_info.value.key_type == "ssh-rsa"
+        assert exc_info.value.fingerprint == "aa:bb:cc:dd"
+        # Verify cleanup still runs
+        mock_client.close.assert_called_once()
+
+
+def test_ssh_connection_forwards_key_filename():
+    """test_ssh_connection forwards key_filename to client.connect."""
+    mock_client = Mock(spec=paramiko.SSHClient)
+    mock_transport = Mock()
+    mock_transport.is_active.return_value = True
+    mock_client.get_transport.return_value = mock_transport
+
+    with patch('paramiko.SSHClient', return_value=mock_client):
+        ssh_test_connection("testhost", 22, "xclm", key_filename="/path/to/key")
+
+        # Verify key_filename was passed to connect
+        call_kwargs = mock_client.connect.call_args.kwargs
+        assert call_kwargs.get('key_filename') == "/path/to/key"
+
+
 class TestStrictHostKeyPolicy:
     """Tests for StrictHostKeyPolicy."""
 
@@ -206,10 +242,32 @@ class TestAcceptHostKey:
         result = accept_host_key("testhost", 22, expected_fingerprint="")
         assert result is False
 
-    @pytest.mark.skip(reason="TODO: Update mock to handle refactored accept_host_key control flow")
-    def test_swallows_auth_exception(self):
-        """accept_host_key swallows AuthenticationException (expected - just want host key)."""
-        pass
+    def test_swallows_auth_exception_and_saves_key(self):
+        """accept_host_key swallows AuthenticationException and saves accepted key."""
+        # First client for connect, second for save
+        mock_connect_client = Mock(spec=paramiko.SSHClient)
+        mock_connect_client.connect.side_effect = paramiko.AuthenticationException("Auth failed")
+        mock_connect_client._host_keys = Mock()
+        mock_connect_client._host_keys.keys.return_value = ['testhost']
+        mock_connect_client._host_keys.__getitem__ = Mock(return_value={'ssh-rsa': Mock()})
+
+        mock_save_client = Mock(spec=paramiko.SSHClient)
+        mock_save_client._host_keys = Mock()
+
+        # Track which client is being created
+        clients = [mock_connect_client, mock_save_client]
+        client_iter = iter(clients)
+
+        mock_policy = Mock()
+        mock_policy.key_accepted = True
+
+        with patch('paramiko.SSHClient', side_effect=lambda: next(client_iter)):
+            with patch('clawrium.core.ssh_connection.VerifyingHostKeyPolicy', return_value=mock_policy):
+                with patch('clawrium.core.ssh_connection.os.umask', return_value=0o022):
+                    with patch('clawrium.core.ssh_connection.os.chmod'):
+                        result = accept_host_key("testhost", 22, expected_fingerprint="aa:bb:cc:dd")
+                        assert result is True
+                        mock_save_client.save_host_keys.assert_called_once()
 
     def test_returns_false_on_fingerprint_mismatch(self):
         """accept_host_key returns False when fingerprint doesn't match."""
@@ -221,10 +279,17 @@ class TestAcceptHostKey:
             assert result is False
 
     def test_returns_false_on_connection_error(self):
-        """accept_host_key returns False on connection error."""
+        """accept_host_key returns False on connection error but key may be accepted."""
         mock_client = Mock(spec=paramiko.SSHClient)
         mock_client.connect.side_effect = socket.error("Connection refused")
+        mock_client._host_keys = Mock()
+        mock_client._host_keys.keys.return_value = []
+
+        # Policy key_accepted stays False since connection failed before key exchange
+        mock_policy = Mock()
+        mock_policy.key_accepted = False
 
         with patch('paramiko.SSHClient', return_value=mock_client):
-            result = accept_host_key("testhost", 22, expected_fingerprint="aa:bb:cc:dd")
-            assert result is False
+            with patch('clawrium.core.ssh_connection.VerifyingHostKeyPolicy', return_value=mock_policy):
+                result = accept_host_key("testhost", 22, expected_fingerprint="aa:bb:cc:dd")
+                assert result is False

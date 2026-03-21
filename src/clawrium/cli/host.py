@@ -65,7 +65,7 @@ def add(
     final_hostname = ssh_config.get('hostname', hostname)  # Resolve HostName from SSH config
     final_port = port if port is not None else int(ssh_config.get('port', 22))
     final_user = user if user is not None else ssh_config.get('user', 'xclm')  # Default per D-11
-    final_key = key_path or (ssh_config.get('identityfile', [None])[0] if 'identityfile' in ssh_config else None)
+    final_key = key_path if key_path is not None else (ssh_config.get('identityfile', [None])[0] if 'identityfile' in ssh_config else None)
 
     console.print(f"Testing connection to {final_hostname}:{final_port} as {final_user}...")
 
