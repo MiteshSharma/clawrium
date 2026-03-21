@@ -17,7 +17,7 @@ from clawrium.core.hosts import (
     get_host_by_key_id,
     load_hosts,
     remove_host,
-    save_hosts,
+    update_host,
     HostsFileCorruptedError,
 )
 from clawrium.core.keys import (
@@ -119,16 +119,17 @@ def init(
                 if stdin_data:
                     stdin.write(stdin_data + "\n")
                     stdin.channel.shutdown_write()
-                # Drain stdout before checking exit status to prevent buffer hangs
+                # Drain both stdout and stderr before checking exit status to prevent buffer hangs (W4 fix)
                 stdout.read()
+                stderr_output = stderr.read().decode().strip()
                 exit_status = stdout.channel.recv_exit_status()
                 if exit_status != 0 and "useradd" not in cmd:
-                    error = stderr.read().decode().strip()
                     console.print(
                         f"[yellow]Warning:[/yellow] Setup step failed (exit {exit_status})"
                     )
-                    if error:
-                        console.print(f"  {error}")
+                    if stderr_output:
+                        # Escape stderr to prevent Rich markup injection (W2 fix)
+                        console.print(f"  {rich_escape(stderr_output)}")
 
             # Verify xclm connection works
             console.print("\nVerifying xclm access...")
@@ -193,14 +194,18 @@ def init(
         console.print("sudo mkdir -p /home/xclm/.ssh")
         console.print("sudo chmod 700 /home/xclm/.ssh")
         # Shell-escape public key to prevent injection and escape Rich markup
+        # Use soft_wrap=False to keep command on one line for easy copy-paste
         escaped_key = shlex.quote(public_key_content) if public_key_content else "''"
         console.print(
-            f"echo {rich_escape(escaped_key)} | sudo tee /home/xclm/.ssh/authorized_keys"
+            f"echo {rich_escape(escaped_key)} | sudo tee /home/xclm/.ssh/authorized_keys",
+            soft_wrap=False,
         )
         console.print("sudo chmod 600 /home/xclm/.ssh/authorized_keys")
         console.print("sudo chown -R xclm:xclm /home/xclm/.ssh")
         console.print("")
         console.print(f"Then run: [cyan]clm host add {hostname}[/cyan]")
+        # Exit non-zero so scripts can detect failure (B2 fix)
+        raise typer.Exit(code=1)
 
 
 @host_app.command()
@@ -225,24 +230,32 @@ def add(
     Tests SSH connection before saving. Detects hardware capabilities
     automatically after successful connection.
     """
-    # Determine key_id: use alias if provided, else hostname argument
-    # key_id is what user provided to 'clm host init'
-    key_lookup_id = alias if alias else hostname
+    # Determine key_id: Try hostname first, fall back to alias
+    # This ensures `clm host init 192.168.1.10` + `clm host add 192.168.1.10 --alias mybox` works
+    from clawrium.core.keys import validate_key_id
 
-    # Validate key_id to prevent path traversal
+    # Try hostname first (most common case: init and add use same identifier)
+    host_key = get_host_private_key(hostname)
+    key_lookup_id = hostname
+
+    # Fall back to alias if hostname key doesn't exist and alias is provided
+    if not host_key and alias:
+        host_key = get_host_private_key(alias)
+        key_lookup_id = alias
+
+    # Validate the resolved key_id to prevent path traversal
     try:
-        from clawrium.core.keys import validate_key_id
-
         validate_key_id(key_lookup_id)
     except InvalidKeyIdError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
     # Check for per-host keypair (enforces init-first workflow)
-    host_key = get_host_private_key(key_lookup_id)
     if not host_key:
-        console.print(f"[red]Error:[/red] No keypair found for '{key_lookup_id}'")
-        console.print(f"Run 'clm host init {key_lookup_id}' first to generate keys")
+        console.print(f"[red]Error:[/red] No keypair found for '{hostname}'")
+        if alias:
+            console.print(f"  Also checked alias '{alias}'")
+        console.print(f"Run 'clm host init {hostname}' first to generate keys")
         raise typer.Exit(code=1)
 
     # Check for duplicate hostname, alias, or key_id
@@ -532,18 +545,17 @@ def status(
                 ssh_key=ssh_key,
             )
 
-            # Update host record - separate error handling
+            # Update host record atomically to prevent TOCTOU races (B3 fix)
+            def apply_hardware_update(h: dict) -> dict:
+                h["hardware"] = hw
+                h["metadata"]["last_seen"] = datetime.now(timezone.utc).isoformat()
+                return h
+
             try:
-                hosts = load_hosts()
-                for h in hosts:
-                    if h.get("hostname") == host["hostname"]:
-                        h["hardware"] = hw
-                        h["metadata"]["last_seen"] = datetime.now(
-                            timezone.utc
-                        ).isoformat()
-                        break
-                save_hosts(hosts)
-                console.print("[green]Hardware information updated.[/green]\n")
+                if update_host(host["hostname"], apply_hardware_update):
+                    console.print("[green]Hardware information updated.[/green]\n")
+                else:
+                    console.print("[yellow]Warning:[/yellow] Host not found during update\n")
             except Exception as e:
                 console.print(f"[red]Error saving host data:[/red] {e}")
                 raise typer.Exit(code=1)
