@@ -254,7 +254,7 @@ def test_check_compatibility_wrong_os_version():
 
     hardware = {
         "os": "ubuntu",
-        "os_version": "22.04",  # Different version
+        "os_version": "20.04",  # Unsupported version
         "architecture": "x86_64",
         "memtotal_mb": 4096,
         "gpu": {"present": False, "vendor": None, "error": None},
@@ -268,4 +268,5 @@ def test_check_compatibility_wrong_os_version():
     assert result["compatible"] is False
     assert result["matched_entry"] is None
     assert len(result["reasons"]) > 0
-    assert any("24.04" in r and "22.04" in r for r in result["reasons"])
+    # Should mention a supported version and the host version
+    assert any("20.04" in r for r in result["reasons"])

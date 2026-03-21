@@ -10,6 +10,7 @@ from typing import TypedDict
 
 import yaml
 from packaging.version import Version
+from packaging.specifiers import SpecifierSet
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,14 @@ class ClawManifest(TypedDict):
     name: str
     description: str
     entries: list[ManifestEntry]
+
+
+class CompatibilityResult(TypedDict):
+    """Result of compatibility check between host and claw."""
+
+    compatible: bool
+    matched_entry: ManifestEntry | None
+    reasons: list[str]
 
 
 class ManifestNotFoundError(Exception):
@@ -164,4 +173,137 @@ def get_claw_info(claw_name: str) -> dict:
         "description": manifest.get("description", ""),
         "latest_version": latest_version,
         "supported_platforms": sorted(platforms),
+    }
+
+
+def _check_dependency_version(required: str, installed: str | None) -> bool:
+    """Check if installed version satisfies requirement.
+
+    Args:
+        required: Version specifier string (e.g., ">=20.0.0")
+        installed: Installed version string or None if not installed
+
+    Returns:
+        True if installed version satisfies requirement, False otherwise
+    """
+    if installed is None:
+        return False
+    try:
+        spec = SpecifierSet(required)
+        return Version(installed) in spec
+    except Exception:
+        return False
+
+
+def check_compatibility(
+    claw_name: str,
+    hardware: dict,
+    version: str | None = None,
+) -> CompatibilityResult:
+    """Check if host hardware is compatible with a claw.
+
+    This implements sparse matrix matching - only explicitly supported
+    combinations (OS, version, arch) are valid. All requirements must
+    be met for compatibility.
+
+    Args:
+        claw_name: Name of the claw (e.g., "openclaw")
+        hardware: HardwareInfo dict from host (see hardware.py)
+        version: Optional specific version to check (default: any version)
+
+    Returns:
+        CompatibilityResult with:
+            - compatible: True if host matches any manifest entry
+            - matched_entry: The ManifestEntry that matched, or None
+            - reasons: List of failure reasons (empty if compatible)
+
+    Raises:
+        ManifestNotFoundError: If claw manifest doesn't exist
+    """
+    manifest = load_manifest(claw_name)
+
+    # Filter entries by version if specified
+    entries = manifest["entries"]
+    if version:
+        entries = [e for e in entries if e["version"] == version]
+        if not entries:
+            return {
+                "compatible": False,
+                "matched_entry": None,
+                "reasons": [f"Version {version} not found in manifest"],
+            }
+
+    # Collect all failure reasons across all entries
+    all_reasons = []
+
+    # Try each entry in order
+    for entry in entries:
+        reasons = []
+
+        # Check OS match
+        if entry["os"] != hardware.get("os"):
+            reasons.append(
+                f"Requires {entry['os']} {entry['os_version']}, "
+                f"host has {hardware.get('os', 'unknown')} {hardware.get('os_version', 'unknown')}"
+            )
+
+        # Check OS version match
+        elif entry["os_version"] != hardware.get("os_version"):
+            reasons.append(
+                f"Requires {entry['os']} {entry['os_version']}, "
+                f"host has {hardware.get('os')} {hardware.get('os_version', 'unknown')}"
+            )
+
+        # Check architecture match
+        if entry["arch"] != hardware.get("architecture"):
+            reasons.append(
+                f"Requires {entry['arch']}, host has {hardware.get('architecture', 'unknown')}"
+            )
+
+        # Check memory requirement
+        min_memory = entry["requirements"]["min_memory_mb"]
+        host_memory = hardware.get("memtotal_mb", 0)
+        if host_memory < min_memory:
+            reasons.append(
+                f"Requires {min_memory}MB RAM, host has {host_memory}MB"
+            )
+
+        # Check GPU requirement
+        if entry["requirements"]["gpu_required"]:
+            gpu = hardware.get("gpu", {})
+            if not gpu.get("present"):
+                reasons.append("Requires GPU, host has none")
+
+        # Check dependencies (if any)
+        dependencies = entry["requirements"].get("dependencies", {})
+        for dep_name, dep_version in dependencies.items():
+            # For now, we don't have installed dependency info in hardware dict
+            # This would need to be added in future phases
+            # For v1, we'll skip dependency checking
+            pass
+
+        # If this entry matches all requirements, return success
+        if not reasons:
+            return {
+                "compatible": True,
+                "matched_entry": entry,
+                "reasons": [],
+            }
+
+        # Collect reasons from this entry
+        all_reasons.extend(reasons)
+
+    # No entry matched - return failure with all collected reasons
+    # Deduplicate reasons while preserving order
+    unique_reasons = []
+    seen = set()
+    for r in all_reasons:
+        if r not in seen:
+            unique_reasons.append(r)
+            seen.add(r)
+
+    return {
+        "compatible": False,
+        "matched_entry": None,
+        "reasons": unique_reasons,
     }
