@@ -65,8 +65,8 @@ Plans:
 Plans:
 - [x] 03-01-PLAN.md — Create OpenClaw manifest and registry loading module (REG-01)
 - [x] 03-02-PLAN.md — Extend HardwareInfo with OS detection (REG-03 foundation)
-- [ ] 03-03-PLAN.md — Implement compatibility checking function (REG-03)
-- [ ] 03-04-PLAN.md — Registry CLI commands (list, show) (REG-02)
+- [x] 03-03-PLAN.md — Implement compatibility checking function (REG-03)
+- [x] 03-04-PLAN.md — Registry CLI commands (list, show) (REG-02)
 
 ### Phase 4: Secrets Management
 **Goal**: Users can securely store and manage secrets for claw instances
