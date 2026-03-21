@@ -57,7 +57,6 @@ def test_host_add_duplicate(isolated_config: Path, sample_host_data: dict):
     assert "already" in result.output.lower() or "exists" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_list_empty(isolated_config: Path):
     """clm host list with no hosts shows 'No hosts registered'."""
     # Ensure config dir exists but no hosts.json
@@ -69,7 +68,6 @@ def test_host_list_empty(isolated_config: Path):
     assert "no hosts" in result.output.lower() or "empty" in result.output.lower()
 
 
-@pytest.mark.xfail(reason="Not implemented")
 def test_host_list_table(isolated_config: Path, sample_host_data: dict):
     """clm host list with hosts shows table with Alias, Host, Architecture columns."""
     # Setup: create hosts.json with sample data

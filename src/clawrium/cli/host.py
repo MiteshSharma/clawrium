@@ -107,3 +107,40 @@ def add(
 
     add_host(host)
     console.print(f"[green]Host '{alias or hostname}' added successfully![/green]")
+
+
+@host_app.command()
+def list() -> None:
+    """List all registered hosts."""
+    hosts = load_hosts()
+
+    if not hosts:
+        console.print("No hosts registered. Use 'clm host add' to add a host.")
+        return
+
+    table = Table(title="Registered Hosts")
+
+    table.add_column("Alias", style="cyan")
+    table.add_column("Host", style="white")
+    table.add_column("Architecture", style="yellow")
+    table.add_column("Cores", justify="right")
+    table.add_column("Memory (GB)", justify="right")
+    table.add_column("Tags", style="dim")
+
+    for host in hosts:
+        hw = host.get('hardware', {})
+        meta = host.get('metadata', {})
+
+        # Format memory as GB with 1 decimal
+        mem_gb = round(hw.get('memtotal_mb', 0) / 1024, 1) if hw.get('memtotal_mb') else '-'
+
+        table.add_row(
+            host.get('alias') or '-',
+            host['hostname'],
+            hw.get('architecture', '?'),
+            str(hw.get('processor_cores', '?')),
+            str(mem_gb),
+            ', '.join(meta.get('tags', [])) or '-'
+        )
+
+    console.print(table)
