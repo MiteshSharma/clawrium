@@ -7,8 +7,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from clawrium.core.hosts import add_host, get_host, load_hosts, remove_host, save_hosts
-from clawrium.core.ssh_connection import get_ssh_config, test_ssh_connection
+from clawrium.core.hosts import add_host, get_host, load_hosts, remove_host, save_hosts, HostsFileCorruptedError
+from clawrium.core.ssh_connection import (
+    get_ssh_config,
+    test_ssh_connection,
+    accept_host_key,
+    HostKeyVerificationRequired,
+)
 from clawrium.core.hardware import gather_hardware
 
 __all__ = ["host_app"]
@@ -28,7 +33,7 @@ def add(
     port: Optional[int] = typer.Option(None, "--port", "-p", help="SSH port (default: 22)"),
     user: Optional[str] = typer.Option(None, "--user", "-u", help="SSH user (default: xclm)"),
     alias: Optional[str] = typer.Option(None, "--alias", "-a", help="Friendly name for this host"),
-    key_path: Optional[str] = typer.Option(None, "--key", "-k", help="Path to SSH private key"),
+    key_path: Optional[str] = typer.Option(None, "--key", "-k", help="Path to SSH private key (used for this connection only; add to ~/.ssh/config for persistence)"),
     tags: Optional[str] = typer.Option(None, "--tags", "-t", help="Comma-separated tags"),
 ) -> None:
     """Add a new host to the fleet.
@@ -37,47 +42,79 @@ def add(
     automatically after successful connection.
     """
     # Check for duplicate
-    existing = get_host(hostname)
-    if existing:
-        console.print(f"[red]Error:[/red] Host '{hostname}' already exists")
-        raise typer.Exit(code=1)
-
-    if alias:
-        existing_alias = get_host(alias)
-        if existing_alias:
-            console.print(f"[red]Error:[/red] Alias '{alias}' already in use")
+    try:
+        existing = get_host(hostname)
+        if existing:
+            console.print(f"[red]Error:[/red] Host '{hostname}' already exists")
             raise typer.Exit(code=1)
+
+        if alias:
+            existing_alias = get_host(alias)
+            if existing_alias:
+                console.print(f"[red]Error:[/red] Alias '{alias}' already in use")
+                raise typer.Exit(code=1)
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
 
     # Load SSH config and merge with provided values (per D-09)
     ssh_config = get_ssh_config(hostname)
 
     # CLI flags override SSH config (per D-07 hybrid input)
     # Use 'is not None' to allow explicit --port 0 or --user ''
+    final_hostname = ssh_config.get('hostname', hostname)  # Resolve HostName from SSH config
     final_port = port if port is not None else int(ssh_config.get('port', 22))
     final_user = user if user is not None else ssh_config.get('user', 'xclm')  # Default per D-11
     final_key = key_path or (ssh_config.get('identityfile', [None])[0] if 'identityfile' in ssh_config else None)
 
-    console.print(f"Testing connection to {hostname}:{final_port} as {final_user}...")
+    console.print(f"Testing connection to {final_hostname}:{final_port} as {final_user}...")
 
     # Test connection (per D-10)
-    success, message = test_ssh_connection(
-        hostname=hostname,
-        port=final_port,
-        user=final_user,
-        key_filename=final_key
-    )
+    try:
+        result = test_ssh_connection(
+            hostname=final_hostname,
+            port=final_port,
+            user=final_user,
+            key_filename=final_key
+        )
+        success, message = result
+    except HostKeyVerificationRequired as e:
+        # TOFU: Show fingerprint and ask user to verify
+        console.print(f"\n[yellow]Unknown host key for {e.hostname}[/yellow]")
+        console.print(f"  Key type: {e.key_type}")
+        console.print(f"  Fingerprint: {e.fingerprint}")
+        console.print("\n[yellow]Warning:[/yellow] Verify this fingerprint matches the host's actual key.")
+        console.print("If this is your first connection to this host, this is expected.")
+
+        if not typer.confirm("\nAccept this host key and continue?"):
+            console.print("Connection cancelled.")
+            raise typer.Exit(code=1)
+
+        # Accept the host key with fingerprint verification
+        if not accept_host_key(final_hostname, final_port, expected_fingerprint=e.fingerprint):
+            console.print("[red]Error:[/red] Failed to save host key (fingerprint may have changed)")
+            raise typer.Exit(code=1)
+
+        # Retry connection
+        result = test_ssh_connection(
+            hostname=final_hostname,
+            port=final_port,
+            user=final_user,
+            key_filename=final_key
+        )
+        success, message = result
 
     if not success:
         console.print(f"[red]Connection failed:[/red] {message}")
         raise typer.Exit(code=1)
 
-    console.print(f"[green]Connection successful![/green]")
+    console.print("[green]Connection successful![/green]")
 
     # Detect hardware (per D-06)
     console.print("Detecting hardware capabilities...")
     try:
         hardware = gather_hardware(
-            hostname=hostname,
+            hostname=final_hostname,
             user=final_user,
             port=final_port,
             ssh_key=final_key
@@ -90,14 +127,18 @@ def add(
         hardware = {}
 
     # Build host record (per D-04)
+    # Store resolved hostname for portability; keep original input as ssh_config_host
+    # for SSH config lookup. Do not store key_path for security - look up from SSH config.
     now = datetime.now(timezone.utc).isoformat()
+
+    # Determine display alias
+    display_alias = alias or (hostname if hostname != final_hostname else None)
+
     host = {
-        "hostname": hostname,
+        "hostname": final_hostname,  # Resolved hostname for direct connections
         "port": final_port,
         "user": final_user,
         "auth_method": "key",
-        "alias": alias,
-        "key_path": final_key,
         "hardware": hardware,
         "metadata": {
             "added_at": now,
@@ -105,15 +146,29 @@ def add(
             "tags": [t.strip() for t in tags.split(",")] if tags else []
         }
     }
+    # Only add optional fields if they have values (avoid null pollution)
+    if hostname != final_hostname:
+        host["ssh_config_host"] = hostname
+    if display_alias:
+        host["alias"] = display_alias
 
     add_host(host)
-    console.print(f"[green]Host '{alias or hostname}' added successfully![/green]")
+    console.print(f"[green]Host '{display_alias or hostname}' added successfully![/green]")
+
+    # Warn if --key was used but no SSH config entry exists for future lookups
+    if key_path and 'identityfile' not in ssh_config:
+        console.print(f"[yellow]Note:[/yellow] Key path '{key_path}' was used for this connection but is not stored.")
+        console.print(f"  Add to ~/.ssh/config for persistence: IdentityFile {key_path}")
 
 
 @host_app.command(name="list")
 def list_hosts() -> None:
     """List all registered hosts."""
-    hosts = load_hosts()
+    try:
+        hosts = load_hosts()
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
 
     if not hosts:
         console.print("No hosts registered. Use 'clm host add' to add a host.")
@@ -157,7 +212,12 @@ def remove(
     Prompts for confirmation unless --force is specified.
     """
     # Find host by hostname or alias
-    host = get_host(hostname)
+    try:
+        host = get_host(hostname)
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
     if not host:
         console.print(f"[red]Error:[/red] Host '{hostname}' not found")
         raise typer.Exit(code=1)
@@ -191,7 +251,12 @@ def status(
     Use --refresh to update hardware information.
     """
     # Find host
-    host = get_host(hostname)
+    try:
+        host = get_host(hostname)
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
     if not host:
         console.print(f"[red]Error:[/red] Host '{hostname}' not found")
         raise typer.Exit(code=1)
@@ -199,13 +264,56 @@ def status(
     display_name = host.get('alias') or host['hostname']
     console.print(f"Checking status of '{display_name}'...")
 
+    # Get SSH config for key lookup (key_path not stored for security)
+    ssh_config_host = host.get('ssh_config_host') or host['hostname']
+    ssh_config = get_ssh_config(ssh_config_host)
+    ssh_key = ssh_config.get('identityfile', [None])[0] if 'identityfile' in ssh_config else None
+
     # Test connection
-    success, message = test_ssh_connection(
-        hostname=host['hostname'],
-        port=host.get('port', 22),
-        user=host.get('user', 'xclm'),
-        key_filename=host.get('key_path')
-    )
+    try:
+        result = test_ssh_connection(
+            hostname=host['hostname'],
+            port=host.get('port', 22),
+            user=host.get('user', 'xclm'),
+            key_filename=ssh_key
+        )
+        success, message = result
+    except HostKeyVerificationRequired as e:
+        success = False
+        message = "Host key verification required"
+        console.print(f"[yellow]Note:[/yellow] Run 'clm host remove {hostname} && clm host add {host['hostname']}' to re-verify the host key.")
+
+    # Refresh hardware BEFORE building table if requested (per D-06)
+    hw = host.get('hardware', {})
+    if refresh and success:
+        console.print("Refreshing hardware information...")
+        try:
+            hw = gather_hardware(
+                hostname=host['hostname'],
+                user=host.get('user', 'xclm'),
+                port=host.get('port', 22),
+                ssh_key=ssh_key
+            )
+
+            # Update host record - separate error handling
+            try:
+                hosts = load_hosts()
+                for h in hosts:
+                    if h.get('hostname') == host['hostname']:
+                        h['hardware'] = hw
+                        h['metadata']['last_seen'] = datetime.now(timezone.utc).isoformat()
+                        break
+                save_hosts(hosts)
+                console.print("[green]Hardware information updated.[/green]\n")
+            except Exception as e:
+                console.print(f"[red]Error saving host data:[/red] {e}")
+                raise typer.Exit(code=1)
+        except typer.Exit:
+            raise
+        except Exception as e:
+            console.print(f"[yellow]Warning:[/yellow] Could not refresh hardware: {e}\n")
+    elif refresh and not success:
+        console.print("[yellow]Cannot refresh hardware: host is not connected[/yellow]\n")
 
     # Display status table
     table = Table(title=f"Host Status: {display_name}")
@@ -218,6 +326,8 @@ def status(
         table.add_row("Connection", f"[red]Disconnected[/red] ({message})")
 
     table.add_row("Hostname", host['hostname'])
+    if host.get('ssh_config_host'):
+        table.add_row("SSH Config", host['ssh_config_host'])
     table.add_row("Port", str(host.get('port', 22)))
     table.add_row("User", host.get('user', 'xclm'))
 
@@ -226,42 +336,18 @@ def status(
     table.add_row("Last Seen", meta.get('last_seen', 'Unknown'))
     table.add_row("Tags", ', '.join(meta.get('tags', [])) or '-')
 
-    hw = host.get('hardware', {})
     if hw:
         table.add_row("Architecture", hw.get('architecture', '?'))
         table.add_row("CPU Cores", str(hw.get('processor_cores', '?')))
         table.add_row("Memory", f"{round(hw.get('memtotal_mb', 0) / 1024, 1)} GB")
         gpu = hw.get('gpu', {})
         if gpu.get('present'):
-            table.add_row("GPU", f"{gpu.get('vendor', 'unknown').upper()}")
+            table.add_row("GPU", gpu.get('vendor') or 'Unknown')
         else:
             table.add_row("GPU", "None detected")
 
     console.print(table)
 
-    # Refresh hardware if requested (per D-06)
-    if refresh and success:
-        console.print("\nRefreshing hardware information...")
-        try:
-            new_hardware = gather_hardware(
-                hostname=host['hostname'],
-                user=host.get('user', 'xclm'),
-                port=host.get('port', 22),
-                ssh_key=host.get('key_path')
-            )
-
-            # Update host record
-            hosts = load_hosts()
-            for h in hosts:
-                if h.get('hostname') == host['hostname']:
-                    h['hardware'] = new_hardware
-                    h['metadata']['last_seen'] = datetime.now(timezone.utc).isoformat()
-                    break
-
-            save_hosts(hosts)
-
-            console.print(f"[green]Hardware information updated.[/green]")
-        except Exception as e:
-            console.print(f"[yellow]Warning:[/yellow] Could not refresh hardware: {e}")
-    elif refresh and not success:
-        console.print("[yellow]Cannot refresh hardware: host is not connected[/yellow]")
+    # Exit 1 if host is disconnected (for scripting)
+    if not success:
+        raise typer.Exit(code=1)

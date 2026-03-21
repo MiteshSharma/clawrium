@@ -169,3 +169,46 @@ def test_get_host_not_found(isolated_config):
 
     # Verify
     assert host is None
+
+
+def test_save_hosts_file_permissions(isolated_config):
+    """save_hosts() creates file with 0600 permissions."""
+    test_hosts = [{"hostname": "192.168.1.10", "port": 22, "user": "xclm"}]
+    save_hosts(test_hosts)
+
+    hosts_path = isolated_config / HOSTS_FILE
+    mode = hosts_path.stat().st_mode & 0o777
+    assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
+
+
+def test_load_hosts_invalid_json(isolated_config):
+    """load_hosts() raises HostsFileCorruptedError on invalid JSON."""
+    isolated_config.mkdir(parents=True, exist_ok=True)
+    hosts_path = isolated_config / HOSTS_FILE
+    hosts_path.write_text("not valid json {{{")
+
+    with pytest.raises(HostsFileCorruptedError) as exc_info:
+        load_hosts()
+    assert "corrupted" in str(exc_info.value).lower()
+
+
+def test_load_hosts_non_list_json(isolated_config):
+    """load_hosts() raises HostsFileCorruptedError when JSON is not a list."""
+    isolated_config.mkdir(parents=True, exist_ok=True)
+    hosts_path = isolated_config / HOSTS_FILE
+    hosts_path.write_text('{"key": "value"}')
+
+    with pytest.raises(HostsFileCorruptedError) as exc_info:
+        load_hosts()
+    assert "not a list" in str(exc_info.value).lower()
+
+
+def test_load_hosts_list_with_non_dict_items(isolated_config):
+    """load_hosts() raises HostsFileCorruptedError when list contains non-dicts."""
+    isolated_config.mkdir(parents=True, exist_ok=True)
+    hosts_path = isolated_config / HOSTS_FILE
+    hosts_path.write_text('[1, 2, "string", null]')
+
+    with pytest.raises(HostsFileCorruptedError) as exc_info:
+        load_hosts()
+    assert "invalid entries" in str(exc_info.value).lower()

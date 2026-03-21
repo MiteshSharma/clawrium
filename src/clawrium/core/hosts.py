@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from clawrium.core.config import get_config_dir, init_config_dir
 
-__all__ = ["load_hosts", "save_hosts", "add_host", "remove_host", "get_host", "HOSTS_FILE"]
+__all__ = ["load_hosts", "save_hosts", "add_host", "remove_host", "get_host", "HOSTS_FILE", "HostsFileCorruptedError"]
 
 HOSTS_FILE = "hosts.json"
 
@@ -32,10 +32,14 @@ def load_hosts() -> list[dict]:
     try:
         with open(hosts_path) as f:
             data = json.load(f)
-            # Validate it's a list
+            # Validate it's a list of dicts
             if not isinstance(data, list):
                 raise HostsFileCorruptedError(
                     f"hosts.json is not a list: {hosts_path}"
+                )
+            if not all(isinstance(h, dict) for h in data):
+                raise HostsFileCorruptedError(
+                    f"hosts.json contains invalid entries (expected list of objects): {hosts_path}"
                 )
             return data
     except json.JSONDecodeError as e:
@@ -61,6 +65,8 @@ def save_hosts(hosts: list[dict]) -> None:
     # Atomic write: write to temp file, then rename (atomic on POSIX)
     fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix='.tmp')
     try:
+        # Set restrictive permissions on temp file before writing (survives rename)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, 'w') as f:
             json.dump(hosts, f, indent=2)
         os.replace(tmp_path, hosts_path)

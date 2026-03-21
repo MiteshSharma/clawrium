@@ -27,11 +27,20 @@ def init_config_dir() -> Path:
     """Create and return the configuration directory.
 
     Creates the directory and any parent directories if they don't exist.
+    Sets restrictive permissions (0700) for security.
     Safe to call multiple times (idempotent).
 
     Returns:
         Path to the created configuration directory.
     """
+    import os
     config_dir = get_config_dir()
-    config_dir.mkdir(parents=True, exist_ok=True)
+    # Set restrictive umask before mkdir to protect any created parent dirs
+    old_umask = os.umask(0o077)
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    finally:
+        os.umask(old_umask)
+    # Ensure permissions are correct even if directory already existed
+    config_dir.chmod(0o700)
     return config_dir

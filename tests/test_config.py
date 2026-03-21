@@ -60,3 +60,22 @@ class TestInitConfigDir:
         result = init_config_dir()
         assert result == isolated_config
         assert isolated_config.is_dir()
+
+    def test_creates_directory_with_0700_permissions(self, isolated_config: Path) -> None:
+        """Should create directory with restrictive 0700 permissions."""
+        assert not isolated_config.exists()
+        init_config_dir()
+        assert isolated_config.exists()
+        mode = isolated_config.stat().st_mode & 0o777
+        assert mode == 0o700, f"Expected 0o700, got {oct(mode)}"
+
+    def test_fixes_existing_permissive_directory(self, isolated_config: Path) -> None:
+        """Should correct permissions on existing directory with wrong mode."""
+        # Create directory with permissive 0755 permissions
+        isolated_config.mkdir(parents=True, mode=0o755)
+        assert (isolated_config.stat().st_mode & 0o777) == 0o755
+
+        # init_config_dir should correct permissions
+        init_config_dir()
+        mode = isolated_config.stat().st_mode & 0o777
+        assert mode == 0o700, f"Expected 0o700, got {oct(mode)}"

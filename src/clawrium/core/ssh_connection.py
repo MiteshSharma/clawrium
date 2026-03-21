@@ -1,11 +1,12 @@
 """SSH connection testing for Clawrium."""
 
 import logging
+import os
 import socket
 import paramiko
 from pathlib import Path
 
-__all__ = ["get_ssh_config", "test_ssh_connection"]
+__all__ = ["get_ssh_config", "test_ssh_connection", "accept_host_key", "HostKeyVerificationRequired"]
 
 logger = logging.getLogger(__name__)
 
@@ -47,22 +48,31 @@ def get_ssh_config(hostname: str) -> dict:
     return result
 
 
-class WarningHostKeyPolicy(paramiko.MissingHostKeyPolicy):
-    """Host key policy that warns user but allows first connection.
+class HostKeyVerificationRequired(Exception):
+    """Raised when host key verification is needed from user."""
 
-    For local network use, we warn about MITM risks but allow the connection.
-    The host key is saved after first connection for future verification.
+    def __init__(self, hostname: str, key_type: str, fingerprint: str):
+        self.hostname = hostname
+        self.key_type = key_type
+        self.fingerprint = fingerprint
+        super().__init__(f"Unknown host key for {hostname}")
+
+
+class StrictHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    """Host key policy that requires explicit user verification.
+
+    Raises HostKeyVerificationRequired when encountering unknown host keys,
+    allowing the CLI layer to prompt for user confirmation (TOFU pattern).
     """
 
     def missing_host_key(self, client, hostname, key):
-        logger.warning(
-            f"Unknown host key for {hostname}. Fingerprint: {key.get_fingerprint().hex()}. "
-            "Accepting for first connection - verify this is your intended host."
+        fingerprint = key.get_fingerprint().hex()
+        formatted_fp = ':'.join(fingerprint[i:i+2] for i in range(0, len(fingerprint), 2))
+        raise HostKeyVerificationRequired(
+            hostname=hostname,
+            key_type=key.get_name(),
+            fingerprint=formatted_fp
         )
-        # Add key to known_hosts for future verification
-        client._host_keys.add(hostname, key.get_name(), key)
-        if client._host_keys_filename is not None:
-            client.save_host_keys(client._host_keys_filename)
 
 
 def test_ssh_connection(
@@ -71,7 +81,7 @@ def test_ssh_connection(
     user: str = "xclm",
     key_filename: str | None = None
 ) -> tuple[bool, str]:
-    """Test SSH connection and return (success, message).
+    """Test SSH connection and return (success, message) or host key verification request.
 
     Attempts to connect to the specified host via SSH and execute
     a simple test command.
@@ -83,12 +93,13 @@ def test_ssh_connection(
         key_filename: Optional explicit SSH key path.
 
     Returns:
-        Tuple of (success: bool, message: str) indicating connection result.
+        Tuple of (success: bool, message: str) indicating connection result,
+        or HostKeyVerificationRequired if user must confirm host key.
     """
     client = paramiko.SSHClient()
     client.load_system_host_keys()
-    # Use warning policy that logs fingerprint but allows first connection
-    client.set_missing_host_key_policy(WarningHostKeyPolicy())
+    # Use strict policy requiring explicit user verification
+    client.set_missing_host_key_policy(StrictHostKeyPolicy())
 
     try:
         connect_kwargs = {
@@ -102,14 +113,16 @@ def test_ssh_connection(
 
         client.connect(**connect_kwargs)
 
-        # Test command execution
-        stdin, stdout, stderr = client.exec_command('echo "Connection OK"')
-        result = stdout.read().decode().strip()
-        if result != "Connection OK":
-            logger.debug(f"Unexpected test command output: {result}")
+        # Test that transport is active
+        transport = client.get_transport()
+        if not transport or not transport.is_active():
+            return (False, "SSH transport not active")
 
         return (True, "Connection successful")
 
+    except HostKeyVerificationRequired:
+        # Re-raise for CLI to handle with user confirmation
+        raise
     except paramiko.BadHostKeyException:
         return (False, "Host key verification failed - host key changed since last connection")
     except paramiko.AuthenticationException:
@@ -124,3 +137,98 @@ def test_ssh_connection(
         return (False, "SSH connection failed - check host availability and SSH configuration")
     finally:
         client.close()
+
+
+class VerifyingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    """Host key policy that verifies fingerprint matches expected value before saving."""
+
+    def __init__(self, expected_fingerprint: str):
+        self.expected_fingerprint = expected_fingerprint
+        self.key_accepted = False
+
+    def missing_host_key(self, client, hostname, key):
+        fingerprint = key.get_fingerprint().hex()
+        formatted_fp = ':'.join(fingerprint[i:i+2] for i in range(0, len(fingerprint), 2))
+
+        if formatted_fp != self.expected_fingerprint:
+            raise paramiko.SSHException(
+                f"Host key fingerprint mismatch: expected {self.expected_fingerprint}, got {formatted_fp}"
+            )
+
+        # Fingerprint matches - accept the key
+        client._host_keys.add(hostname, key.get_name(), key)
+        self.key_accepted = True
+
+
+def accept_host_key(hostname: str, port: int = 22, expected_fingerprint: str = "") -> bool:
+    """Accept and save a host key to known_hosts after verifying fingerprint.
+
+    Called after user confirms the host key fingerprint. Re-verifies that the
+    key matches to prevent MITM attacks between confirmation and save.
+
+    Args:
+        hostname: The hostname to accept key for.
+        port: SSH port.
+        expected_fingerprint: The fingerprint user confirmed (colon-separated hex).
+
+    Returns:
+        True if key was saved successfully with matching fingerprint.
+    """
+    if not expected_fingerprint:
+        logger.error("No fingerprint provided for verification")
+        return False
+
+    client = paramiko.SSHClient()
+    client.load_system_host_keys()
+
+    known_hosts_path = Path.home() / ".ssh" / "known_hosts"
+
+    # Use verifying policy that checks fingerprint before accepting
+    policy = VerifyingHostKeyPolicy(expected_fingerprint)
+    client.set_missing_host_key_policy(policy)
+
+    fingerprint_mismatch = False
+
+    try:
+        # Connect briefly to get and verify the key
+        client.connect(hostname, port=port, timeout=5, auth_timeout=1)
+    except paramiko.AuthenticationException:
+        # Auth failure is expected - we just want the host key saved
+        pass
+    except paramiko.SSHException as e:
+        # Fingerprint mismatch - don't save
+        logger.debug("SSH error during host key verification")
+        fingerprint_mismatch = True
+    except Exception as e:
+        # Network error etc - but key may have been accepted before error
+        logger.debug("Connection error during host key verification")
+    finally:
+        client.close()
+
+    # Don't save if fingerprint didn't match
+    if fingerprint_mismatch:
+        return False
+
+    # Save host keys only if key was accepted (fingerprint matched)
+    if policy.key_accepted:
+        # Set restrictive umask for known_hosts write
+        old_umask = os.umask(0o077)
+        try:
+            # Re-open client just for saving (paramiko requires it)
+            save_client = paramiko.SSHClient()
+            save_client.load_system_host_keys()
+            # Copy the accepted key to the save client
+            for host_key_hostname in client._host_keys.keys():
+                for key_type in client._host_keys[host_key_hostname].keys():
+                    key = client._host_keys[host_key_hostname][key_type]
+                    save_client._host_keys.add(host_key_hostname, key_type, key)
+            save_client.save_host_keys(str(known_hosts_path))
+            # Ensure known_hosts has correct permissions
+            os.chmod(known_hosts_path, 0o600)
+        except Exception as e:
+            logger.debug(f"Error saving host keys: {e}")
+            return False
+        finally:
+            os.umask(old_umask)
+
+    return policy.key_accepted
