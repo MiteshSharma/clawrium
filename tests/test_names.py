@@ -1,4 +1,5 @@
 """Tests for clawrium.core.names module."""
+
 import re
 
 import pytest
@@ -13,7 +14,7 @@ class TestGenerateRandomName:
         """generate_random_name returns 'adjective-scientist' format."""
         name = generate_random_name()
         # Should be two parts separated by hyphen
-        parts = name.split('-')
+        parts = name.split("-")
         assert len(parts) == 2, f"Expected 'adjective-scientist' format, got '{name}'"
         # Should be lowercase
         assert name == name.lower(), f"Expected lowercase, got '{name}'"
@@ -60,4 +61,6 @@ class TestIsIpAddress:
         assert is_ip_address("") is False
         assert is_ip_address("192.168.1.1.1") is False  # Too many octets
         assert is_ip_address("abc.def.ghi.jkl") is False  # Not digits
-        assert is_ip_address("256.1.1.1") is False  # Out of range (though simple regex might allow)
+        assert (
+            is_ip_address("256.1.1.1") is False
+        )  # Out of range (though simple regex might allow)
