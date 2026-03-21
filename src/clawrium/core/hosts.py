@@ -1,9 +1,12 @@
 """Host storage operations for Clawrium."""
 
+import fcntl
 import json
 import os
 import tempfile
-from pathlib import Path
+from contextlib import contextmanager
+from typing import Callable
+
 from clawrium.core.config import get_config_dir, init_config_dir
 
 __all__ = [
@@ -13,6 +16,7 @@ __all__ = [
     "remove_host",
     "get_host",
     "get_host_by_key_id",
+    "update_host",
     "HOSTS_FILE",
     "HostsFileCorruptedError",
 ]
@@ -57,11 +61,32 @@ def load_hosts() -> list[dict]:
         ) from e
 
 
+@contextmanager
+def _hosts_lock():
+    """Context manager for exclusive access to hosts.json.
+
+    Uses fcntl.flock for advisory locking to prevent TOCTOU races
+    when multiple processes try to modify hosts.json concurrently.
+    """
+    config_dir = init_config_dir()
+    lock_path = config_dir / ".hosts.lock"
+
+    # Create lock file if it doesn't exist
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
 def save_hosts(hosts: list[dict]) -> None:
-    """Save hosts to JSON file atomically.
+    """Save hosts to JSON file atomically with file locking.
 
     Creates config directory if it doesn't exist.
     Uses atomic write (temp file + rename) to prevent data loss on crash.
+    Uses fcntl.flock to prevent concurrent write races.
 
     Args:
         hosts: List of host dictionaries to save.
@@ -70,21 +95,64 @@ def save_hosts(hosts: list[dict]) -> None:
     config_dir = init_config_dir()
     hosts_path = config_dir / HOSTS_FILE
 
-    # Atomic write: write to temp file, then rename (atomic on POSIX)
-    fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-    try:
-        # Set restrictive permissions on temp file before writing (survives rename)
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(hosts, f, indent=2)
-        os.replace(tmp_path, hosts_path)
-    except Exception:
-        # Clean up temp file on failure
+    with _hosts_lock():
+        # Atomic write: write to temp file, then rename (atomic on POSIX)
+        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+            # Set restrictive permissions on temp file before writing (survives rename)
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w") as f:
+                json.dump(hosts, f, indent=2)
+            os.replace(tmp_path, hosts_path)
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+
+def update_host(hostname: str, updater: Callable[[dict], dict]) -> bool:
+    """Atomically update a host record.
+
+    Acquires exclusive lock, loads hosts, applies updater function,
+    and saves in a single atomic operation. Prevents TOCTOU races.
+
+    Args:
+        hostname: The hostname of the host to update.
+        updater: Function that takes host dict and returns updated host dict.
+
+    Returns:
+        True if host was found and updated, False if not found.
+    """
+    with _hosts_lock():
+        hosts = load_hosts()
+        found = False
+        for i, host in enumerate(hosts):
+            if host.get("hostname") == hostname:
+                hosts[i] = updater(host)
+                found = True
+                break
+
+        if found:
+            # Save without re-acquiring lock (we already hold it)
+            config_dir = init_config_dir()
+            hosts_path = config_dir / HOSTS_FILE
+            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    json.dump(hosts, f, indent=2)
+                os.replace(tmp_path, hosts_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+        return found
 
 
 def add_host(host: dict) -> None:

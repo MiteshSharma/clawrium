@@ -430,12 +430,12 @@ def test_host_init_generates_keypair(isolated_config: Path):
     with patch("clawrium.cli.host.paramiko.SSHClient", return_value=mock_client):
         result = runner.invoke(app, ["host", "init", "192.168.1.100"], env=os.environ)
 
-        # Should exit 0 (keypair generated, manual instructions shown)
-        assert result.exit_code == 0, (
+        # Should exit 1 (manual setup required = failure for scripting, B2 fix)
+        assert result.exit_code == 1, (
             f"Unexpected exit code: {result.exit_code}, output: {result.output}"
         )
 
-        # Should generate keypair
+        # Should generate keypair (even though setup failed)
         key_dir = isolated_config / "keys" / "192.168.1.100"
         assert (key_dir / "xclm_ed25519").exists()
         assert (key_dir / "xclm_ed25519.pub").exists()
@@ -496,8 +496,8 @@ def test_host_init_manual_fallback(isolated_config: Path):
             app, ["host", "init", "192.168.1.100", "--user", "admin"], env=os.environ
         )
 
-        # Should exit 0 (keypair generated, manual instructions shown is not an error)
-        assert result.exit_code == 0, (
+        # Should exit 1 (manual setup required = failure for scripting, B2 fix)
+        assert result.exit_code == 1, (
             f"Unexpected exit code: {result.exit_code}, output: {result.output}"
         )
 
