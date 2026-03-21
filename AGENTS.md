@@ -32,3 +32,36 @@ Clawrium is a CLI tool (`clm`) for managing AI Claw fleets (ZeroClaw, NemoClaw, 
 ## User Data
 
 All user configuration stored in `~/.config/clawrium/`
+
+## Development
+
+Always use `make` commands to run tests and validate changes:
+
+```bash
+make test       # Run tests (required before commits)
+make lint       # Check code style
+make format     # Format code
+make test-cov   # Run tests with coverage
+```
+
+## Review
+
+When @atx-ci provides a review, the caller MUST fix all issues and iterate until:
+1. Rating is >3/5
+2. No blocking issues remain
+
+All @atx-ci generated reviews and feedback MUST be updated in the commit. Use the format
+```
+ATX Review Summary
+Review <number>: Rating <1/5>
+Blocking issues:
+<table with blocking issues, reasoning, and recommendations>
+
+Warnings:
+<table with warnings and recommendations>
+
+Suggestions:
+<good to have improvements>
+
+Co-Authored-By: ATX CI <atx-ci@noreply.github.com> (@atx-ci)
+```
