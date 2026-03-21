@@ -1,5 +1,6 @@
 """Tests for clm init command."""
 
+import os
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -13,16 +14,17 @@ class TestCliInit:
     """Tests for the init command."""
 
     def test_no_args_shows_help(self) -> None:
-        """Running clm with no args should show help."""
-        result = runner.invoke(app, [])
+        """Running clm with --help should show help."""
+        result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
         assert "Usage:" in result.output or "usage:" in result.output.lower()
+        assert "init" in result.output
 
     def test_init_creates_config_dir(self, isolated_config: Path) -> None:
         """clm init should create the config directory."""
         assert not isolated_config.exists()
 
-        result = runner.invoke(app, ["init"])
+        result = runner.invoke(app, ["init"], env=os.environ)
 
         assert result.exit_code == 0
         assert isolated_config.exists()
@@ -30,22 +32,22 @@ class TestCliInit:
 
     def test_init_outputs_config_path(self, isolated_config: Path) -> None:
         """clm init should output the config directory path."""
-        result = runner.invoke(app, ["init"])
+        result = runner.invoke(app, ["init"], env=os.environ)
 
         assert str(isolated_config) in result.output
 
     def test_init_shows_success_message(self, isolated_config: Path) -> None:
         """clm init should show a success message."""
-        result = runner.invoke(app, ["init"])
+        result = runner.invoke(app, ["init"], env=os.environ)
 
         assert "initialized" in result.output.lower() or "created" in result.output.lower()
 
     def test_init_idempotent(self, isolated_config: Path) -> None:
         """clm init should work even if directory exists."""
         # First run
-        runner.invoke(app, ["init"])
+        runner.invoke(app, ["init"], env=os.environ)
         assert isolated_config.exists()
 
         # Second run should not fail
-        result = runner.invoke(app, ["init"])
+        result = runner.invoke(app, ["init"], env=os.environ)
         assert result.exit_code == 0
