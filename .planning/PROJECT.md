@@ -12,7 +12,8 @@ Users can manage all their AI assistants from one place with consistent configur
 
 ### Validated
 
-(None yet — ship to validate)
+- [x] Initialize Clawrium config directory (`clm init`) — *Phase 1*
+- [x] Dependency check with install instructions — *Phase 1*
 
 ### Active
 
@@ -89,4 +90,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-20 after initialization*
+*Last updated: 2026-03-21 after Phase 1 completion*
