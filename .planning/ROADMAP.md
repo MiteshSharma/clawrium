@@ -14,9 +14,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation Setup** - Initialize Clawrium configuration and verify dependencies (completed 2026-03-21)
 - [x] **Phase 2: Host Management** - Add, list, remove hosts with hardware capability detection (completed 2026-03-21)
-- [ ] **Phase 3: Registry & Compatibility** - Load claw manifests and validate hardware compatibility
-- [ ] **Phase 4: Secrets Management** - Secure storage and retrieval of API keys and credentials
-- [ ] **Phase 5: Installation & Fleet Status** - Install OpenClaw instances and view fleet status
+- [x] **Phase 3: Registry & Compatibility** - Load claw manifests and validate hardware compatibility (completed 2026-03-21)
+- [ ] **Phase 4: Installation & Fleet Status** - Install OpenClaw instances and view fleet status
+- [ ] **Phase 5: Secrets Management** - Secure storage and retrieval of API keys and credentials
 
 ## Phase Details
 
@@ -68,7 +68,25 @@ Plans:
 - [x] 03-03-PLAN.md — Implement compatibility checking function (REG-03)
 - [x] 03-04-PLAN.md — Registry CLI commands (list, show) (REG-02)
 
-### Phase 4: Secrets Management
+### Phase 4: Installation & Fleet Status
+**Goal**: Users can install OpenClaw on Ubuntu hosts and view fleet status
+**Depends on**: Phase 2, Phase 3
+**Requirements**: INST-01, INST-02, INST-03, INST-04, STAT-01
+**Success Criteria** (what must be TRUE):
+  1. User runs `clm install` and flows through: pick claw → pick host → validate compatibility → install
+  2. Installation validates compatibility before proceeding and fails fast if host is incompatible
+  3. User sees real-time progress during installation (base setup, dependencies, claw installation)
+  4. Installation fails fast with clear error messages if any step fails
+  5. User runs `clm status` and sees all hosts with their claw instances, agents, and status
+**Plans**: 4 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Core install module and Ansible playbooks (INST-02, INST-04)
+- [ ] 04-02-PLAN.md — Install CLI with interactive flow and progress (INST-01, INST-03)
+- [ ] 04-03-PLAN.md — Install state tracking and health check module (INST-04, STAT-01)
+- [ ] 04-04-PLAN.md — Fleet status CLI command (STAT-01)
+
+### Phase 5: Secrets Management
 **Goal**: Users can securely store and manage secrets for claw instances
 **Depends on**: Phase 1
 **Requirements**: SEC-01, SEC-02, SEC-03
@@ -76,21 +94,6 @@ Plans:
   1. User can set a secret with `clm secret set` and it's stored with mode 600
   2. User can list secret keys with `clm secret list` and values are never displayed
   3. Secrets file is created with correct permissions (600) on first write
-**Plans**: TBD
-
-Plans:
-- [ ] 04-01: TBD
-
-### Phase 5: Installation & Fleet Status
-**Goal**: Users can install OpenClaw on Ubuntu hosts and view fleet status
-**Depends on**: Phase 2, Phase 3, Phase 4
-**Requirements**: INST-01, INST-02, INST-03, INST-04, STAT-01
-**Success Criteria** (what must be TRUE):
-  1. User runs `clm install` and flows through: pick claw → pick host → validate compatibility → configure → install
-  2. Installation validates compatibility before proceeding and fails fast if host is incompatible
-  3. User sees real-time progress during installation (base setup, dependencies, claw installation)
-  4. Installation fails fast with clear error messages if any step fails
-  5. User runs `clm status` and sees all hosts with their claw instances, agents, and status
 **Plans**: TBD
 
 Plans:
@@ -105,6 +108,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5
 |-------|----------------|--------|-----------|
 | 1. Foundation Setup | 2/2 | Complete   | 2026-03-21 |
 | 2. Host Management | 4/4 | Complete | 2026-03-21 |
-| 3. Registry & Compatibility | 0/4 | Planned | - |
-| 4. Secrets Management | 0/0 | Not started | - |
-| 5. Installation & Fleet Status | 0/0 | Not started | - |
+| 3. Registry & Compatibility | 4/4 | Complete | 2026-03-21 |
+| 4. Installation & Fleet Status | 0/4 | Planning complete | - |
+| 5. Secrets Management | 0/0 | Not started | - |
