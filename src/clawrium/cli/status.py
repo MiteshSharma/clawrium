@@ -10,7 +10,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from clawrium.core.hosts import load_hosts, HostsFileCorruptedError
-from clawrium.core.health import check_claw_health, ClawStatus
+from clawrium.core.health import check_claw_health, ClawStatus, HealthResult
 
 __all__ = ["status"]
 
@@ -59,7 +59,7 @@ def status(
         return
 
     # Perform live health checks with progress spinner
-    health_results: dict[tuple[str, str], ClawStatus] = {}  # (claw, hostname) -> status
+    health_results: dict[tuple[str, str], HealthResult] = {}  # (claw, hostname) -> result
 
     with Progress(
         SpinnerColumn(),
@@ -73,7 +73,7 @@ def status(
             for h, claw_record in instances:
                 progress.update(task, description=f"Checking {claw_name} on {h.get('alias') or h['hostname']}...")
                 result = check_claw_health(claw_name, h)
-                health_results[(claw_name, h["hostname"])] = result["status"]
+                health_results[(claw_name, h["hostname"])] = result  # Store full result
 
     console.print()  # Blank line after progress
 
@@ -98,10 +98,25 @@ def status(
                 installed_at = installed_at.split("T")[0]
 
             # Get live status with color coding
-            live_status = health_results.get((claw_name, h["hostname"]), ClawStatus.UNKNOWN)
+            result = health_results.get((claw_name, h["hostname"]))
+            if result:
+                live_status = result["status"]
+                missing_secrets = result.get("missing_secrets", [])
+            else:
+                live_status = ClawStatus.UNKNOWN
+                missing_secrets = []
 
             if live_status == ClawStatus.RUNNING:
                 status_display = "[green]running[/green]"
+            elif live_status == ClawStatus.DEGRADED:
+                # Show degraded with missing secret keys
+                if missing_secrets:
+                    missing_str = ", ".join(missing_secrets[:3])
+                    if len(missing_secrets) > 3:
+                        missing_str += f" +{len(missing_secrets) - 3} more"
+                    status_display = f"[yellow]degraded (missing: {missing_str})[/yellow]"
+                else:
+                    status_display = "[yellow]degraded[/yellow]"
             elif live_status == ClawStatus.STOPPED:
                 status_display = "[red]stopped[/red]"
             elif live_status == ClawStatus.NOT_INSTALLED:
