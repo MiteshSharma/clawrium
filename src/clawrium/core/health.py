@@ -7,6 +7,7 @@ on remote hosts via SSH. Per D-13, this performs live checks, not cached data.
 import logging
 import os
 import re
+import shlex
 import tempfile
 from enum import Enum
 from typing import TypedDict
@@ -54,10 +55,17 @@ def get_missing_secrets(claw_type: str, host: dict, claw_record: dict) -> list[s
     Returns:
         List of missing required secret keys
     """
-    # Get claw name from user field (e.g., "opc-work" -> "work")
-    claw_user = claw_record.get("user", "")
-    # Extract name part after prefix (opc-, zc-, nc-)
-    claw_name = claw_user.split("-", 1)[1] if "-" in claw_user else claw_user
+    # Use claw name directly from record (set during installation)
+    # Falls back to deriving from user field for backward compatibility
+    claw_name = claw_record.get("name")
+    if not claw_name:
+        # Backward compatibility: extract from user field (e.g., "opc-work" -> "work")
+        claw_user = claw_record.get("user", "")
+        claw_name = claw_user.split("-", 1)[1] if "-" in claw_user else claw_user
+
+    if not claw_name:
+        # Cannot determine claw name - return empty (no secrets can be checked)
+        return []
 
     instance_key = get_instance_key(host["hostname"], claw_type, claw_name)
     instance_secrets = get_instance_secrets(instance_key)
@@ -152,7 +160,8 @@ def check_claw_health(
 
     # Check for node process owned by claw user
     # OpenClaw runs as a Node.js process
-    check_cmd = f"pgrep -u {claw_user} node >/dev/null 2>&1 && echo RUNNING || echo STOPPED"
+    # Use shlex.quote for defense-in-depth (user already validated by regex)
+    check_cmd = f"pgrep -u {shlex.quote(claw_user)} node >/dev/null 2>&1 && echo RUNNING || echo STOPPED"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         os.chmod(tmpdir, 0o700)

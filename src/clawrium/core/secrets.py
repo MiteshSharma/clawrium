@@ -19,6 +19,7 @@ __all__ = [
     "SecretEntry",
     "SecretsFileCorruptedError",
     "InvalidSecretKeyError",
+    "InvalidInstanceKeyComponentError",
     "get_instance_key",
     "get_installed_claw",
     "get_instance_secrets",
@@ -33,6 +34,16 @@ SECRETS_FILE = "secrets.json"
 # Valid secret key: starts with uppercase letter, followed by uppercase letters, digits, or underscores
 # Max 128 characters total (env-var-safe pattern)
 SECRET_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+
+# Valid instance key component: no colons allowed (used as separator in instance keys)
+# Allows alphanumeric, hyphens, underscores, dots (for hostnames, claw types, claw names)
+INSTANCE_KEY_COMPONENT_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+
+class InvalidInstanceKeyComponentError(ValueError):
+    """Raised when instance key component contains invalid characters (e.g., colons)."""
+
+    pass
 
 
 class SecretEntry(TypedDict):
@@ -142,6 +153,33 @@ def _secrets_lock():
         os.close(lock_fd)
 
 
+def _save_secrets_atomic(secrets: dict[str, dict[str, SecretEntry]], config_dir) -> None:
+    """Internal: Write secrets atomically without acquiring lock.
+
+    This function performs the atomic write (temp file + rename).
+    Caller MUST hold the _secrets_lock().
+
+    Args:
+        secrets: Dict mapping instance keys to dicts of SecretEntry objects.
+        config_dir: Path to config directory.
+    """
+    secrets_path = config_dir / SECRETS_FILE
+    fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+    try:
+        # Set restrictive permissions on temp file before writing (survives rename)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(secrets, f, indent=2)
+        os.replace(tmp_path, secrets_path)
+    except Exception:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def save_secrets(secrets: dict[str, dict[str, SecretEntry]]) -> None:
     """Save secrets to JSON file atomically with file locking.
 
@@ -154,27 +192,33 @@ def save_secrets(secrets: dict[str, dict[str, SecretEntry]]) -> None:
     """
     # Ensure config directory exists
     config_dir = init_config_dir()
-    secrets_path = config_dir / SECRETS_FILE
 
     with _secrets_lock():
-        # Atomic write: write to temp file, then rename (atomic on POSIX)
-        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-        try:
-            # Set restrictive permissions on temp file before writing (survives rename)
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(secrets, f, indent=2)
-            os.replace(tmp_path, secrets_path)
-        except Exception:
-            # Clean up temp file on failure
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _save_secrets_atomic(secrets, config_dir)
 
 
 # Per-instance secret operations (Phase 06)
+
+
+def _validate_instance_key_component(component: str, component_name: str) -> None:
+    """Validate an instance key component does not contain colons.
+
+    Args:
+        component: The component value to validate.
+        component_name: Name of the component for error messages.
+
+    Raises:
+        InvalidInstanceKeyComponentError: If component contains colons or invalid chars.
+    """
+    if not component:
+        raise InvalidInstanceKeyComponentError(
+            f"{component_name} cannot be empty"
+        )
+    if not INSTANCE_KEY_COMPONENT_PATTERN.match(component):
+        raise InvalidInstanceKeyComponentError(
+            f"Invalid {component_name} '{component}': must contain only "
+            "alphanumeric characters, hyphens, underscores, and dots"
+        )
 
 
 def get_instance_key(host: str, claw_type: str, claw_name: str) -> str:
@@ -187,7 +231,13 @@ def get_instance_key(host: str, claw_type: str, claw_name: str) -> str:
 
     Returns:
         Instance key in format "host:claw_type:claw_name".
+
+    Raises:
+        InvalidInstanceKeyComponentError: If any component contains colons or invalid chars.
     """
+    _validate_instance_key_component(host, "hostname")
+    _validate_instance_key_component(claw_type, "claw_type")
+    _validate_instance_key_component(claw_name, "claw_name")
     return f"{host}:{claw_type}:{claw_name}"
 
 
@@ -289,19 +339,7 @@ def set_instance_secret(
 
         # Save without re-acquiring lock (we already hold it)
         config_dir = init_config_dir()
-        secrets_path = config_dir / SECRETS_FILE
-        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(secrets, f, indent=2)
-            os.replace(tmp_path, secrets_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _save_secrets_atomic(secrets, config_dir)
 
         return created
 
@@ -335,19 +373,7 @@ def remove_instance_secret(instance_key: str, key: str) -> bool:
 
         # Save without re-acquiring lock (we already hold it)
         config_dir = init_config_dir()
-        secrets_path = config_dir / SECRETS_FILE
-        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(secrets, f, indent=2)
-            os.replace(tmp_path, secrets_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _save_secrets_atomic(secrets, config_dir)
 
         return True
 
@@ -439,19 +465,7 @@ def set_secret(key: str, value: str, description: str = "", *, strict: bool = Fa
 
         # Save without re-acquiring lock (we already hold it)
         config_dir = init_config_dir()
-        secrets_path = config_dir / SECRETS_FILE
-        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(secrets, f, indent=2)
-            os.replace(tmp_path, secrets_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _save_secrets_atomic(secrets, config_dir)
 
         return created
 
@@ -490,19 +504,7 @@ def remove_secret(key: str) -> bool:
 
         # Save without re-acquiring lock (we already hold it)
         config_dir = init_config_dir()
-        secrets_path = config_dir / SECRETS_FILE
-        fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(secrets, f, indent=2)
-            os.replace(tmp_path, secrets_path)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _save_secrets_atomic(secrets, config_dir)
 
         return True
 

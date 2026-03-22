@@ -7,15 +7,14 @@ from clawrium.core.secrets import (
     save_secrets,
     validate_secret_key,
     SECRETS_FILE,
-    SecretEntry,
     SecretsFileCorruptedError,
     InvalidSecretKeyError,
+    InvalidInstanceKeyComponentError,
     get_instance_key,
     get_instance_secrets,
     set_instance_secret,
     remove_instance_secret,
     list_instances_with_secrets,
-    ClawNotFoundError,
 )
 
 
@@ -260,6 +259,50 @@ def test_get_instance_key():
 
     key = get_instance_key("bear", "zeroclaw", "personal")
     assert key == "bear:zeroclaw:personal"
+
+
+def test_get_instance_key_rejects_colon_in_hostname():
+    """get_instance_key rejects hostname containing colon (B1 ATX fix)."""
+    with pytest.raises(InvalidInstanceKeyComponentError) as exc:
+        get_instance_key("wolf:evil", "openclaw", "work")
+    assert "hostname" in str(exc.value).lower()
+    assert "alphanumeric" in str(exc.value).lower()
+
+
+def test_get_instance_key_rejects_colon_in_claw_type():
+    """get_instance_key rejects claw_type containing colon."""
+    with pytest.raises(InvalidInstanceKeyComponentError) as exc:
+        get_instance_key("wolf", "open:claw", "work")
+    assert "claw_type" in str(exc.value).lower()
+
+
+def test_get_instance_key_rejects_colon_in_claw_name():
+    """get_instance_key rejects claw_name containing colon."""
+    with pytest.raises(InvalidInstanceKeyComponentError) as exc:
+        get_instance_key("wolf", "openclaw", "work:evil")
+    assert "claw_name" in str(exc.value).lower()
+
+
+def test_get_instance_key_rejects_empty_component():
+    """get_instance_key rejects empty components."""
+    with pytest.raises(InvalidInstanceKeyComponentError) as exc:
+        get_instance_key("", "openclaw", "work")
+    assert "empty" in str(exc.value).lower()
+
+
+def test_get_instance_key_allows_valid_special_chars():
+    """get_instance_key allows hyphens, underscores, dots in components."""
+    # Hyphen is valid (common in hostnames and claw names)
+    key = get_instance_key("wolf-server", "openclaw", "my-claw")
+    assert key == "wolf-server:openclaw:my-claw"
+
+    # Underscore is valid
+    key = get_instance_key("wolf_server", "open_claw", "my_claw")
+    assert key == "wolf_server:open_claw:my_claw"
+
+    # Dot is valid (FQDN hostnames)
+    key = get_instance_key("wolf.local", "openclaw", "work")
+    assert key == "wolf.local:openclaw:work"
 
 
 def test_set_instance_secret(isolated_config):
