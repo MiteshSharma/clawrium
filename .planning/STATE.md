@@ -4,7 +4,7 @@ milestone: v1.0
 milestone_name: milestone
 status: unknown
 stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-03-22T22:39:27.645Z"
+last_updated: "2026-03-22T22:44:02.664Z"
 last_activity: 2026-03-22
 progress:
   total_phases: 6
@@ -24,8 +24,8 @@ See: .planning/PROJECT.md (updated 2026-03-20)
 
 ## Current Position
 
-Phase: 06 (make-secrets-specific-to-installed-claws-not-global) — EXECUTING
-Plan: 3 of 3
+Phase: 06
+Plan: Not started
 
 ## Performance Metrics
 
