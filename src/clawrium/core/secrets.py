@@ -259,7 +259,12 @@ def remove_secret(key: str) -> bool:
 
     Returns:
         True if secret was found and removed, False otherwise.
+
+    Raises:
+        InvalidSecretKeyError: If key is not valid.
     """
+    validate_secret_key(key)
+
     with _secrets_lock():
         secrets = load_secrets()
 
