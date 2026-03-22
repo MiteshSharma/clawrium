@@ -38,12 +38,15 @@ def test_health_check_running(mock_host):
 
     with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
         with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
-            result = check_claw_health("openclaw", mock_host)
+            # Mock no required secrets for openclaw
+            with patch("clawrium.core.health.get_required_secrets", return_value=[]):
+                result = check_claw_health("openclaw", mock_host)
 
     assert result["status"] == ClawStatus.RUNNING
     assert result["claw"] == "openclaw"
     assert result["user"] == "opc-testhost"
     assert result["error"] is None
+    assert result["missing_secrets"] is None
 
 
 def test_health_check_stopped(mock_host):
@@ -115,7 +118,9 @@ def test_check_all_claws_on_host(mock_host):
 
     with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
         with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
-            results = check_all_claws_on_host(mock_host)
+            # Mock no required secrets for openclaw
+            with patch("clawrium.core.health.get_required_secrets", return_value=[]):
+                results = check_all_claws_on_host(mock_host)
 
     assert len(results) == 1
     assert results[0]["claw"] == "openclaw"
@@ -190,3 +195,142 @@ def test_health_check_unexpected_output(mock_host):
 
     assert result["status"] == ClawStatus.UNKNOWN
     assert "Unexpected output" in result["error"]
+
+
+def test_claw_status_degraded_exists():
+    """ClawStatus.DEGRADED enum value exists."""
+    assert hasattr(ClawStatus, "DEGRADED")
+    assert ClawStatus.DEGRADED == "degraded"
+
+
+def test_health_result_has_missing_secrets_field(mock_host):
+    """HealthResult includes missing_secrets field in return."""
+    mock_runner = MagicMock()
+    mock_runner.status = "successful"
+    mock_runner.events = [
+        {"event": "runner_on_ok", "event_data": {"res": {"stdout": "RUNNING"}}}
+    ]
+
+    with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+        with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
+            with patch("clawrium.core.health.get_instance_secrets", return_value={"OPENAI_API_KEY": {}}):
+                with patch("clawrium.core.health.get_required_secrets", return_value=[]):
+                    result = check_claw_health("openclaw", mock_host)
+
+    # Check field exists
+    assert "missing_secrets" in result
+
+
+def test_check_claw_health_degraded_when_missing_secrets(mock_host):
+    """Running claw with missing required secrets returns DEGRADED status."""
+    mock_runner = MagicMock()
+    mock_runner.status = "successful"
+    mock_runner.events = [
+        {"event": "runner_on_ok", "event_data": {"res": {"stdout": "RUNNING"}}}
+    ]
+
+    # Mock required secrets for openclaw
+    required_secrets = [
+        {"key": "OPENAI_API_KEY", "description": "OpenAI API key"},
+        {"key": "ANTHROPIC_API_KEY", "description": "Anthropic API key"},
+    ]
+
+    # Mock empty instance secrets (all missing)
+    instance_secrets = {}
+
+    with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+        with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
+            with patch("clawrium.core.health.get_instance_secrets", return_value=instance_secrets):
+                with patch("clawrium.core.health.get_required_secrets", return_value=required_secrets):
+                    result = check_claw_health("openclaw", mock_host)
+
+    assert result["status"] == ClawStatus.DEGRADED
+    assert result["missing_secrets"] is not None
+    assert len(result["missing_secrets"]) == 2
+    assert "OPENAI_API_KEY" in result["missing_secrets"]
+    assert "ANTHROPIC_API_KEY" in result["missing_secrets"]
+
+
+def test_check_claw_health_running_when_all_secrets_present(mock_host):
+    """Running claw with all required secrets returns RUNNING status."""
+    mock_runner = MagicMock()
+    mock_runner.status = "successful"
+    mock_runner.events = [
+        {"event": "runner_on_ok", "event_data": {"res": {"stdout": "RUNNING"}}}
+    ]
+
+    # Mock required secrets for openclaw
+    required_secrets = [
+        {"key": "OPENAI_API_KEY", "description": "OpenAI API key"},
+    ]
+
+    # Mock instance secrets (all present)
+    instance_secrets = {
+        "OPENAI_API_KEY": {
+            "key": "OPENAI_API_KEY",
+            "value": "sk-test",
+            "created_at": "2026-03-22T00:00:00Z",
+            "updated_at": "2026-03-22T00:00:00Z",
+            "description": "",
+        }
+    }
+
+    with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+        with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
+            with patch("clawrium.core.health.get_instance_secrets", return_value=instance_secrets):
+                with patch("clawrium.core.health.get_required_secrets", return_value=required_secrets):
+                    result = check_claw_health("openclaw", mock_host)
+
+    assert result["status"] == ClawStatus.RUNNING
+    assert result["missing_secrets"] is None
+
+
+def test_check_claw_health_degraded_partial_secrets(mock_host):
+    """Running claw with some missing secrets returns DEGRADED."""
+    mock_runner = MagicMock()
+    mock_runner.status = "successful"
+    mock_runner.events = [
+        {"event": "runner_on_ok", "event_data": {"res": {"stdout": "RUNNING"}}}
+    ]
+
+    # Mock required secrets for openclaw
+    required_secrets = [
+        {"key": "OPENAI_API_KEY", "description": "OpenAI API key"},
+        {"key": "ANTHROPIC_API_KEY", "description": "Anthropic API key"},
+    ]
+
+    # Mock partial instance secrets (one present, one missing)
+    instance_secrets = {
+        "OPENAI_API_KEY": {
+            "key": "OPENAI_API_KEY",
+            "value": "sk-test",
+            "created_at": "2026-03-22T00:00:00Z",
+            "updated_at": "2026-03-22T00:00:00Z",
+            "description": "",
+        }
+    }
+
+    with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+        with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
+            with patch("clawrium.core.health.get_instance_secrets", return_value=instance_secrets):
+                with patch("clawrium.core.health.get_required_secrets", return_value=required_secrets):
+                    result = check_claw_health("openclaw", mock_host)
+
+    assert result["status"] == ClawStatus.DEGRADED
+    assert result["missing_secrets"] == ["ANTHROPIC_API_KEY"]
+
+
+def test_missing_secrets_none_for_stopped_status(mock_host):
+    """STOPPED status has missing_secrets as None."""
+    mock_runner = MagicMock()
+    mock_runner.status = "successful"
+    mock_runner.events = [
+        {"event": "runner_on_ok", "event_data": {"res": {"stdout": "STOPPED"}}}
+    ]
+
+    with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+        with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
+            result = check_claw_health("openclaw", mock_host)
+
+    assert result["status"] == ClawStatus.STOPPED
+    assert result["missing_secrets"] is None

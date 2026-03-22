@@ -14,6 +14,8 @@ from typing import TypedDict
 import ansible_runner
 
 from clawrium.core.keys import get_host_private_key
+from clawrium.core.secrets import get_instance_key, get_instance_secrets
+from clawrium.core.registry import get_required_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ class ClawStatus(str, Enum):
     STOPPED = "stopped"
     UNKNOWN = "unknown"
     NOT_INSTALLED = "not_installed"
+    DEGRADED = "degraded"  # Running but missing required secrets
 
 
 class HealthResult(TypedDict):
@@ -37,6 +40,32 @@ class HealthResult(TypedDict):
     status: ClawStatus
     user: str | None
     error: str | None
+    missing_secrets: list[str] | None  # List of missing required secret keys
+
+
+def get_missing_secrets(claw_type: str, host: dict, claw_record: dict) -> list[str]:
+    """Check which required secrets are missing for a claw instance.
+
+    Args:
+        claw_type: Type of claw (e.g., "openclaw")
+        host: Host record dict
+        claw_record: Claw installation record from host
+
+    Returns:
+        List of missing required secret keys
+    """
+    # Get claw name from user field (e.g., "opc-work" -> "work")
+    claw_user = claw_record.get("user", "")
+    # Extract name part after prefix (opc-, zc-, nc-)
+    claw_name = claw_user.split("-", 1)[1] if "-" in claw_user else claw_user
+
+    instance_key = get_instance_key(host["hostname"], claw_type, claw_name)
+    instance_secrets = get_instance_secrets(instance_key)
+
+    required = get_required_secrets(claw_type)
+    missing = [s["key"] for s in required if s["key"] not in instance_secrets]
+
+    return missing
 
 
 def check_claw_health(
@@ -69,6 +98,7 @@ def check_claw_health(
             "status": ClawStatus.NOT_INSTALLED,
             "user": None,
             "error": None,
+            "missing_secrets": None,
         }
 
     claw_user = claw_record.get("user")
@@ -80,6 +110,7 @@ def check_claw_health(
             "status": ClawStatus.UNKNOWN,
             "user": None,
             "error": "No claw user recorded",
+            "missing_secrets": None,
         }
 
     # Validate username to prevent command injection
@@ -90,6 +121,7 @@ def check_claw_health(
             "status": ClawStatus.UNKNOWN,
             "user": claw_user,
             "error": f"Invalid claw user format: {claw_user}",
+            "missing_secrets": None,
         }
 
     # Get SSH key
@@ -102,6 +134,7 @@ def check_claw_health(
             "status": ClawStatus.UNKNOWN,
             "user": claw_user,
             "error": "SSH key not found",
+            "missing_secrets": None,
         }
 
     # Build inventory
@@ -141,6 +174,7 @@ def check_claw_health(
                 "status": ClawStatus.UNKNOWN,
                 "user": claw_user,
                 "error": "Health check timed out",
+                "missing_secrets": None,
             }
 
         if result.status != "successful":
@@ -150,6 +184,7 @@ def check_claw_health(
                 "status": ClawStatus.UNKNOWN,
                 "user": claw_user,
                 "error": f"SSH failed: {result.status}",
+                "missing_secrets": None,
             }
 
         # Parse output from events
@@ -164,19 +199,35 @@ def check_claw_health(
                     "status": ClawStatus.UNKNOWN,
                     "user": claw_user,
                     "error": "Host unreachable",
+                    "missing_secrets": None,
                 }
             if event_type == "runner_on_ok":
                 output = event.get("event_data", {}).get("res", {}).get("stdout", "")
                 break
 
         if "RUNNING" in output:
-            return {
-                "claw": claw_name,
-                "host": hostname,
-                "status": ClawStatus.RUNNING,
-                "user": claw_user,
-                "error": None,
-            }
+            # Check for missing required secrets
+            missing = get_missing_secrets(claw_name, host, claw_record)
+            if missing:
+                # Claw is running but missing required secrets - degraded state
+                return {
+                    "claw": claw_name,
+                    "host": hostname,
+                    "status": ClawStatus.DEGRADED,
+                    "user": claw_user,
+                    "error": None,
+                    "missing_secrets": missing,
+                }
+            else:
+                # Claw is running with all required secrets
+                return {
+                    "claw": claw_name,
+                    "host": hostname,
+                    "status": ClawStatus.RUNNING,
+                    "user": claw_user,
+                    "error": None,
+                    "missing_secrets": None,
+                }
         elif "STOPPED" in output:
             return {
                 "claw": claw_name,
@@ -184,6 +235,7 @@ def check_claw_health(
                 "status": ClawStatus.STOPPED,
                 "user": claw_user,
                 "error": None,
+                "missing_secrets": None,
             }
         else:
             # Unexpected output - treat as unknown
@@ -193,6 +245,7 @@ def check_claw_health(
                 "status": ClawStatus.UNKNOWN,
                 "user": claw_user,
                 "error": f"Unexpected output: {output[:50]}" if output else "No output",
+                "missing_secrets": None,
             }
 
 
