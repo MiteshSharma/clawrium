@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 03-04-PLAN.md
-last_updated: "2026-03-21T22:42:48.527Z"
-last_activity: 2026-03-21
+stopped_at: Completed 04-04-PLAN.md
+last_updated: "2026-03-22T04:38:50.124Z"
+last_activity: 2026-03-22
 progress:
   total_phases: 5
-  completed_phases: 3
-  total_plans: 10
-  completed_plans: 10
+  completed_phases: 4
+  total_plans: 14
+  completed_plans: 14
 ---
 
 # Project State
@@ -20,11 +20,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Users can manage all their AI assistants from one place with consistent configuration and security practices.
-**Current focus:** Phase 03 — registry-compatibility
+**Current focus:** Phase 04 — installation-fleet-status
 
 ## Current Position
 
-Phase: 4
+Phase: 5
 Plan: Not started
 
 ## Performance Metrics
@@ -51,6 +51,10 @@ Plan: Not started
 | Phase 03 P02 | 127 | 1 tasks | 2 files |
 | Phase 03 P03 | 128 | 1 tasks | 2 files |
 | Phase 03 P04 | 156 | 2 tasks | 3 files |
+| Phase 04 P01 | 237 | 2 tasks | 5 files |
+| Phase 04 P02 | 280 | 1 tasks | 3 files |
+| Phase 04 P03 | 336 | 2 tasks | 5 files |
+| Phase 04-installation-fleet-status P04 | 128 | 1 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -77,6 +81,14 @@ Recent decisions affecting current work:
 - [Phase 03]: OS names normalized to lowercase (Ubuntu → ubuntu) for consistent compatibility checking
 - [Phase 03-03]: Sparse matrix compatibility matching: only explicit manifest entries valid, no partial matches
 - [Phase 03-04]: Implemented both list and show commands in single module following existing CLI patterns
+- [Phase 04-01]: Base playbook located at project root (platform/) not in src/ for easier discovery
+- [Phase 04-01]: OpenClaw user naming pattern: opc-<hostname> using inventory_hostname variable
+- [Phase 04-02]: Hybrid invocation pattern for CLI commands (interactive prompts when flags missing, direct with flags)
+- [Phase 04-02]: Rich Panel for confirmation dialogs, Rich Progress for long-running operations
+- [Phase 04-03]: Use ISO 8601 timestamps for installed_at field in claw tracking
+- [Phase 04-03]: Use pgrep for process detection in health checks (simple, portable)
+- [Phase 04-installation-fleet-status]: Claw-centric grouping: display organized by claw type rather than by host for better fleet visibility
+- [Phase 04-installation-fleet-status]: Rich Progress spinner for health checks provides UX feedback on potentially slow SSH operations
 
 ### Pending Todos
 
@@ -97,6 +109,6 @@ None yet.
 
 ## Session Continuity
 
-Last activity: 2026-03-21
-Stopped at: Completed 03-04-PLAN.md
+Last activity: 2026-03-22
+Stopped at: Completed 04-04-PLAN.md
 Resume file: None

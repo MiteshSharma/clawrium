@@ -1,10 +1,14 @@
 """Main CLI entry point for Clawrium."""
 
+from typing import Optional
+
 import typer
 
 from clawrium.cli.init import init as init_command
 from clawrium.cli.host import host_app
+from clawrium.cli.install import install as install_command
 from clawrium.cli.registry import registry_app
+from clawrium.cli.status import status as status_command
 
 __all__ = ["app"]
 
@@ -28,6 +32,24 @@ def main(ctx: typer.Context) -> None:
 def init() -> None:
     """Initialize Clawrium and check dependencies."""
     init_command()
+
+
+@app.command()
+def install(
+    claw: Optional[str] = typer.Option(None, "--claw", "-c", help="Claw type to install"),
+    host: Optional[str] = typer.Option(None, "--host", "-H", help="Target host"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+) -> None:
+    """Install a claw on a host."""
+    install_command(claw=claw, host=host, yes=yes)
+
+
+@app.command()
+def status(
+    host: Optional[str] = typer.Option(None, "--host", "-H", help="Filter to specific host"),
+) -> None:
+    """Show fleet status across all hosts."""
+    status_command(host=host)
 
 
 # Register host subcommands
