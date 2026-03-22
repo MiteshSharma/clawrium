@@ -44,7 +44,7 @@ Requirements for initial release: OpenClaw on single Ubuntu host.
 - [x] **PSEC-01**: Secrets are scoped to installed claw instances, not global
 - [ ] **PSEC-02**: User sets secrets per claw (`clm secret set <clawname> KEY`)
 - [ ] **PSEC-03**: User lists secrets grouped by claw with missing required secrets shown
-- [ ] **PSEC-04**: Status shows degraded state for claws with missing required secrets
+- [x] **PSEC-04**: Status shows degraded state for claws with missing required secrets
 - [x] **PSEC-05**: Secrets only settable for installed/initialized claws
 
 ### Fleet Status
