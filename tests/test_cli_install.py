@@ -37,8 +37,10 @@ def create_host(config_dir: Path, hostname: str, alias: str | None = None, key_i
             "architecture": "x86_64",
             "processor_cores": 4,
             "memtotal_mb": 8192,
+            "os": "ubuntu",
+            "os_version": "24.04",
             "distribution": "ubuntu",
-            "distribution_version": "22.04",
+            "distribution_version": "24.04",
             "gpu": {"present": False},
         },
         "metadata": {
