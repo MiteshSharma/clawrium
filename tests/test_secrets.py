@@ -9,10 +9,12 @@ from clawrium.core.secrets import (
     set_secret,
     remove_secret,
     list_secrets,
+    validate_secret_key,
     SECRETS_FILE,
     SecretEntry,
     SecretsFileCorruptedError,
     DuplicateSecretError,
+    InvalidSecretKeyError,
 )
 
 
@@ -59,6 +61,17 @@ def test_load_secrets_invalid_json(isolated_config):
     with pytest.raises(SecretsFileCorruptedError) as exc_info:
         load_secrets()
     assert "corrupted" in str(exc_info.value).lower()
+
+
+def test_load_secrets_non_dict_json(isolated_config):
+    """load_secrets() with valid JSON that is not a dict raises SecretsFileCorruptedError."""
+    isolated_config.mkdir(parents=True, exist_ok=True)
+    secrets_path = isolated_config / SECRETS_FILE
+    secrets_path.write_text("[1, 2, 3]")  # Valid JSON, but not a dict
+
+    with pytest.raises(SecretsFileCorruptedError) as exc_info:
+        load_secrets()
+    assert "not a dict" in str(exc_info.value).lower()
 
 
 def test_save_secrets_creates_file(isolated_config):
@@ -255,3 +268,109 @@ def test_concurrent_write_protection(isolated_config):
     # Last write wins
     secrets = load_secrets()
     assert "KEY2" in secrets
+
+
+# Tests for validate_secret_key (Issue 3 fix)
+
+
+def test_validate_secret_key_valid():
+    """validate_secret_key accepts valid env-var-safe keys."""
+    assert validate_secret_key("OPENAI_API_KEY") == "OPENAI_API_KEY"
+    assert validate_secret_key("A") == "A"
+    assert validate_secret_key("API_KEY_123") == "API_KEY_123"
+    assert validate_secret_key("X" * 128) == "X" * 128  # Max length
+
+
+def test_validate_secret_key_empty():
+    """validate_secret_key rejects empty key."""
+    with pytest.raises(InvalidSecretKeyError) as exc_info:
+        validate_secret_key("")
+    assert "cannot be empty" in str(exc_info.value)
+
+
+def test_validate_secret_key_lowercase():
+    """validate_secret_key rejects lowercase keys."""
+    with pytest.raises(InvalidSecretKeyError) as exc_info:
+        validate_secret_key("openai_api_key")
+    assert "must start with uppercase" in str(exc_info.value)
+
+
+def test_validate_secret_key_starts_with_number():
+    """validate_secret_key rejects keys starting with number."""
+    with pytest.raises(InvalidSecretKeyError) as exc_info:
+        validate_secret_key("123_KEY")
+    assert "must start with uppercase" in str(exc_info.value)
+
+
+def test_validate_secret_key_special_chars():
+    """validate_secret_key rejects keys with special characters."""
+    with pytest.raises(InvalidSecretKeyError):
+        validate_secret_key("OPENAI-API-KEY")  # Hyphen not allowed
+
+    with pytest.raises(InvalidSecretKeyError):
+        validate_secret_key("OPENAI.API.KEY")  # Dot not allowed
+
+    with pytest.raises(InvalidSecretKeyError):
+        validate_secret_key("OPENAI API KEY")  # Space not allowed
+
+
+def test_validate_secret_key_too_long():
+    """validate_secret_key rejects keys longer than 128 characters."""
+    with pytest.raises(InvalidSecretKeyError):
+        validate_secret_key("X" * 129)
+
+
+def test_validate_secret_key_null_bytes():
+    """validate_secret_key rejects keys with null bytes."""
+    with pytest.raises(InvalidSecretKeyError):
+        validate_secret_key("OPENAI\x00KEY")
+
+
+def test_validate_secret_key_newlines():
+    """validate_secret_key rejects keys with newlines."""
+    with pytest.raises(InvalidSecretKeyError):
+        validate_secret_key("OPENAI\nKEY")
+
+
+# Tests for set_secret key validation
+
+
+def test_set_secret_validates_key(isolated_config):
+    """set_secret validates key before storing."""
+    with pytest.raises(InvalidSecretKeyError):
+        set_secret("invalid-key", "value")
+
+
+# Tests for DuplicateSecretError strict mode (Issue 5 implementation)
+
+
+def test_set_secret_strict_mode_raises_on_duplicate(isolated_config):
+    """set_secret with strict=True raises DuplicateSecretError if key exists."""
+    # Create initial secret
+    set_secret("OPENAI_API_KEY", "sk-test-123")
+
+    # Attempt to create again with strict=True
+    with pytest.raises(DuplicateSecretError) as exc_info:
+        set_secret("OPENAI_API_KEY", "sk-test-456", strict=True)
+    assert "already exists" in str(exc_info.value)
+
+
+def test_set_secret_strict_mode_allows_new(isolated_config):
+    """set_secret with strict=True allows new keys."""
+    result = set_secret("OPENAI_API_KEY", "sk-test-123", strict=True)
+    assert result is True  # Created new
+
+    # Verify it was stored
+    secret = get_secret("OPENAI_API_KEY")
+    assert secret is not None
+    assert secret["value"] == "sk-test-123"
+
+
+def test_set_secret_default_allows_overwrite(isolated_config):
+    """set_secret without strict=True (default) allows overwrite."""
+    set_secret("OPENAI_API_KEY", "sk-test-123")
+    result = set_secret("OPENAI_API_KEY", "sk-test-456")  # No strict flag
+    assert result is False  # Updated existing
+
+    secret = get_secret("OPENAI_API_KEY")
+    assert secret["value"] == "sk-test-456"

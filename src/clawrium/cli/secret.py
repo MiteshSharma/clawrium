@@ -14,6 +14,7 @@ from clawrium.core.secrets import (
     list_secrets,
     load_secrets,
     SecretsFileCorruptedError,
+    InvalidSecretKeyError,
 )
 from clawrium.core.registry import (
     get_required_secrets,
@@ -65,7 +66,12 @@ def set_cmd(
         raise typer.Exit(code=1)
 
     # Set the secret
-    is_new = set_secret(key, value, description or "")
+    try:
+        is_new = set_secret(key, value, description or "")
+    except InvalidSecretKeyError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        console.print("[dim]Hint: Keys must be uppercase letters, digits, and underscores (e.g., OPENAI_API_KEY)[/dim]")
+        raise typer.Exit(code=1)
 
     if is_new:
         console.print(f"[green]Secret '{key}' created.[/green]")

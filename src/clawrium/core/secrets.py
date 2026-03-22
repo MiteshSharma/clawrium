@@ -3,6 +3,7 @@
 import fcntl
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -17,13 +18,19 @@ __all__ = [
     "set_secret",
     "remove_secret",
     "list_secrets",
+    "validate_secret_key",
     "SECRETS_FILE",
     "SecretEntry",
     "SecretsFileCorruptedError",
     "DuplicateSecretError",
+    "InvalidSecretKeyError",
 ]
 
 SECRETS_FILE = "secrets.json"
+
+# Valid secret key: starts with uppercase letter, followed by uppercase letters, digits, or underscores
+# Max 128 characters total (env-var-safe pattern)
+SECRET_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
 
 class SecretEntry(TypedDict):
@@ -46,6 +53,40 @@ class DuplicateSecretError(Exception):
     """Raised when trying to add a secret that already exists (for strict mode)."""
 
     pass
+
+
+class InvalidSecretKeyError(ValueError):
+    """Raised when secret key contains invalid characters."""
+
+    pass
+
+
+def validate_secret_key(key: str) -> str:
+    """Validate secret key to ensure env-var-safe naming.
+
+    Valid keys: start with uppercase letter, contain only uppercase letters,
+    digits, and underscores. Max 128 characters.
+
+    Args:
+        key: The secret key to validate.
+
+    Returns:
+        The validated key.
+
+    Raises:
+        InvalidSecretKeyError: If key is invalid.
+    """
+    if not key:
+        raise InvalidSecretKeyError("Secret key cannot be empty")
+
+    if not SECRET_KEY_PATTERN.match(key):
+        raise InvalidSecretKeyError(
+            f"Invalid secret key '{key}': must start with uppercase letter, "
+            "contain only uppercase letters, digits, and underscores, "
+            "and be at most 128 characters"
+        )
+
+    return key
 
 
 def load_secrets() -> dict[str, SecretEntry]:
@@ -142,25 +183,34 @@ def get_secret(key: str) -> SecretEntry | None:
     return secrets.get(key)
 
 
-def set_secret(key: str, value: str, description: str = "") -> bool:
+def set_secret(key: str, value: str, description: str = "", *, strict: bool = False) -> bool:
     """Set or update a secret.
 
     If the secret exists, updates value and updated_at timestamp while preserving created_at.
     If description is not provided, preserves existing description for updates.
 
     Args:
-        key: Secret key.
+        key: Secret key (must be env-var-safe: uppercase letters, digits, underscores).
         value: Secret value.
         description: Optional description (default: "").
+        strict: If True, raise DuplicateSecretError if key already exists (default: False).
 
     Returns:
         True if new secret created, False if existing secret updated.
+
+    Raises:
+        InvalidSecretKeyError: If key is not valid (see validate_secret_key).
+        DuplicateSecretError: If strict=True and key already exists.
     """
+    validate_secret_key(key)
+
     with _secrets_lock():
         secrets = load_secrets()
         now = datetime.now(timezone.utc).isoformat()
 
         if key in secrets:
+            if strict:
+                raise DuplicateSecretError(f"Secret '{key}' already exists")
             # Update existing - preserve created_at and description if not provided
             existing = secrets[key]
             secrets[key] = SecretEntry(
