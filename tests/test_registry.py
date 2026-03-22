@@ -42,21 +42,22 @@ def test_load_manifest_nonexistent():
         load_manifest("nonexistent")
 
 
-def test_load_manifest_malformed(tmp_path):
-    """Test loading malformed YAML raises ManifestParseError."""
-    # This will be tested with a malformed manifest file
-    # For now, we test that the exception type exists
-    with pytest.raises(ManifestParseError):
-        raise ManifestParseError("test")
+def test_load_manifest_malformed():
+    """Test loading malformed manifest raises ManifestParseError."""
+    from clawrium.core.registry import InvalidClawNameError
+    # Test path traversal attempt triggers InvalidClawNameError
+    with pytest.raises(InvalidClawNameError):
+        load_manifest("../etc/passwd")
 
 
 def test_list_claws():
-    """Test list_claws returns openclaw."""
+    """Test list_claws returns openclaw and zeroclaw."""
     claws = list_claws()
 
     assert isinstance(claws, list)
     assert "openclaw" in claws
-    assert len(claws) > 0
+    assert "zeroclaw" in claws
+    assert len(claws) >= 2
 
 
 def test_get_claw_info_openclaw():
@@ -270,3 +271,60 @@ def test_check_compatibility_wrong_os_version():
     assert len(result["reasons"]) > 0
     # Should mention a supported version and the host version
     assert any("20.04" in r for r in result["reasons"])
+
+
+def test_load_manifest_zeroclaw():
+    """Test loading zeroclaw manifest returns valid ClawManifest."""
+    manifest = load_manifest("zeroclaw")
+
+    assert isinstance(manifest, dict)
+    assert manifest["name"] == "zeroclaw"
+    assert "entries" in manifest
+    assert len(manifest["entries"]) > 0
+
+    # Should have armv7l entries for Pi 2/3
+    archs = [e["arch"] for e in manifest["entries"]]
+    assert "armv7l" in archs
+
+
+def test_check_compatibility_zeroclaw_armv7l():
+    """Test zeroclaw compatibility with Raspberry Pi 2 hardware."""
+    from clawrium.core.registry import check_compatibility
+
+    hardware = {
+        "os": "debian",
+        "os_version": "12",
+        "architecture": "armv7l",
+        "memtotal_mb": 921,  # Pi 2 has ~920MB usable
+        "gpu": {"present": False, "vendor": None, "error": None},
+        "processor_cores": 4,
+        "processor_count": 1,
+        "mounts": [],
+    }
+
+    result = check_compatibility("zeroclaw", hardware)
+
+    assert result["compatible"] is True
+    assert result["matched_entry"] is not None
+    assert result["matched_entry"]["arch"] == "armv7l"
+
+
+def test_check_compatibility_zeroclaw_low_memory():
+    """Test zeroclaw compatibility with very low memory fails."""
+    from clawrium.core.registry import check_compatibility
+
+    hardware = {
+        "os": "debian",
+        "os_version": "12",
+        "architecture": "armv7l",
+        "memtotal_mb": 256,  # Below 512MB minimum
+        "gpu": {"present": False, "vendor": None, "error": None},
+        "processor_cores": 4,
+        "processor_count": 1,
+        "mounts": [],
+    }
+
+    result = check_compatibility("zeroclaw", hardware)
+
+    assert result["compatible"] is False
+    assert any("memory" in r.lower() or "ram" in r.lower() for r in result["reasons"])

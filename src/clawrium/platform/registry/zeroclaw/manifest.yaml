@@ -11,7 +11,7 @@ entries:
       gpu_required: false
       dependencies:
         python: ">=3.9"
-        nodejs: ">=18.0.0"
+        nodejs: ">=20.0.0"
   - version: "0.2.0"
     os: debian
     os_version: "12"
@@ -21,7 +21,7 @@ entries:
       gpu_required: false
       dependencies:
         python: ">=3.9"
-        nodejs: ">=18.0.0"
+        nodejs: ">=20.0.0"
   # Raspberry Pi OS (based on Debian, reports as "debian")
   - version: "0.2.0"
     os: raspbian
@@ -32,7 +32,7 @@ entries:
       gpu_required: false
       dependencies:
         python: ">=3.9"
-        nodejs: ">=18.0.0"
+        nodejs: ">=20.0.0"
   - version: "0.2.0"
     os: raspbian
     os_version: "12"
@@ -42,7 +42,7 @@ entries:
       gpu_required: false
       dependencies:
         python: ">=3.9"
-        nodejs: ">=18.0.0"
+        nodejs: ">=20.0.0"
   # Raspberry Pi 4/5 (aarch64) - Ubuntu
   - version: "0.2.0"
     os: ubuntu
@@ -53,7 +53,7 @@ entries:
       gpu_required: false
       dependencies:
         python: ">=3.9"
-        nodejs: ">=18.0.0"
+        nodejs: ">=20.0.0"
   - version: "0.2.0"
     os: ubuntu
     os_version: "24.04"
@@ -63,4 +63,4 @@ entries:
       gpu_required: false
       dependencies:
         python: ">=3.9"
-        nodejs: ">=18.0.0"
+        nodejs: ">=20.0.0"
