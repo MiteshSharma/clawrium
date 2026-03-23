@@ -1,11 +1,10 @@
-.PHONY: help install install-dev test test-cov lint format build clean upgrade lock setup-dev
+.PHONY: help install test test-cov lint format build clean upgrade lock setup-dev
 
 help:
 	@echo "Clawrium Development Commands"
 	@echo ""
-	@echo "  make install      Install dependencies"
-	@echo "  make install-dev  Install with dev dependencies"
-	@echo "  make setup-dev    Setup development workflow (first time)"
+	@echo "  make setup-dev    Setup development environment (first time)"
+	@echo "  make install      Install production dependencies only"
 	@echo "  make test         Run tests"
 	@echo "  make test-cov     Run tests with coverage"
 	@echo "  make lint         Run linter"
@@ -17,9 +16,6 @@ help:
 
 install:
 	uv sync --no-dev
-
-install-dev:
-	uv sync
 
 test:
 	uv run pytest
@@ -47,7 +43,7 @@ upgrade:
 lock:
 	uv lock
 
-# Development workflow setup
+# Development environment setup (first time)
 setup-dev:
 	@echo "=== Clawrium Development Setup ==="
 	@echo ""
