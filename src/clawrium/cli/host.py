@@ -34,6 +34,7 @@ from clawrium.core.ssh_connection import (
     HostKeyVerificationRequired,
 )
 from clawrium.core.hardware import gather_hardware
+from clawrium.core.reset import enumerate_targets, execute_reset
 
 __all__ = ["host_app"]
 
@@ -555,7 +556,9 @@ def status(
                 if update_host(host["hostname"], apply_hardware_update):
                     console.print("[green]Hardware information updated.[/green]\n")
                 else:
-                    console.print("[yellow]Warning:[/yellow] Host not found during update\n")
+                    console.print(
+                        "[yellow]Warning:[/yellow] Host not found during update\n"
+                    )
             except Exception as e:
                 console.print(f"[red]Error saving host data:[/red] {e}")
                 raise typer.Exit(code=1)
@@ -605,4 +608,115 @@ def status(
 
     # Exit 1 if host is disconnected (for scripting)
     if not success:
+        raise typer.Exit(code=1)
+
+
+@host_app.command()
+def reset(
+    hostname: str = typer.Argument(..., help="Host hostname or alias to reset"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", "-n", help="Show what would be removed without executing"
+    ),
+    untrack: bool = typer.Option(
+        False, "--untrack", help="Also remove host from Clawrium tracking after reset"
+    ),
+) -> None:
+    """Reset a host, removing all claws and users.
+
+    This command will:
+    - Stop and remove all *claw* services
+    - Remove all users with uid >= 1000 (except xclm)
+    - Clean clawrium configuration paths
+
+    Use --dry-run to preview changes without executing.
+    Use --yes to skip the confirmation prompt.
+    Use --untrack to also remove the host from tracking.
+    """
+    # Find host
+    try:
+        host = get_host(hostname)
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    if not host:
+        console.print(f"[red]Error:[/red] Host '{hostname}' not found")
+        raise typer.Exit(code=1)
+
+    display_name = host.get("alias") or host["hostname"]
+    console.print(f"Scanning '{display_name}' for targets...")
+
+    # Enumerate targets
+    try:
+        targets = enumerate_targets(hostname)
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except RuntimeError as e:
+        console.print(f"[red]Error:[/red] Failed to enumerate targets: {e}")
+        raise typer.Exit(code=1)
+
+    # Display targets
+    if targets.users:
+        console.print(f"\n[bold]Users to remove ({len(targets.users)}):[/bold]")
+        for user in targets.users:
+            console.print(f"  - {user}")
+
+    if targets.services:
+        console.print(f"\n[bold]Services to remove ({len(targets.services)}):[/bold]")
+        for service in targets.services:
+            console.print(f"  - {service}")
+
+    if targets.paths:
+        console.print(f"\n[bold]Paths to clean ({len(targets.paths)}):[/bold]")
+        for path in targets.paths:
+            console.print(f"  - {path}")
+
+    total_items = len(targets.users) + len(targets.services) + len(targets.paths)
+    if total_items == 0:
+        console.print("\n[yellow]No targets found to remove.[/yellow]")
+        return
+
+    # Dry run exits here
+    if dry_run:
+        console.print("\n[yellow]Dry run - no changes made[/yellow]")
+        return
+
+    # Confirm unless --yes
+    if not yes:
+        console.print(
+            f"\n[bold red]WARNING:[/bold red] This will permanently remove {total_items} items from '{display_name}'."
+        )
+        confirmed = typer.confirm("Continue?")
+        if not confirmed:
+            console.print("Aborted.")
+            raise typer.Exit(code=1)
+
+    # Execute reset
+    console.print(f"\nResetting '{display_name}'...")
+    result = execute_reset(hostname, targets)
+
+    if result.success:
+        console.print("[green]Reset complete![/green]")
+        console.print(f"  Users removed: {result.removed['users']}")
+        console.print(f"  Services removed: {result.removed['services']}")
+        console.print(f"  Paths cleaned: {result.removed['paths']}")
+
+        # Clear claws from host record
+        def clear_claws(h: dict) -> dict:
+            h["claws"] = {}
+            return h
+
+        update_host(hostname, clear_claws)
+
+        # Optionally untrack
+        if untrack:
+            console.print(f"\nUntracking '{display_name}'...")
+            remove_host(hostname)
+            console.print("[green]Host removed from tracking.[/green]")
+    else:
+        console.print("[red]Reset failed![/red]")
+        for error in result.errors:
+            console.print(f"  - {error}")
         raise typer.Exit(code=1)
