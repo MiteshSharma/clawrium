@@ -29,3 +29,36 @@
         owner: "opc-{{ inventory_hostname }}"
         group: "opc-{{ inventory_hostname }}"
         mode: "0700"
+
+    - name: Create systemd service file
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/openclaw-opc-{{ inventory_hostname }}.service"
+        content: |
+          [Unit]
+          Description=OpenClaw AI Assistant (opc-{{ inventory_hostname }})
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=opc-{{ inventory_hostname }}
+          WorkingDirectory=/home/opc-{{ inventory_hostname }}/openclaw
+          ExecStart=/usr/bin/npm start
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Enable and start openclaw service
+      ansible.builtin.systemd:
+        name: "openclaw-opc-{{ inventory_hostname }}"
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes

@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: unknown
-stopped_at: Completed 05-02-PLAN.md
-last_updated: "2026-03-22T21:26:17.610Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-03-22T22:44:02.664Z"
 last_activity: 2026-03-22
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 16
-  completed_plans: 16
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 19
+  completed_plans: 19
 ---
 
 # Project State
@@ -20,11 +20,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-20)
 
 **Core value:** Users can manage all their AI assistants from one place with consistent configuration and security practices.
-**Current focus:** Phase 05 — secrets-management
+**Current focus:** Phase 06 — make-secrets-specific-to-installed-claws-not-global
 
 ## Current Position
 
-Phase: 05
+Phase: 06
 Plan: Not started
 
 ## Performance Metrics
@@ -57,6 +57,9 @@ Plan: Not started
 | Phase 04-installation-fleet-status P04 | 128 | 1 tasks | 3 files |
 | Phase 05 P01 | 189 | 2 tasks | 4 files |
 | Phase 05 P02 | 209 | 2 tasks | 3 files |
+| Phase 06-make-secrets-specific-to-installed-claws-not-global P01 | 427 | 1 tasks | 4 files |
+| Phase 06 P03 | 336 | 2 tasks | 4 files |
+| Phase 06 P02 | 411 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -94,6 +97,12 @@ Recent decisions affecting current work:
 - [Phase 05]: Use same locking and atomic write patterns as hosts.py for consistency
 - [Phase 05]: Secrets stored as dict[str, SecretEntry] for O(1) key lookup
 - [Phase 05]: Named CLI functions set_cmd/list_cmd/remove_cmd to avoid shadowing Python builtins
+- [Phase 06-make-secrets-specific-to-installed-claws-not-global]: Nested JSON structure for per-instance secrets: {instance_key: {secret_key: SecretEntry}}
+- [Phase 06-make-secrets-specific-to-installed-claws-not-global]: Instance key format: host:claw_type:claw_name (colon-separated)
+- [Phase 06-make-secrets-specific-to-installed-claws-not-global]: Legacy __global__ namespace for backward compatibility with Phase 05 CLI commands
+- [Phase 06-03]: DEGRADED status added to ClawStatus enum for running claws with missing required secrets
+- [Phase 06-03]: Degraded state displayed in yellow to indicate warning (not critical failure)
+- [Phase 06-02]: CLI commands now require claw_name as first positional argument for per-instance scoping
 
 ### Pending Todos
 
@@ -112,8 +121,12 @@ None yet.
 | 260321-jld | Fix hardware detection ansible-runner issue #3 | 2026-03-21 | fe4561d | [260321-jld-fix-hardware-detection-ansible-runner-ne](./quick/260321-jld-fix-hardware-detection-ansible-runner-ne/) |
 | 260321-jux | ATX review fixes: SSH key validation, test coverage, GPU detection | 2026-03-21 | 397640b | [260321-jux-atx-review-fixes-ssh-key-validation-test](./quick/260321-jux-atx-review-fixes-ssh-key-validation-test/) |
 
+### Roadmap Evolution
+
+- Phase 6 added: make secrets specific to installed claws, not global
+
 ## Session Continuity
 
 Last activity: 2026-03-22
-Stopped at: Completed 05-02-PLAN.md
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None

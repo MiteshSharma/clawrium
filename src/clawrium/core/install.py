@@ -38,6 +38,10 @@ from clawrium.core.registry import (
     load_manifest,
     ManifestNotFoundError,
 )
+from clawrium.core.secrets import (
+    get_instance_key,
+    get_instance_secrets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +185,17 @@ def run_installation(
     # Step 6: Build inventory with extra vars for playbook
     matched_entry = compat["matched_entry"]
     claw_sha256 = matched_entry.get("sha256", "")
+
+    # Load secrets for this claw instance
+    instance_key = get_instance_key(host["hostname"], claw_name, claw_user)
+    instance_secrets = get_instance_secrets(instance_key)
+
+    # Map secret keys to ansible vars (uppercase SECRET_KEY -> lowercase secret_key)
+    secret_vars = {}
+    for key, entry in instance_secrets.items():
+        ansible_var_name = key.lower()
+        secret_vars[ansible_var_name] = entry.get("value", "")
+
     inventory = {
         "all": {
             "hosts": {
@@ -194,6 +209,7 @@ def run_installation(
                 "claw_user": claw_user,
                 "claw_version": f"v{matched_version}",
                 "claw_sha256": claw_sha256,
+                **secret_vars,  # Inject secrets as ansible vars
             }
         }
     }

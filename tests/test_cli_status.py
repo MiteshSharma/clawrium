@@ -76,6 +76,7 @@ def test_status_shows_claw_table(mock_hosts_with_claws):
         "status": ClawStatus.RUNNING,
         "user": "opc-server1",
         "error": None,
+        "missing_secrets": None,
     })
 
     with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
@@ -96,6 +97,7 @@ def test_status_shows_running_status(mock_hosts_with_claws):
         "status": ClawStatus.RUNNING,
         "user": "opc-server1",
         "error": None,
+        "missing_secrets": None,
     })
 
     with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
@@ -113,6 +115,7 @@ def test_status_shows_stopped_status(mock_hosts_with_claws):
         "status": ClawStatus.STOPPED,
         "user": "opc-server1",
         "error": None,
+        "missing_secrets": None,
     })
 
     with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
@@ -130,6 +133,7 @@ def test_status_host_filter(mock_hosts_with_claws):
         "status": ClawStatus.RUNNING,
         "user": "opc-server1",
         "error": None,
+        "missing_secrets": None,
     })
 
     with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
@@ -173,6 +177,7 @@ def test_status_shows_failed_install():
         "status": ClawStatus.STOPPED,
         "user": "opc-server1",
         "error": None,
+        "missing_secrets": None,
     })
 
     with patch("clawrium.cli.status.load_hosts", return_value=hosts):
@@ -214,3 +219,47 @@ def test_status_hosts_file_corrupted():
 
     assert result.exit_code == 1
     assert "corrupted" in result.output.lower() or "error" in result.output.lower()
+
+
+def test_status_shows_degraded_with_missing_secrets(mock_hosts_with_claws):
+    """Degraded status shows missing secret keys."""
+    mock_health = MagicMock(return_value={
+        "claw": "openclaw",
+        "host": "192.168.1.100",
+        "status": ClawStatus.DEGRADED,
+        "user": "opc-server1",
+        "error": None,
+        "missing_secrets": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+    })
+
+    with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "degraded" in result.output
+    assert "OPENAI_API_KEY" in result.output
+    assert "ANTHROPIC_API_KEY" in result.output
+
+
+def test_status_degraded_truncates_long_list(mock_hosts_with_claws):
+    """Degraded status truncates when more than 3 missing secrets."""
+    mock_health = MagicMock(return_value={
+        "claw": "openclaw",
+        "host": "192.168.1.100",
+        "status": ClawStatus.DEGRADED,
+        "user": "opc-server1",
+        "error": None,
+        "missing_secrets": ["KEY1", "KEY2", "KEY3", "KEY4", "KEY5"],
+    })
+
+    with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "degraded" in result.output
+    assert "KEY1" in result.output
+    assert "KEY2" in result.output
+    assert "KEY3" in result.output
+    assert "+2 more" in result.output
