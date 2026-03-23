@@ -244,10 +244,13 @@ def get_instance_key(host: str, claw_type: str, claw_name: str) -> str:
 def get_installed_claw(claw_name: str) -> tuple[str, str, str]:
     """Get installed claw details from hosts registry.
 
-    Searches all hosts for a claw with matching name.
+    Searches all hosts for a claw with matching name. Searches by:
+    1. The "name" field
+    2. The "user" field (claw system user)
+    3. The claw_type key itself (e.g., "zeroclaw")
 
     Args:
-        claw_name: Name of the claw instance (e.g., "opc-work").
+        claw_name: Name of the claw instance (e.g., "opc-work", "zc-kevin", "zeroclaw").
 
     Returns:
         Tuple of (hostname, claw_type, claw_name).
@@ -262,8 +265,13 @@ def get_installed_claw(claw_name: str) -> tuple[str, str, str]:
         hostname = host.get("hostname", "")
         claws = host.get("claws", {})
         for claw_type, claw_data in claws.items():
-            if claw_data.get("name") == claw_name:
-                return (hostname, claw_type, claw_name)
+            # Check name field, user field, or claw_type
+            name = claw_data.get("name")
+            user = claw_data.get("user")
+            if claw_name in (name, user, claw_type):
+                # Return the canonical name (name > user > claw_type)
+                canonical_name = name or user or claw_type
+                return (hostname, claw_type, canonical_name)
 
     raise ClawNotFoundError(
         f"Claw '{claw_name}' not found. Only installed claws can have secrets."

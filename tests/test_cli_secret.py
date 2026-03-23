@@ -132,9 +132,85 @@ def test_secret_set_empty_value_rejected(hosts_with_installed_claw: Path):
     assert "cannot be empty" in result.output.lower()
 
 
+def test_secret_set_invalid_key_format(hosts_with_installed_claw: Path):
+    """clm secret set with invalid key format shows error and hint."""
+    # Test lowercase key
+    with patch("clawrium.cli.secret.getpass.getpass", return_value="value"):
+        result = runner.invoke(app, ["secret", "set", "work", "lowercase_key"], env=os.environ)
+    assert result.exit_code == 1
+    assert "hint" in result.output.lower()
+
+    # Test digit-start key
+    with patch("clawrium.cli.secret.getpass.getpass", return_value="value"):
+        result = runner.invoke(app, ["secret", "set", "work", "1KEY"], env=os.environ)
+    assert result.exit_code == 1
+    assert "hint" in result.output.lower()
+
+    # Test special-char key
+    with patch("clawrium.cli.secret.getpass.getpass", return_value="value"):
+        result = runner.invoke(app, ["secret", "set", "work", "KEY:BAD"], env=os.environ)
+    assert result.exit_code == 1
+    assert "hint" in result.output.lower()
+
+
+def test_secret_set_keyboard_interrupt(hosts_with_installed_claw: Path):
+    """clm secret set handles Ctrl-C during password input."""
+    with patch("clawrium.cli.secret.getpass.getpass", side_effect=KeyboardInterrupt):
+        result = runner.invoke(app, ["secret", "set", "work", "TEST_KEY"], env=os.environ)
+
+    assert result.exit_code == 1
+    assert "cancelled" in result.output.lower()
+
+
+def test_secret_set_eof_error(hosts_with_installed_claw: Path):
+    """clm secret set handles EOF during password input."""
+    with patch("clawrium.cli.secret.getpass.getpass", side_effect=EOFError):
+        result = runner.invoke(app, ["secret", "set", "work", "TEST_KEY"], env=os.environ)
+
+    assert result.exit_code == 1
+    assert "cancelled" in result.output.lower()
+
+
+def test_secret_set_corrupted_secrets_file(hosts_with_installed_claw: Path):
+    """clm secret set with corrupted secrets.json shows error."""
+    # Create corrupted secrets file
+    secrets_file = hosts_with_installed_claw / "secrets.json"
+    secrets_file.write_text("{invalid json")
+
+    with patch("clawrium.cli.secret.getpass.getpass", return_value="value"):
+        result = runner.invoke(app, ["secret", "set", "work", "TEST_KEY"], env=os.environ)
+
+    assert result.exit_code == 1
+    assert "error" in result.output.lower()
+
+
+def test_secret_list_corrupted_secrets_file(hosts_with_installed_claw: Path):
+    """clm secret list with corrupted secrets.json shows error."""
+    # Create corrupted secrets file
+    secrets_file = hosts_with_installed_claw / "secrets.json"
+    secrets_file.write_text("{invalid json")
+
+    result = runner.invoke(app, ["secret", "list", "work"], env=os.environ)
+
+    assert result.exit_code == 1
+    assert "error" in result.output.lower()
+
+
+def test_secret_remove_corrupted_secrets_file(hosts_with_installed_claw: Path):
+    """clm secret remove with corrupted secrets.json shows error."""
+    # Create corrupted secrets file
+    secrets_file = hosts_with_installed_claw / "secrets.json"
+    secrets_file.write_text("{invalid json")
+
+    result = runner.invoke(app, ["secret", "remove", "work", "KEY", "--force"], env=os.environ)
+
+    assert result.exit_code == 1
+    assert "error" in result.output.lower()
+
+
 def test_secret_list_empty(hosts_with_installed_claw: Path):
     """clm secret list with no secrets shows appropriate message."""
-    result = runner.invoke(app, ["secret", "list"], env=os.environ)
+    result = runner.invoke(app, ["secret", "list", "work"], env=os.environ)
 
     assert result.exit_code == 0
     # Should show claw with "No secrets set"
@@ -158,7 +234,7 @@ def test_secret_list_shows_keys_not_values(hosts_with_installed_claw: Path):
             env=os.environ,
         )
 
-    result = runner.invoke(app, ["secret", "list"], env=os.environ)
+    result = runner.invoke(app, ["secret", "list", "work"], env=os.environ)
 
     assert result.exit_code == 0
     # Should show keys
@@ -174,7 +250,7 @@ def test_secret_list_shows_keys_not_values(hosts_with_installed_claw: Path):
 
 def test_secret_list_shows_missing_required_secrets(hosts_with_installed_claw: Path):
     """clm secret list shows missing required secrets per claw instance."""
-    result = runner.invoke(app, ["secret", "list"], env=os.environ)
+    result = runner.invoke(app, ["secret", "list", "work"], env=os.environ)
 
     assert result.exit_code == 0
     # Should show claw and missing secrets
@@ -189,7 +265,7 @@ def test_secret_list_no_missing_when_all_set(hosts_with_installed_claw: Path):
     with patch("clawrium.cli.secret.getpass.getpass", return_value="sk-test"):
         runner.invoke(app, ["secret", "set", "work", "OPENAI_API_KEY"], env=os.environ)
 
-    result = runner.invoke(app, ["secret", "list"], env=os.environ)
+    result = runner.invoke(app, ["secret", "list", "work"], env=os.environ)
 
     assert result.exit_code == 0
     # Should show the stored secret
@@ -357,8 +433,8 @@ def test_secret_set_with_claw_update_confirmed(isolated_config: Path):
     assert secrets[instance_key]["API_KEY"]["value"] == "new-value"
 
 
-def test_secret_list_grouped_by_claw(isolated_config: Path):
-    """clm secret list shows secrets grouped by claw instance."""
+def test_secret_list_per_claw(isolated_config: Path):
+    """clm secret list <claw_name> shows secrets for that specific claw."""
     _create_hosts_json(isolated_config, [
         {
             "hostname": "wolf",
@@ -391,17 +467,16 @@ def test_secret_list_grouped_by_claw(isolated_config: Path):
     with patch("clawrium.cli.secret.getpass.getpass", return_value="personal-key"):
         runner.invoke(app, ["secret", "set", "opc-personal", "OPENAI_API_KEY"], env=os.environ)
 
-    result = runner.invoke(app, ["secret", "list"], env=os.environ)
+    # List secrets for opc-work only
+    result = runner.invoke(app, ["secret", "list", "opc-work"], env=os.environ)
 
     assert result.exit_code == 0
-    # Should show both claw names
     assert "opc-work" in result.output
-    assert "opc-personal" in result.output
-    # Should show host names
     assert "wolf" in result.output
-    assert "bear" in result.output
-    # Should show secrets
     assert "OPENAI_API_KEY" in result.output
+    # Should NOT show the other claw
+    assert "opc-personal" not in result.output
+    assert "bear" not in result.output
 
 
 def test_secret_list_shows_missing_required(isolated_config: Path):
@@ -420,7 +495,7 @@ def test_secret_list_shows_missing_required(isolated_config: Path):
         }
     ])
 
-    result = runner.invoke(app, ["secret", "list"], env=os.environ)
+    result = runner.invoke(app, ["secret", "list", "opc-work"], env=os.environ)
 
     assert result.exit_code == 0
     # Should show claw
@@ -430,18 +505,18 @@ def test_secret_list_shows_missing_required(isolated_config: Path):
     assert "OPENAI_API_KEY" in result.output
 
 
-def test_secret_list_no_claws_installed(isolated_config: Path):
-    """clm secret list with no claws shows appropriate message."""
+def test_secret_list_claw_not_found(isolated_config: Path):
+    """clm secret list with non-existent claw shows error."""
     isolated_config.mkdir(parents=True, exist_ok=True)
 
     # Create empty hosts file
     hosts_file = isolated_config / "hosts.json"
     hosts_file.write_text("[]")
 
-    result = runner.invoke(app, ["secret", "list"], env=os.environ)
+    result = runner.invoke(app, ["secret", "list", "nonexistent"], env=os.environ)
 
-    assert result.exit_code == 0
-    assert "no claws" in result.output.lower()
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower() or "error" in result.output.lower()
 
 
 def test_secret_remove_with_claw(isolated_config: Path):

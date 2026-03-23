@@ -21,9 +21,6 @@ from clawrium.core.secrets import (
 from clawrium.core.registry import (
     get_required_secrets,
 )
-from clawrium.core.hosts import (
-    load_hosts,
-)
 
 __all__ = ["secret_app"]
 
@@ -59,7 +56,11 @@ def set_cmd(
     instance_key = get_instance_key(hostname, claw_type, name)
 
     # Check if secret already exists for this instance
-    instance_secrets = get_instance_secrets(instance_key)
+    try:
+        instance_secrets = get_instance_secrets(instance_key)
+    except SecretsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
     existing = instance_secrets.get(key)
     if existing and not yes:
         console.print(f"[yellow]Secret '{key}' already exists for '{claw_name}'[/yellow]")
@@ -95,86 +96,74 @@ def set_cmd(
 
 
 @secret_app.command(name="list")
-def list_cmd() -> None:
-    """List secrets grouped by claw instance.
+def list_cmd(
+    claw_name: str = typer.Argument(..., help="Claw name (e.g., zc-kevin)"),
+) -> None:
+    """List secrets for a claw instance.
 
-    Shows secret keys and metadata per claw. Values are never displayed.
-    Also shows missing required secrets per claw instance.
+    Shows secret keys and metadata. Values are never displayed.
+    Also shows missing required secrets.
     """
+    # Validate claw exists
+    try:
+        hostname, claw_type, name = get_installed_claw(claw_name)
+    except ClawNotFoundError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    instance_key = get_instance_key(hostname, claw_type, name)
+
     try:
         secrets = load_secrets()
     except SecretsFileCorruptedError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
-    # Load all hosts and their installed claws
-    hosts = load_hosts()
+    # Get secrets for this instance
+    instance_secrets = secrets.get(instance_key, {})
 
-    # Check if any claws are installed
-    has_claws = False
-    for host in hosts:
-        if host.get("claws"):
-            has_claws = True
-            break
+    # Get required secrets for this claw type
+    required_secrets = get_required_secrets(claw_type)
+    required_keys = {s["key"] for s in required_secrets}
+    stored_keys = set(instance_secrets.keys())
+    missing_keys = required_keys - stored_keys
 
-    if not has_claws:
-        console.print("No claws installed. Run 'clm install' first.")
-        return
+    # Display claw header
+    console.print(f"\n[bold]Claw:[/bold] {name} ({hostname})")
 
-    # Display secrets grouped by claw instance
-    for host in hosts:
-        hostname = host.get("hostname", "")
-        claws = host.get("claws", {})
+    # Display stored secrets if any
+    if instance_secrets:
+        table = Table(show_header=True, box=None)
+        table.add_column("Key", style="cyan")
+        table.add_column("Description")
+        table.add_column("Updated", style="dim")
 
-        for claw_type, claw_data in claws.items():
-            claw_name = claw_data.get("name", "")
-            instance_key = get_instance_key(hostname, claw_type, claw_name)
+        for key in sorted(instance_secrets.keys()):
+            entry = instance_secrets[key]
+            # Format updated_at as date only for readability
+            updated = entry.get("updated_at", "")
+            if updated:
+                updated = updated.split("T")[0]  # Extract date portion
+            table.add_row(
+                key,
+                entry.get("description") or "-",
+                updated,
+            )
 
-            # Get secrets for this instance
-            instance_secrets = secrets.get(instance_key, {})
+        console.print(table)
+    else:
+        console.print("  No secrets set")
 
-            # Get required secrets for this claw type
-            required_secrets = get_required_secrets(claw_type)
-            required_keys = {s["key"] for s in required_secrets}
-            stored_keys = set(instance_secrets.keys())
-            missing_keys = required_keys - stored_keys
-
-            # Display claw header
-            console.print(f"\n[bold]Claw:[/bold] {claw_name} ({hostname})")
-
-            # Display stored secrets if any
-            if instance_secrets:
-                table = Table(show_header=True, box=None)
-                table.add_column("Key", style="cyan")
-                table.add_column("Description")
-                table.add_column("Updated", style="dim")
-
-                for key in sorted(instance_secrets.keys()):
-                    entry = instance_secrets[key]
-                    # Format updated_at as date only for readability
-                    updated = entry.get("updated_at", "")
-                    if updated:
-                        updated = updated.split("T")[0]  # Extract date portion
-                    table.add_row(
-                        key,
-                        entry.get("description") or "-",
-                        updated,
-                    )
-
-                console.print(table)
-            else:
-                console.print("  No secrets set")
-
-            # Display missing required secrets
-            if missing_keys:
-                console.print("  [yellow]Missing:[/yellow]", end="")
-                for secret_def in required_secrets:
-                    if secret_def["key"] in missing_keys:
-                        desc = secret_def.get("description", "")
-                        console.print(f" {secret_def['key']}", end="")
-                        if desc:
-                            console.print(f" ({desc})", end="")
-                console.print()  # New line
+    # Display missing required secrets
+    if missing_keys:
+        console.print("  [yellow]Missing:[/yellow]", end="")
+        for secret_def in required_secrets:
+            if secret_def["key"] in missing_keys:
+                desc = secret_def.get("description", "")
+                console.print(f" {secret_def['key']}", end="")
+                if desc:
+                    console.print(f" ({desc})", end="")
+        console.print()  # New line
 
 
 @secret_app.command(name="remove")
@@ -197,7 +186,11 @@ def remove_cmd(
     instance_key = get_instance_key(hostname, claw_type, name)
 
     # Check if secret exists for this instance
-    instance_secrets = get_instance_secrets(instance_key)
+    try:
+        instance_secrets = get_instance_secrets(instance_key)
+    except SecretsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
     if key not in instance_secrets:
         console.print(f"[red]Error:[/red] Secret '{key}' not found for '{claw_name}'")
         raise typer.Exit(code=1)
