@@ -1,0 +1,44 @@
+---
+# Reset playbook: Remove all users, claw services, and config paths from host
+# Preserves: xclm user, system users (uid < 1000), SSH host keys, network config
+#
+# Required variables (passed via extra_vars):
+#   - services_to_remove: List of service names to stop and remove
+#   - users_to_remove: List of usernames to remove (uid >= 1000)
+#   - paths_to_clean: List of directory paths to remove
+
+- hosts: all
+  become: yes
+  tasks:
+    - name: Stop and disable claw services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      loop: "{{ services_to_remove | default([]) }}"
+      ignore_errors: yes
+
+    - name: Remove service files
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ item }}"
+        state: absent
+      loop: "{{ services_to_remove | default([]) }}"
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Remove users and home directories
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+        remove: yes
+        force: yes
+      loop: "{{ users_to_remove | default([]) }}"
+      when: item != 'xclm'
+
+    - name: Clean paths
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ paths_to_clean | default([]) }}"
