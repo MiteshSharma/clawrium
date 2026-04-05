@@ -44,6 +44,28 @@ make format     # Format code
 make test-cov   # Run tests with coverage
 ```
 
+## Development Workflow
+
+GitHub Issues are the single source of truth. See [CONTRIBUTING.md](CONTRIBUTING.md) for full workflow documentation.
+
+### Quick Reference
+
+```
+New Issue → /clm:triage → /clm:plan → /clm:execute → /clm:verify → /clm:review-pr → Merge
+```
+
+### Skills
+
+| Skill | Purpose |
+|-------|---------|
+| `/clm:bug-new` | Create bug issue (asks for customer outcome) |
+| `/clm:issue-new` | Create feature issue (asks for customer outcome) |
+| `/clm:triage` | Review unlabeled issues |
+| `/clm:plan <n>` | Create implementation plan |
+| `/clm:execute <n>` | Execute issue (parent or subtask) |
+| `/clm:verify` | Run tests and lint |
+| `/clm:review-pr [n]` | ATX review of PR |
+
 ## Review
 
 When @atx-ci provides a review, the caller MUST fix all issues and iterate until:
