@@ -1,0 +1,73 @@
+name: Documentation
+description: Report missing, incorrect, or unclear documentation
+title: "[DOCS] "
+labels:
+  - documentation
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve our documentation. Clear docs help everyone.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight Checklist
+      options:
+        - label: I have searched existing issues for similar documentation requests
+          required: true
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: Documentation Type
+      options:
+        - Missing documentation
+        - Incorrect information
+        - Unclear explanation
+        - Outdated content
+        - Typo/grammar
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: Where is the documentation issue? (URL, file path, or section name)
+      placeholder: "README.md, Installation section"
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current State
+      description: What does the documentation currently say (or not say)?
+      placeholder: |
+        The Installation section says to run `pip install clawrium` but this doesn't work...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should it say?
+      description: Suggest the correction or addition
+      placeholder: |
+        Should explain that uv is required:
+        ```
+        uv pip install clawrium
+        ```
+        Or mention that clawrium isn't on PyPI yet and must be installed from source.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context or screenshots
+    validations:
+      required: false

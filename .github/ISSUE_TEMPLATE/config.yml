@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Contributing Guide
+    url: https://github.com/ric03uec/clawrium/blob/main/CONTRIBUTING.md
+    about: Read the contributing guidelines before submitting
+  - name: Documentation
+    url: https://github.com/ric03uec/clawrium#readme
+    about: Check the README for setup and usage instructions

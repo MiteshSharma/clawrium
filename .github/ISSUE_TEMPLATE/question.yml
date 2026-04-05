@@ -1,0 +1,54 @@
+name: Question
+description: Ask a question about using clawrium
+title: "[QUESTION] "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have a question about using clawrium? We're happy to help.
+
+        Before asking:
+        - Check the [README](https://github.com/ric03uec/clawrium#readme) for basic usage
+        - Check the [Contributing Guide](https://github.com/ric03uec/clawrium/blob/main/CONTRIBUTING.md) for development questions
+        - Search [existing issues](https://github.com/ric03uec/clawrium/issues?q=is%3Aissue+label%3Aquestion) for similar questions
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight Checklist
+      options:
+        - label: I have checked the documentation
+          required: true
+        - label: I have searched existing issues for similar questions
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know?
+      placeholder: |
+        How do I configure clawrium to use a custom SSH key for remote hosts?
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What are you trying to accomplish? What have you tried?
+      placeholder: |
+        I'm trying to connect to a host that requires a specific SSH key, but I don't
+        see an option in `clm host add`. I tried setting SSH_KEY env var but it didn't work...
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Information
+      description: Any relevant configuration, logs, or environment details
+    validations:
+      required: false

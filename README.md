@@ -75,6 +75,10 @@ clm host remove <name>
 clm host status [name]
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, workflow, and guidelines.
+
 ## License
 
 Apache 2.0
