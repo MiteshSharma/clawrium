@@ -275,7 +275,7 @@ tmux attach -t clm/exec
 ### Worktree Layout
 
 ```
-~/workspace/ric03uec/
+~/projects/
 ├── clawrium/                  # Main repo (you are here)
 ├── clawrium-issue-35/         # Worktree for issue 35
 ├── clawrium-issue-42/         # Worktree for issue 42

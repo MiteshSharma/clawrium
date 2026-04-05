@@ -20,9 +20,9 @@ Triggered by `in a subtree` or `--worktree` in arguments. Enables working on mul
 
 Example:
 ```
-~/workspace/ric03uec/clawrium/           # Main repo
-~/workspace/ric03uec/clawrium-issue-35/  # Worktree for issue 35
-~/workspace/ric03uec/clawrium-issue-42/  # Worktree for issue 42
+~/projects/clawrium/           # Main repo
+~/projects/clawrium-issue-35/  # Worktree for issue 35
+~/projects/clawrium-issue-42/  # Worktree for issue 42
 ```
 
 ### Worktree Execution Steps
