@@ -1,3 +1,8 @@
+---
+description: Complete CLI reference for the clm command. Root commands and command groups for managing your AI claw fleet.
+keywords: [CLI, reference, commands, clm, usage, options]
+---
+
 # CLI Reference
 
 Clawrium provides the `clm` command-line interface for managing your AI claw fleet.

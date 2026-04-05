@@ -1,6 +1,8 @@
 ---
 sidebar_position: 1
 slug: /
+description: Clawrium is a CLI tool for managing AI assistant fleets on local networks. Deploy and manage multiple claw instances across hosts from a single command center.
+keywords: [clawrium, AI assistant, fleet management, CLI tool, multi-host, zeroclaw, openclaw]
 ---
 
 # Introduction

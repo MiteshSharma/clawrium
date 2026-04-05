@@ -1,5 +1,7 @@
 ---
 sidebar_position: 2
+description: Install Clawrium CLI on your management machine. Requirements, installation methods, and initial setup.
+keywords: [install, setup, requirements, uvx, pip, python]
 ---
 
 # Installation

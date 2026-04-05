@@ -1,5 +1,7 @@
 ---
 sidebar_position: 1
+description: Deploy your first AI assistant claw in under 10 minutes with this step-by-step quickstart guide.
+keywords: [quickstart, tutorial, first claw, deploy, get started]
 ---
 
 # Quickstart

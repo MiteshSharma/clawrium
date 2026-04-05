@@ -1,5 +1,7 @@
 ---
 sidebar_position: 2
+description: Prepare hosts for Clawrium management. Automatic and manual setup options for the xclm management user.
+keywords: [host setup, xclm, SSH, configuration, prepare host]
 ---
 
 # Host Setup

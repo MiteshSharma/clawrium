@@ -1,5 +1,7 @@
 ---
 sidebar_position: 3
+description: Manage secrets and API keys for claw instances securely with Clawrium's secret management commands.
+keywords: [secrets, API keys, credentials, encryption, security]
 ---
 
 # Secret Management

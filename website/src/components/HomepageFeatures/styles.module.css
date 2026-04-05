@@ -1,12 +1,31 @@
 .features {
   display: flex;
   align-items: center;
-  padding: 2rem 0;
+  padding: 4rem 0;
   width: 100%;
 }
 
 .featureIcon {
-  font-size: 4rem;
-  display: block;
-  margin-bottom: 1rem;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 1.5rem;
+  color: var(--ifm-color-primary);
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.featureIcon:hover {
+  transform: scale(1.1);
+  color: var(--ifm-color-primary-light);
+}
+
+@media screen and (max-width: 996px) {
+  .features {
+    padding: 2rem 0;
+  }
+  
+  .featureIcon {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 1rem;
+  }
 }
