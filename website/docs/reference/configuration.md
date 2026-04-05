@@ -1,3 +1,8 @@
+---
+description: Clawrium configuration directory structure, file formats, and security considerations.
+keywords: [configuration, hosts.yml, secrets.yml, SSH keys, XDG, settings]
+---
+
 # Configuration
 
 Clawrium stores all configuration in a local directory that respects the XDG Base Directory specification.

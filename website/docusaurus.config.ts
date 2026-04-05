@@ -21,6 +21,7 @@ const config: Config = {
   onBrokenLinks: 'throw',
 
   markdown: {
+    mermaid: true,
     hooks: {
       onBrokenMarkdownLinks: 'warn',
     },
@@ -46,6 +47,8 @@ const config: Config = {
       } satisfies Preset.Options,
     ],
   ],
+
+  themes: ['@docusaurus/theme-mermaid'],
 
   themeConfig: {
     image: 'img/clawrium-logo.png',
@@ -125,6 +128,22 @@ const config: Config = {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
       additionalLanguages: ['bash', 'python', 'yaml'],
+    },
+    mermaid: {
+      theme: {
+        light: 'default',
+        dark: 'dark',
+      },
+      options: {
+        themeVariables: {
+          primaryColor: '#0891b2',
+          primaryTextColor: '#fff',
+          primaryBorderColor: '#06657c',
+          lineColor: '#0891b2',
+          secondaryColor: '#22d3ee',
+          tertiaryColor: '#f0fdfa',
+        },
+      },
     },
   } satisfies Preset.ThemeConfig,
 };

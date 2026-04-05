@@ -8,6 +8,11 @@
   text-align: center;
   position: relative;
   overflow: hidden;
+  background: linear-gradient(135deg, #06657c 0%, #0891b2 100%);
+}
+
+[data-theme='dark'] .heroBanner {
+  background: linear-gradient(135deg, #0c4a6e 0%, #0ec9e6 100%);
 }
 
 @media screen and (max-width: 996px) {
@@ -24,13 +29,15 @@
   max-width: 300px;
   height: auto;
   margin-bottom: 1.5rem;
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.2));
 }
 
 .heroDescription {
   max-width: 600px;
   margin: 1rem auto 2rem;
   font-size: 1.1rem;
-  opacity: 0.9;
+  opacity: 0.95;
+  line-height: 1.6;
 }
 
 .buttons {
