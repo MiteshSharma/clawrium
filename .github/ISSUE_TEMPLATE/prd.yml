@@ -1,0 +1,137 @@
+name: PRD (Product Requirements Document)
+description: Propose a larger initiative or project
+title: "[PRD] "
+labels:
+  - prd
+  - planning
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for larger initiatives that need planning and discussion before implementation.
+
+        PRDs should describe the problem, proposed solution, and success criteria clearly enough that any contributor can understand the scope.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight Checklist
+      options:
+        - label: I have searched existing issues and PRDs for similar proposals
+          required: true
+        - label: This is a single cohesive initiative (not multiple unrelated features)
+          required: true
+
+  - type: textarea
+    id: customer-outcome
+    attributes:
+      label: Customer Outcome
+      description: What will users be able to do when this is complete?
+      placeholder: "Users can manage claws across multiple networks from a single control plane"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem are we solving? Why does it matter?
+      placeholder: |
+        Currently, clawrium only supports hosts on the local network. Users with
+        multiple sites (home, office, cloud) must run separate clawrium instances...
+
+        This matters because:
+        - Increases operational overhead
+        - Makes unified monitoring impossible
+        - Complicates claw version management
+    validations:
+      required: true
+
+  - type: textarea
+    id: goals
+    attributes:
+      label: Goals
+      description: What are the specific objectives? What does success look like?
+      placeholder: |
+        - Support hosts across different networks via VPN/tunnel
+        - Unified dashboard for all hosts
+        - Single source of truth for claw configurations
+    validations:
+      required: true
+
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-Goals
+      description: What is explicitly out of scope?
+      placeholder: |
+        - Building our own VPN solution
+        - Real-time streaming of claw logs
+        - Multi-tenant support
+    validations:
+      required: false
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: High-level description of the approach
+      placeholder: |
+        Add a "remote host" type that connects via SSH tunnel:
+
+        1. User configures SSH access to remote host
+        2. Clawrium establishes tunnel on-demand
+        3. Ansible runs over the tunnel
+        4. Host appears in unified list alongside local hosts
+    validations:
+      required: true
+
+  - type: textarea
+    id: success-criteria
+    attributes:
+      label: Success Criteria
+      description: How will we know this is done and working?
+      placeholder: |
+        - [ ] Can add a host accessible only via SSH
+        - [ ] Can install/manage claws on remote host
+        - [ ] Status command shows all hosts (local and remote)
+        - [ ] Documentation updated with remote host setup
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and Open Questions
+      description: What could go wrong? What needs more investigation?
+      placeholder: |
+        Risks:
+        - SSH tunnel stability on poor connections
+        - Latency impact on Ansible operations
+
+        Open questions:
+        - Should we support multiple tunnel providers?
+        - How do we handle host key verification?
+    validations:
+      required: false
+
+  - type: textarea
+    id: milestones
+    attributes:
+      label: Milestones
+      description: How should this be broken down for implementation?
+      placeholder: |
+        1. SSH tunnel infrastructure (2 weeks)
+        2. Remote host type in CLI (1 week)
+        3. Ansible integration (1 week)
+        4. Testing and documentation (1 week)
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any diagrams, references, or prior art
+    validations:
+      required: false

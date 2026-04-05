@@ -1,0 +1,87 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[FEATURE] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting a feature. Please describe what you'd like to see.
+
+        Before submitting:
+        - Search [existing issues](https://github.com/ric03uec/clawrium/issues?q=is%3Aissue+label%3Aenhancement) to avoid duplicates
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight Checklist
+      options:
+        - label: I have searched existing issues and this hasn't been requested yet
+          required: true
+        - label: This is a single feature request (separate requests for different features)
+          required: true
+
+  - type: textarea
+    id: customer-outcome
+    attributes:
+      label: What should the user be able to do?
+      description: Describe the outcome from the user's perspective
+      placeholder: "User can backup claw configurations to a remote location"
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this solve? What's the current pain point?
+      placeholder: |
+        Currently, there's no way to backup claw configurations. If a host fails,
+        all configuration is lost and must be recreated manually...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How do you envision this working?
+      placeholder: |
+        Add a `clm backup` command that:
+        - Exports all claw configurations to a JSON file
+        - Optionally uploads to S3 or other storage
+        - Supports restore via `clm restore`
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What workarounds or alternatives have you tried?
+      placeholder: |
+        Currently I manually copy ~/.config/clawrium/ but this misses host-specific state...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this to your workflow?
+      options:
+        - Low - Nice to have
+        - Medium - Would improve my workflow
+        - High - Significant pain point
+        - Critical - Blocking my work
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, mockups, or examples
+    validations:
+      required: false
