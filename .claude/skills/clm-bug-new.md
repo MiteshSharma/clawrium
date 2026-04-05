@@ -15,24 +15,40 @@ Create a GitHub issue for a bug based on the current conversation context.
    - Steps that led to the issue
    - Environment details (Python version, OS, etc.)
 
-2. **Gather Information**:
-   - If the user provided a description argument, use it as the basis
-   - If not, summarize the bug from context
-   - Identify steps to reproduce if available
+2. **Ask for Customer Outcome**: Use `AskUserQuestion` to ask:
+   > "What should the user be able to do when this bug is fixed?"
 
-3. **Create Issue**: Use `gh issue create` with:
+   Example outcomes:
+   - "User can install claws without version mismatch errors"
+   - "User can add hosts with special characters in names"
+   - "User can run status command without timeout"
+
+3. **Form Issue Title**: Use the customer outcome as the issue title.
+   - Format: `<outcome>` (what the user can do after fix)
+   - Example: "User can install claws without version mismatch errors"
+   - The user can change this later if needed
+
+4. **Gather Details**:
+   - If the user provided a description argument, use it for context
+   - Identify steps to reproduce if available
+   - Note environment details
+
+5. **Create Issue**: Use `gh issue create` with:
    ```bash
    gh issue create \
-     --title "<clear, concise bug summary>" \
+     --title "<customer outcome from step 3>" \
      --label "bug" \
      --label "needs-triage" \
      --body "<structured bug report>"
    ```
 
-4. **Bug Report Body Format**:
+6. **Bug Report Body Format**:
    ```markdown
+   ## Customer Outcome
+   <The outcome statement - what user can do when fixed>
+
    ## Description
-   <What is happening>
+   <What is currently happening / the bug>
 
    ## Steps to Reproduce
    1. <step>
@@ -66,10 +82,12 @@ Create a GitHub issue for a bug based on the current conversation context.
    </details>
    ```
 
-5. **Return**: The issue URL and number
+7. **Return**: The issue URL and number
 
 ## Notes
 
+- Always ask for customer outcome before creating the issue
+- The outcome becomes the title - focus on what the user gains
 - Always add `needs-triage` label for new bugs
 - Include as much context as available from the conversation
 - If steps to reproduce are unclear, note that in the issue

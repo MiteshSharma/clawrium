@@ -15,20 +15,36 @@ Create a GitHub issue for a feature request or improvement.
    - Improvement suggestions
    - User pain points
 
-2. **Gather Information**:
-   - If the user provided a description argument, use it as the basis
-   - If not, summarize the feature/improvement from context
-   - Identify the problem being solved
+2. **Ask for Customer Outcome**: Use `AskUserQuestion` to ask:
+   > "What should the user be able to do when this is implemented?"
 
-3. **Create Issue**: Use `gh issue create` with:
+   Example outcomes:
+   - "User can deploy multiple claws in a single command"
+   - "User can see token usage across all agents"
+   - "User can backup claw configurations automatically"
+
+3. **Form Issue Title**: Use the customer outcome as the issue title.
+   - Format: `<outcome>` (what the user can do after implementation)
+   - Example: "User can deploy multiple claws in a single command"
+   - The user can change this later if needed
+
+4. **Gather Details**:
+   - If the user provided a description argument, use it for context
+   - Identify the problem being solved
+   - Note any constraints or preferences
+
+5. **Create Issue**: Use `gh issue create` with:
    ```bash
    gh issue create \
-     --title "<clear, actionable title>" \
+     --title "<customer outcome from step 3>" \
      --body "<structured issue>"
    ```
 
-4. **Issue Body Format**:
+6. **Issue Body Format**:
    ```markdown
+   ## Customer Outcome
+   <The outcome statement - what user can do when implemented>
+
    ## Summary
    <What is being proposed>
 
@@ -59,10 +75,12 @@ Create a GitHub issue for a feature request or improvement.
    </details>
    ```
 
-5. **Return**: The issue URL and number
+7. **Return**: The issue URL and number
 
 ## Notes
 
+- Always ask for customer outcome before creating the issue
+- The outcome becomes the title - focus on what the user gains
 - Do not add labels by default (let triage decide)
 - Focus on the problem/need, not just the solution
 - Include acceptance criteria when possible
