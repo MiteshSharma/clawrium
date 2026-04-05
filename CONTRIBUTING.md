@@ -81,13 +81,13 @@ In Claude Code, run `/help` to see available skills. You should see:
 ### Overview
 
 ```
-┌─────────┐    ┌──────────┐    ┌───────┐    ┌─────────────┐    ┌───────────┐    ┌──────┐
-│  INBOX  │───▶│ PLANNING │───▶│ READY │───▶│ IN PROGRESS │───▶│ IN REVIEW │───▶│ DONE │
-│(no label)    │(planning)│    │(ready)│    │(in-progress)│    │(in-review)│    │(closed)
-└─────────┘    └──────────┘    └───────┘    └─────────────┘    └───────────┘    └──────┘
-      │              │              │               │                 │
-      │              │              │               │                 │
-  /clm:triage   /clm:plan    /clm:execute    /clm:verify      PR merged
+┌─────────┐    ┌──────────┐    ┌─────────┐    ┌───────┐    ┌─────────────┐    ┌───────────┐    ┌──────┐
+│  INBOX  │───▶│ PLANNING │───▶│ PLANNED │───▶│ READY │───▶│ IN PROGRESS │───▶│ IN REVIEW │───▶│ DONE │
+│(no label)    │(planning)│    │(planned)│    │(ready)│    │(in-progress)│    │(in-review)│    │(closed)
+└─────────┘    └──────────┘    └─────────┘    └───────┘    └─────────────┘    └───────────┘    └──────┘
+      │              │               │              │               │                 │
+      │              │               │              │               │                 │
+   /clm:triage  /clm:plan-build  /clm:plan-scaffold  /clm:execute    /clm:verify    PR merged
 ```
 
 ### Step-by-Step Example
@@ -109,15 +109,28 @@ Result: Issue #42 created with title "User can install zeroclaw without version 
 #### 2. Plan the Work
 
 ```
-/clm:plan 42
+/clm:plan-build 42
 ```
 
 Claude:
 - Reads the issue
 - Explores the codebase
-- Posts implementation plan as comment
+- Posts high-level implementation plan as comment
 - Creates subtasks if needed
-- Moves issue: `planning` → `ready`
+- Moves issue: `planning` → `planned`
+
+#### 2b. Scaffold Execution (Optional but Recommended)
+
+```
+/clm:plan-scaffold 42
+```
+
+Claude:
+- Reads the plan-build output
+- Decides single-phase vs multi-phase execution
+- Creates entry/exit criteria for each phase
+- Creates subtask issues if multi-phase
+- Moves issue: `planned` → `ready`
 
 #### 3. Execute
 
@@ -164,7 +177,8 @@ After review passes and PR merges, issue closes automatically.
 | **INBOX** | (none) | New issues awaiting triage |
 | **NEEDS TRIAGE** | `needs-triage` | Bugs or issues needing clarification |
 | **PLANNING** | `planning` | Ready to be planned |
-| **READY** | `ready` | Plan complete, ready to execute |
+| **PLANNED** | `planned` | High-level plan complete, needs scaffolding |
+| **READY** | `ready` | Execution plan complete, ready to execute |
 | **IN PROGRESS** | `in-progress` | Currently being implemented |
 | **IN REVIEW** | `in-review` | PR open, awaiting review |
 | **DONE** | (closed) | Complete |
@@ -185,7 +199,8 @@ After review passes and PR merges, issue closes automatically.
 | Skill | When to Use |
 |-------|-------------|
 | `/clm:triage` | Review issues without workflow labels |
-| `/clm:plan 42` | Create implementation plan for issue |
+| `/clm:plan-build 42` | Create high-level implementation plan |
+| `/clm:plan-scaffold 42` | Create phased execution with entry/exit criteria |
 | `/clm:execute 42` | Start working on a ready issue |
 | `/clm:verify` | Before creating PR |
 | `/clm:review-pr` | Request code review |
