@@ -67,7 +67,7 @@ Trigger with: `/clm:execute 35 in a subtree` or `/clm:execute 35 --worktree`
 ### Quick Reference
 
 ```
-New Issue → /clm:triage → /clm:plan → /clm:execute → /clm:verify → /clm:review-pr → Merge
+New Issue → /clm:triage → /clm:plan-build → /clm:plan-scaffold → /clm:execute → /clm:verify → /clm:review-pr → Merge
 ```
 
 ### Skills
@@ -77,7 +77,8 @@ New Issue → /clm:triage → /clm:plan → /clm:execute → /clm:verify → /cl
 | `/clm:bug-new` | Create bug issue (asks for customer outcome) |
 | `/clm:issue-new` | Create feature issue (asks for customer outcome) |
 | `/clm:triage` | Review unlabeled issues |
-| `/clm:plan <n>` | Create implementation plan |
+| `/clm:plan-build <n>` | Create high-level implementation plan |
+| `/clm:plan-scaffold <n>` | Create phased execution with entry/exit criteria |
 | `/clm:execute <n>` | Execute issue (parent or subtask) |
 | `/clm:verify` | Run tests and lint |
 | `/clm:review-pr [n]` | ATX review of PR |

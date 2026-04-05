@@ -1,13 +1,13 @@
 ---
-name: clm:plan
-description: Create implementation plan for a GitHub issue
+name: clm:plan-build
+description: Create high-level implementation plan with product output and technical details
 argument-hint: "<issue-number>"
 ---
-name: clm:plan
+name: clm:plan-build
 
-# Implementation Planning
+# Implementation Planning (Build Phase)
 
-Create a detailed implementation plan for a GitHub issue.
+Create a high-level implementation plan for a GitHub issue with product output and technical details.
 
 ## Instructions
 
@@ -67,8 +67,8 @@ Create a detailed implementation plan for a GitHub issue.
    <details>
    <summary>Prompt Log</summary>
 
-   **Stage**: planning
-   **Skill**: /clm:plan
+**Stage**: planning
+    **Skill**: /clm:plan-build
    **Timestamp**: <ISO timestamp>
    **Model**: <model>
 
@@ -81,7 +81,7 @@ Create a detailed implementation plan for a GitHub issue.
 
 7. **Update Labels**:
    ```bash
-   gh issue edit <number> --remove-label "planning" --add-label "ready"
+   gh issue edit <number> --remove-label "planning" --add-label "planned"
    ```
 
 8. **Return**: Plan summary and any subtask issue numbers
