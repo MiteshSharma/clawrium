@@ -38,15 +38,15 @@ Example:
 
 2. **Launch Execution**:
 
-   **If tmux available** (autonomous execution):
+   **If tmux available** (interactive execution in background):
    ```bash
    # Create session if not exists
    tmux has-session -t "clm/exec" 2>/dev/null || tmux new-session -d -s "clm/exec"
 
-   # Create window and run claude autonomously
+   # Create window and run claude interactively (no -p flag so you can watch execution)
    tmux new-window -t "clm/exec" -n "issue-${NUMBER}" -c "${WORKTREE_PATH}"
    tmux send-keys -t "clm/exec:issue-${NUMBER}" \
-     "claude --dangerously-skip-permissions -p '/clm:execute ${NUMBER}'" Enter
+     "claude --dangerously-skip-permissions '/clm:execute ${NUMBER}'" Enter
 
    echo "Spawned in tmux 'clm/exec:issue-${NUMBER}'"
    echo "Attach: tmux attach -t clm/exec"
