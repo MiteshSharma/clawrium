@@ -166,12 +166,12 @@ def test_agent_remove_placeholder():
     assert "not implemented" in result.output.lower()
 
 
-def test_agent_start_placeholder():
-    """clm agent start shows not implemented message."""
+def test_agent_start_with_missing_host():
+    """clm agent start with missing host shows error."""
     result = runner.invoke(app, ["agent", "start", "opc-work"])
 
-    assert result.exit_code == 0
-    assert "not implemented" in result.output.lower()
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
 
 
 def test_agent_stop_placeholder():

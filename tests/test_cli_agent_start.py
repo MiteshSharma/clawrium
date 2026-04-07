@@ -1,0 +1,297 @@
+"""Tests for clm agent start command with onboarding guardrails."""
+
+import json
+from pathlib import Path
+
+from typer.testing import CliRunner
+
+from clawrium.cli.main import app
+
+runner = CliRunner()
+
+
+def create_host_with_claw(
+    config_dir: Path,
+    hostname: str = "192.168.1.100",
+    alias: str = "work",
+    key_id: str = "work",
+    claw_type: str = "opc",
+    onboarding_state: str = "pending",
+) -> None:
+    """Create a test host with a claw installed."""
+    hosts_file = config_dir / "hosts.json"
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    hosts_data = [
+        {
+            "hostname": hostname,
+            "key_id": key_id,
+            "port": 22,
+            "user": "xclm",
+            "alias": alias,
+            "auth_method": "key",
+            "hardware": {
+                "architecture": "x86_64",
+                "processor_cores": 4,
+                "memtotal_mb": 8192,
+                "os": "ubuntu",
+                "os_version": "24.04",
+                "distribution": "ubuntu",
+                "distribution_version": "24.04",
+                "gpu": {"present": False},
+            },
+            "metadata": {
+                "added_at": "2026-04-06T00:00:00Z",
+                "last_seen": "2026-04-06T00:00:00Z",
+                "tags": [],
+            },
+            "claws": {
+                claw_type: {
+                    "version": "0.1.0",
+                    "status": "installed",
+                    "name": "assistant",
+                    "user": f"{claw_type}-assistant",
+                    "onboarding": {
+                        "state": onboarding_state,
+                        "started_at": "2026-04-06T00:00:00+00:00",
+                        "stages": {
+                            "providers": {
+                                "status": "complete"
+                                if onboarding_state
+                                in ["identity", "channels", "validate", "ready"]
+                                else "pending",
+                                "completed_at": None,
+                                "provider_id": None,
+                            },
+                            "identity": {
+                                "status": "complete"
+                                if onboarding_state in ["channels", "validate", "ready"]
+                                else "pending",
+                                "completed_at": None,
+                            },
+                            "channels": {
+                                "status": "complete"
+                                if onboarding_state in ["validate", "ready"]
+                                else "pending",
+                                "completed_at": None,
+                            },
+                            "validate": {
+                                "status": "complete"
+                                if onboarding_state == "ready"
+                                else "pending",
+                                "completed_at": None,
+                            },
+                        },
+                    },
+                }
+            },
+        }
+    ]
+
+    hosts_file.write_text(json.dumps(hosts_data, indent=2))
+
+
+def test_start_ready_state_succeeds(isolated_config: Path):
+    """Start when state=READY succeeds."""
+    create_host_with_claw(isolated_config, onboarding_state="ready")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 0
+    assert "Starting agent" in result.output
+
+
+def test_start_pending_state_blocked(isolated_config: Path):
+    """Start when state=PENDING is blocked and shows configure hint."""
+    create_host_with_claw(isolated_config, onboarding_state="pending")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "Cannot start" in result.output
+    assert "onboarding not started" in result.output
+    assert "clm agent configure opc-work" in result.output
+
+
+def test_start_providers_state_blocked(isolated_config: Path):
+    """Start when state=PROVIDERS is blocked and shows incomplete stages."""
+    create_host_with_claw(isolated_config, onboarding_state="providers")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "Cannot start" in result.output
+    assert "onboarding incomplete" in result.output
+    assert "PROVIDERS" in result.output
+    assert "Incomplete stages" in result.output
+    assert "identity" in result.output
+    assert "channels" in result.output
+    assert "validate" in result.output
+
+
+def test_start_identity_state_blocked(isolated_config: Path):
+    """Start when state=IDENTITY (2/4) shows correct stage count."""
+    create_host_with_claw(isolated_config, onboarding_state="identity")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "Cannot start" in result.output
+    assert "IDENTITY (1/4)" in result.output or "IDENTITY" in result.output
+    assert "Incomplete stages" in result.output
+    assert "channels" in result.output
+    assert "validate" in result.output
+
+
+def test_start_channels_state_blocked(isolated_config: Path):
+    """Start when state=CHANNELS is blocked."""
+    create_host_with_claw(isolated_config, onboarding_state="channels")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "Cannot start" in result.output
+    assert "CHANNELS" in result.output
+    assert "Incomplete stages" in result.output
+    assert "validate" in result.output
+
+
+def test_start_validate_state_blocked(isolated_config: Path):
+    """Start when state=VALIDATE is blocked."""
+    create_host_with_claw(isolated_config, onboarding_state="validate")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "Cannot start" in result.output
+    assert "VALIDATE" in result.output
+
+
+def test_start_with_force_when_not_ready_succeeds(isolated_config: Path):
+    """Start with --force when not READY shows warning but succeeds."""
+    create_host_with_claw(isolated_config, onboarding_state="providers")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work", "--force"])
+
+    assert result.exit_code == 0
+    assert "Warning: Starting agent with incomplete onboarding" in result.output
+    assert "Starting agent" in result.output
+
+
+def test_start_invalid_claw_name_fails(isolated_config: Path):
+    """Start with invalid claw name format fails."""
+    create_host_with_claw(isolated_config)
+
+    result = runner.invoke(app, ["agent", "start", "invalid"])
+
+    assert result.exit_code == 1
+    assert "Invalid claw name format" in result.output
+
+
+def test_start_unknown_host_fails(isolated_config: Path):
+    """Start with unknown host fails."""
+    result = runner.invoke(app, ["agent", "start", "opc-unknown"])
+
+    assert result.exit_code == 1
+    assert "Host 'unknown' not found" in result.output
+
+
+def test_start_claw_not_installed_fails(isolated_config: Path):
+    """Start with claw not installed fails."""
+    hosts_file = isolated_config / "hosts.json"
+    isolated_config.mkdir(parents=True, exist_ok=True)
+
+    hosts_data = [
+        {
+            "hostname": "192.168.1.100",
+            "alias": "work",
+            "key_id": "work",
+            "port": 22,
+            "user": "xclm",
+            "auth_method": "key",
+            "hardware": {
+                "architecture": "x86_64",
+                "processor_cores": 4,
+                "memtotal_mb": 8192,
+                "os": "ubuntu",
+                "os_version": "24.04",
+                "distribution": "ubuntu",
+                "distribution_version": "24.04",
+                "gpu": {"present": False},
+            },
+            "metadata": {
+                "added_at": "2026-04-06T00:00:00Z",
+                "last_seen": "2026-04-06T00:00:00Z",
+                "tags": [],
+            },
+            "claws": {},
+        }
+    ]
+
+    hosts_file.write_text(json.dumps(hosts_data, indent=2))
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "not installed" in result.output
+
+
+def test_start_corrupted_hosts_file_fails(isolated_config: Path):
+    """Start with corrupted hosts.json fails gracefully."""
+    hosts_file = isolated_config / "hosts.json"
+    isolated_config.mkdir(parents=True, exist_ok=True)
+
+    hosts_file.write_text("invalid json {")
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "hosts.json" in result.output.lower() or "corrupted" in result.output.lower()
+
+
+def test_start_missing_onboarding_initializes(isolated_config: Path):
+    """Start with missing onboarding record initializes it."""
+    hosts_file = isolated_config / "hosts.json"
+    isolated_config.mkdir(parents=True, exist_ok=True)
+
+    hosts_data = [
+        {
+            "hostname": "192.168.1.100",
+            "alias": "work",
+            "key_id": "work",
+            "port": 22,
+            "user": "xclm",
+            "auth_method": "key",
+            "hardware": {
+                "architecture": "x86_64",
+                "processor_cores": 4,
+                "memtotal_mb": 8192,
+                "os": "ubuntu",
+                "os_version": "24.04",
+                "distribution": "ubuntu",
+                "distribution_version": "24.04",
+                "gpu": {"present": False},
+            },
+            "metadata": {
+                "added_at": "2026-04-06T00:00:00Z",
+                "last_seen": "2026-04-06T00:00:00Z",
+                "tags": [],
+            },
+            "claws": {
+                "opc": {
+                    "version": "0.1.0",
+                    "status": "installed",
+                    "name": "assistant",
+                    "user": "opc-assistant",
+                }
+            },
+        }
+    ]
+
+    hosts_file.write_text(json.dumps(hosts_data, indent=2))
+
+    result = runner.invoke(app, ["agent", "start", "opc-work"])
+
+    assert result.exit_code == 1
+    assert "Cannot start" in result.output
+    assert "onboarding not started" in result.output
