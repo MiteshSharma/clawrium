@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'Clawrium',
   tagline: 'An aquarium for your claws',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/favicon.svg',
 
   future: {
     v4: true,
@@ -136,12 +136,12 @@ const config: Config = {
       },
       options: {
         themeVariables: {
-          primaryColor: '#0891b2',
+          primaryColor: '#ea580c',
           primaryTextColor: '#fff',
-          primaryBorderColor: '#06657c',
-          lineColor: '#0891b2',
-          secondaryColor: '#22d3ee',
-          tertiaryColor: '#f0fdfa',
+          primaryBorderColor: '#c2410c',
+          lineColor: '#f97316',
+          secondaryColor: '#fbbf24',
+          tertiaryColor: '#fff7ed',
         },
       },
     },
