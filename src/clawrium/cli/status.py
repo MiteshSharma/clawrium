@@ -14,7 +14,6 @@ from clawrium.core.health import (
     check_claw_health,
     ClawStatus,
     HealthResult,
-    count_completed_stages,
 )
 
 __all__ = ["status"]
@@ -37,7 +36,7 @@ def display_verbose_onboarding(
     )
 
     stages = result.get("onboarding_stages")
-    if not stages:
+    if not stages or not isinstance(stages, dict):
         console.print("  [dim]No onboarding data available[/dim]")
         return
 
@@ -48,7 +47,7 @@ def display_verbose_onboarding(
         if status == "complete":
             icon = "✓"
             color = "green"
-            detail = f"({completed_at.split('T')[0]})" if completed_at else ""
+            detail = f"({escape(completed_at[:10])})" if completed_at else ""
         elif status == "skipped":
             icon = "○"
             color = "dim"
@@ -58,7 +57,8 @@ def display_verbose_onboarding(
             color = "yellow"
             detail = "pending"
 
-        console.print(f"  [{color}]{icon} {stage_name:<10}[/{color}] - {detail}")
+        escaped_name = escape(stage_name)
+        console.print(f"  [{color}]{icon} {escaped_name:<10}[/{color}] - {detail}")
 
 
 def status(
@@ -144,6 +144,8 @@ def status(
         table.add_column("Status")
         table.add_column("Installed", style="dim")
 
+        verbose_rows: list[tuple[str, str, HealthResult]] = []
+
         for h, claw_record in instances:
             display_host = h.get("alias") or h["hostname"]
             version = claw_record.get("version", "?")
@@ -187,7 +189,7 @@ def status(
                 status_display = "[yellow]pending onboard[/yellow]"
             elif live_status == ClawStatus.ONBOARDING:
                 stages = result.get("onboarding_stages")
-                if stages:
+                if stages and isinstance(stages, dict):
                     completed = sum(
                         1
                         for s in stages.values()
@@ -196,7 +198,7 @@ def status(
                     )
                     total = len(stages)
                 else:
-                    completed, total = count_completed_stages(claw_record)
+                    completed, total = 0, 4
                 status_display = f"[cyan]onboarding ({completed}/{total})[/cyan]"
             elif live_status == ClawStatus.READY:
                 status_display = "[blue]ready (stopped)[/blue]"
@@ -218,8 +220,11 @@ def status(
                 installed_at,
             )
 
-            if verbose and result and not result.get("process_running", True):
-                display_verbose_onboarding(claw_name, display_host, result)
+            if verbose and result and result.get("process_running") is False:
+                verbose_rows.append((claw_name, display_host, result))
 
         console.print(table)
         console.print()
+
+        for vname, vhost, vresult in verbose_rows:
+            display_verbose_onboarding(vname, vhost, vresult)

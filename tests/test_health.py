@@ -701,6 +701,7 @@ class TestHealthCheckOnboardingIntegration:
         assert result["error"] is None
         assert result["missing_secrets"] is None
         assert result["process_running"] is False
+        assert result["onboarding_stages"] is None
 
     def test_stopped_claw_in_identity_state(self, mock_host_with_onboarding):
         """Stopped claw in identity state returns ONBOARDING with step 2/4."""
@@ -727,6 +728,7 @@ class TestHealthCheckOnboardingIntegration:
         assert result["error"] is None
         assert result["missing_secrets"] is None
         assert result["process_running"] is False
+        assert result["onboarding_stages"] is None
 
     def test_stopped_claw_in_channels_state(self, mock_host_with_onboarding):
         """Stopped claw in channels state returns ONBOARDING with step 3/4."""
@@ -753,6 +755,7 @@ class TestHealthCheckOnboardingIntegration:
         assert result["error"] is None
         assert result["missing_secrets"] is None
         assert result["process_running"] is False
+        assert result["onboarding_stages"] is None
 
     def test_stopped_claw_in_validate_state(self, mock_host_with_onboarding):
         """Stopped claw in validate state returns ONBOARDING with step 4/4."""
@@ -779,6 +782,7 @@ class TestHealthCheckOnboardingIntegration:
         assert result["error"] is None
         assert result["missing_secrets"] is None
         assert result["process_running"] is False
+        assert result["onboarding_stages"] is None
 
     def test_stopped_claw_in_ready_state(self, mock_host_with_onboarding):
         """Stopped claw in ready state returns READY."""
@@ -801,6 +805,7 @@ class TestHealthCheckOnboardingIntegration:
         assert result["status"] == ClawStatus.READY
         assert result["onboarding_step"] is None
         assert result["process_running"] is False
+        assert result["onboarding_stages"] is None
 
     def test_stopped_claw_in_pending_state(self, mock_host_with_onboarding):
         """Stopped claw in pending state returns PENDING_ONBOARD."""
@@ -825,6 +830,7 @@ class TestHealthCheckOnboardingIntegration:
         assert result["status"] == ClawStatus.PENDING_ONBOARD
         assert result["onboarding_step"] is None
         assert result["process_running"] is False
+        assert result["onboarding_stages"] is None
 
     def test_running_claw_ignores_onboarding_state(self, mock_host_with_onboarding):
         """Running claw returns RUNNING regardless of onboarding state."""
@@ -848,6 +854,7 @@ class TestHealthCheckOnboardingIntegration:
         assert result["status"] == ClawStatus.RUNNING
         assert result["onboarding_step"] is None
         assert result["process_running"] is True
+        assert result["onboarding_stages"] is None
 
 
 class TestHealthResultOnboardingStepField:

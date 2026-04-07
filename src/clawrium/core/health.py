@@ -57,7 +57,7 @@ class HealthResult(TypedDict):
     missing_secrets: list[str] | None
     onboarding_step: str | None
     process_running: bool | None
-    onboarding_stages: dict[str, dict] | None
+    onboarding_stages: dict[str, dict[str, str | None]] | None
 
 
 def get_onboarding_status(claw_record: dict) -> tuple[ClawStatus, str | None]:
@@ -342,7 +342,6 @@ def check_claw_health(
             status, step = get_onboarding_status(claw_record)
             onboarding_stages = None
             if status in (
-                ClawStatus.PENDING_ONBOARD,
                 ClawStatus.ONBOARDING,
                 ClawStatus.READY,
             ):

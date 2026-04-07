@@ -78,6 +78,9 @@ def test_status_shows_claw_table(mock_hosts_with_claws):
             "user": "opc-server1",
             "error": None,
             "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": True,
+            "onboarding_stages": None,
         }
     )
 
@@ -101,6 +104,9 @@ def test_status_shows_running_status(mock_hosts_with_claws):
             "user": "opc-server1",
             "error": None,
             "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": True,
+            "onboarding_stages": None,
         }
     )
 
@@ -121,6 +127,9 @@ def test_status_shows_stopped_status(mock_hosts_with_claws):
             "user": "opc-server1",
             "error": None,
             "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": False,
+            "onboarding_stages": None,
         }
     )
 
@@ -141,6 +150,9 @@ def test_status_host_filter(mock_hosts_with_claws):
             "user": "opc-server1",
             "error": None,
             "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": True,
+            "onboarding_stages": None,
         }
     )
 
@@ -189,6 +201,9 @@ def test_status_shows_failed_install():
             "user": "opc-server1",
             "error": None,
             "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": False,
+            "onboarding_stages": None,
         }
     )
 
@@ -248,6 +263,9 @@ def test_status_shows_degraded_with_missing_secrets(mock_hosts_with_claws):
             "user": "opc-server1",
             "error": None,
             "missing_secrets": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+            "onboarding_step": None,
+            "process_running": True,
+            "onboarding_stages": None,
         }
     )
 
@@ -271,6 +289,9 @@ def test_status_degraded_truncates_long_list(mock_hosts_with_claws):
             "user": "opc-server1",
             "error": None,
             "missing_secrets": ["KEY1", "KEY2", "KEY3", "KEY4", "KEY5"],
+            "onboarding_step": None,
+            "process_running": True,
+            "onboarding_stages": None,
         }
     )
 
@@ -301,6 +322,7 @@ def test_status_shows_pending_onboard(mock_hosts_with_claws):
             "missing_secrets": None,
             "onboarding_step": None,
             "process_running": False,
+            "onboarding_stages": None,
         }
     )
 
@@ -385,6 +407,7 @@ def test_status_shows_ready_stopped(mock_hosts_with_claws):
             "missing_secrets": None,
             "onboarding_step": None,
             "process_running": False,
+            "onboarding_stages": None,
         }
     )
 
@@ -519,6 +542,8 @@ def test_status_verbose_pending_onboard(mock_hosts_with_claws):
             result = runner.invoke(app, ["ps", "--verbose"])
 
     assert result.exit_code == 0
+    assert "providers" in result.output
+    assert "pending" in result.output
 
 
 def test_status_verbose_no_stages_for_running(mock_hosts_with_claws):
@@ -543,7 +568,8 @@ def test_status_verbose_no_stages_for_running(mock_hosts_with_claws):
 
     assert result.exit_code == 0
     # Running claws should not show stage breakdown
-    assert "providers" not in result.output or "openclaw" not in result.output
+    assert "providers" not in result.output
+    assert "No onboarding data available" not in result.output
 
 
 def test_status_shows_completed_stage_count(mock_hosts_with_claws):
@@ -625,3 +651,56 @@ def test_status_verbose_ready_status(mock_hosts_with_claws):
     assert "✓ identity" in result.output
     assert "✓ channels" in result.output
     assert "✓ validate" in result.output
+
+
+def test_status_verbose_no_onboarding_stages(mock_hosts_with_claws):
+    """Verbose mode shows fallback message when onboarding_stages is None."""
+    mock_health = MagicMock(
+        return_value={
+            "claw": "openclaw",
+            "host": "192.168.1.100",
+            "status": ClawStatus.ONBOARDING,
+            "user": "opc-server1",
+            "error": None,
+            "missing_secrets": None,
+            "onboarding_step": "1/4",
+            "process_running": False,
+            "onboarding_stages": None,
+        }
+    )
+
+    with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["ps", "--verbose"])
+
+    assert result.exit_code == 0
+    assert "No onboarding data available" in result.output
+
+
+def test_status_verbose_short_alias(mock_hosts_with_claws):
+    """Short -v alias for --verbose is accepted and works."""
+    mock_health = MagicMock(
+        return_value={
+            "claw": "openclaw",
+            "host": "192.168.1.100",
+            "status": ClawStatus.ONBOARDING,
+            "user": "opc-server1",
+            "error": None,
+            "missing_secrets": None,
+            "onboarding_step": "1/4",
+            "process_running": False,
+            "onboarding_stages": {
+                "providers": {"status": "complete", "completed_at": "2026-04-06T10:00:00Z"},
+                "identity": {"status": "pending", "completed_at": None},
+                "channels": {"status": "pending", "completed_at": None},
+                "validate": {"status": "pending", "completed_at": None},
+            },
+        }
+    )
+
+    with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["ps", "-v"])
+
+    assert result.exit_code == 0
+    assert "providers" in result.output
