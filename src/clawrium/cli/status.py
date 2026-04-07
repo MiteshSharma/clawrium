@@ -10,22 +10,71 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from clawrium.core.hosts import load_hosts, HostsFileCorruptedError
-from clawrium.core.health import check_claw_health, ClawStatus, HealthResult
+from clawrium.core.health import (
+    check_claw_health,
+    ClawStatus,
+    HealthResult,
+    count_completed_stages,
+)
 
 __all__ = ["status"]
 
 console = Console()
 
 
+def display_verbose_onboarding(
+    claw_name: str, host_alias: str, result: HealthResult
+) -> None:
+    """Display detailed onboarding stage breakdown.
+
+    Args:
+        claw_name: Name of the claw
+        host_alias: Host alias or hostname
+        result: Health result containing onboarding stages
+    """
+    console.print(
+        f"\n[bold]{escape(claw_name)}[/bold] on [cyan]{escape(host_alias)}[/cyan]:"
+    )
+
+    stages = result.get("onboarding_stages")
+    if not stages:
+        console.print("  [dim]No onboarding data available[/dim]")
+        return
+
+    for stage_name, stage_data in stages.items():
+        status = stage_data.get("status", "pending")
+        completed_at = stage_data.get("completed_at")
+
+        if status == "complete":
+            icon = "✓"
+            color = "green"
+            detail = f"({completed_at.split('T')[0]})" if completed_at else ""
+        elif status == "skipped":
+            icon = "○"
+            color = "dim"
+            detail = "(skipped)"
+        else:
+            icon = "○"
+            color = "yellow"
+            detail = "pending"
+
+        console.print(f"  [{color}]{icon} {stage_name:<10}[/{color}] - {detail}")
+
+
 def status(
     host: Optional[str] = typer.Option(
         None, "--host", "-H", help="Filter to specific host (hostname or alias)"
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="Show detailed onboarding stages"
     ),
 ) -> None:
     """Show fleet status across all hosts.
 
     Displays claw instances grouped by claw type (per D-12) with live
     health check (per D-13). Shows name, version, host, status (per D-14).
+
+    Use --verbose to see detailed onboarding stage breakdown.
     """
     # Load all hosts
     try:
@@ -40,7 +89,9 @@ def status(
 
     # Filter to specific host if requested
     if host:
-        hosts = [h for h in hosts if h.get("hostname") == host or h.get("alias") == host]
+        hosts = [
+            h for h in hosts if h.get("hostname") == host or h.get("alias") == host
+        ]
         if not hosts:
             console.print(f"[red]Error:[/red] Host '{escape(host)}' not found")
             raise typer.Exit(code=1)
@@ -59,7 +110,9 @@ def status(
         return
 
     # Perform live health checks with progress spinner
-    health_results: dict[tuple[str, str], HealthResult] = {}  # (claw, hostname) -> result
+    health_results: dict[
+        tuple[str, str], HealthResult
+    ] = {}  # (claw, hostname) -> result
 
     with Progress(
         SpinnerColumn(),
@@ -71,7 +124,10 @@ def status(
 
         for claw_name, instances in claws_by_type.items():
             for h, claw_record in instances:
-                progress.update(task, description=f"Checking {claw_name} on {h.get('alias') or h['hostname']}...")
+                progress.update(
+                    task,
+                    description=f"Checking {claw_name} on {h.get('alias') or h['hostname']}...",
+                )
                 result = check_claw_health(claw_name, h)
                 health_results[(claw_name, h["hostname"])] = result  # Store full result
 
@@ -116,7 +172,9 @@ def status(
                     missing_str = ", ".join(escaped_keys)
                     if len(missing_secrets) > 3:
                         missing_str += f" +{len(missing_secrets) - 3} more"
-                    status_display = f"[yellow]degraded (missing: {missing_str})[/yellow]"
+                    status_display = (
+                        f"[yellow]degraded (missing: {missing_str})[/yellow]"
+                    )
                 else:
                     status_display = "[yellow]degraded[/yellow]"
             elif live_status == ClawStatus.STOPPED:
@@ -126,14 +184,21 @@ def status(
             elif live_status == ClawStatus.NOT_INSTALLED:
                 status_display = "[yellow]not installed[/yellow]"
             elif live_status == ClawStatus.PENDING_ONBOARD:
-                # B5: Handle PENDING_ONBOARD status
                 status_display = "[yellow]pending onboard[/yellow]"
             elif live_status == ClawStatus.ONBOARDING:
-                # B5/B6: Handle ONBOARDING status with step progress
-                step = result.get("onboarding_step") or "?/?"
-                status_display = f"[cyan]onboarding ({step})[/cyan]"
+                stages = result.get("onboarding_stages")
+                if stages:
+                    completed = sum(
+                        1
+                        for s in stages.values()
+                        if isinstance(s, dict)
+                        and s.get("status") in ("complete", "skipped")
+                    )
+                    total = len(stages)
+                else:
+                    completed, total = count_completed_stages(claw_record)
+                status_display = f"[cyan]onboarding ({completed}/{total})[/cyan]"
             elif live_status == ClawStatus.READY:
-                # B5: Handle READY status (onboarding complete, process stopped)
                 status_display = "[blue]ready (stopped)[/blue]"
             else:
                 status_display = "[yellow]unknown[/yellow]"
@@ -153,5 +218,8 @@ def status(
                 installed_at,
             )
 
+            if verbose and result and not result.get("process_running", True):
+                display_verbose_onboarding(claw_name, display_host, result)
+
         console.print(table)
-        console.print()  # Space between claw types
+        console.print()
