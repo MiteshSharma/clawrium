@@ -3,6 +3,9 @@
 This is the primary interface for managing AI assistants (claws).
 """
 
+import os
+import re
+import tempfile
 from typing import Optional
 
 import typer
@@ -12,6 +15,7 @@ from rich.panel import Panel
 
 from clawrium.cli.install import install as install_command
 from clawrium.cli.status import status as status_command
+from clawrium.core.config import get_config_dir
 from clawrium.core.hosts import get_host, HostsFileCorruptedError
 from clawrium.core.onboarding import (
     OnboardingState,
@@ -29,6 +33,24 @@ from clawrium.core.onboarding import (
 __all__ = ["agent_app"]
 
 console = Console()
+
+VALID_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+STAGE_TO_NEXT_STATE = {
+    "providers": OnboardingState.IDENTITY,
+    "identity": OnboardingState.CHANNELS,
+    "channels": OnboardingState.VALIDATE,
+    "validate": OnboardingState.READY,
+}
+
+STATE_RESUME_IDX = {
+    "pending": 0,
+    "providers": 0,
+    "identity": 1,
+    "channels": 2,
+    "validate": 3,
+    "ready": 4,
+}
 
 agent_app = typer.Typer(
     name="agent",
@@ -59,6 +81,26 @@ def ps(
     status_command(host=host)
 
 
+def _validate_name_component(name: str, component_type: str) -> None:
+    """Validate a name component against safe character set.
+
+    Args:
+        name: Name to validate
+        component_type: Type description for error message
+
+    Raises:
+        typer.Exit: If name contains invalid characters
+    """
+    if not VALID_NAME_PATTERN.match(name):
+        console.print(
+            f"[red]Error:[/red] Invalid {component_type} '{rich_escape(name)}'"
+        )
+        console.print(
+            f"{component_type.capitalize()} must contain only letters, numbers, dots, underscores, and hyphens"
+        )
+        raise typer.Exit(code=1)
+
+
 def _parse_claw_name(claw_name: str) -> tuple[str, str]:
     """Parse claw name into host and claw type.
 
@@ -69,10 +111,12 @@ def _parse_claw_name(claw_name: str) -> tuple[str, str]:
         Tuple of (host_alias_or_name, claw_type)
 
     Raises:
-        typer.Exit: If format is invalid
+        typer.Exit: If format is invalid or contains unsafe characters
     """
     if "-" not in claw_name:
-        console.print(f"[red]Error:[/red] Invalid claw name format: '{claw_name}'")
+        console.print(
+            f"[red]Error:[/red] Invalid claw name format: '{rich_escape(claw_name)}'"
+        )
         console.print(
             "Expected format: <claw-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
         )
@@ -80,13 +124,19 @@ def _parse_claw_name(claw_name: str) -> tuple[str, str]:
 
     parts = claw_name.split("-", 1)
     if len(parts) != 2 or not all(parts):
-        console.print(f"[red]Error:[/red] Invalid claw name format: '{claw_name}'")
+        console.print(
+            f"[red]Error:[/red] Invalid claw name format: '{rich_escape(claw_name)}'"
+        )
         console.print(
             "Expected format: <claw-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
         )
         raise typer.Exit(code=1)
 
     claw_type, host_alias = parts
+
+    _validate_name_component(claw_type, "claw type")
+    _validate_name_component(host_alias, "host alias")
+
     return host_alias, claw_type
 
 
@@ -99,11 +149,11 @@ def _get_installed_claw(host_alias: str, claw_type: str) -> dict | None:
 
     Returns:
         Claw record dict or None if not found
+
+    Raises:
+        HostsFileCorruptedError: If hosts.json is corrupted
     """
-    try:
-        host_data = get_host(host_alias)
-    except HostsFileCorruptedError:
-        return None
+    host_data = get_host(host_alias)
 
     if not host_data:
         return None
@@ -138,6 +188,26 @@ def _stage_complete(stage_name: str) -> None:
     console.print(f"\n[green]Stage {stage_name.upper()} complete.[/green]")
 
 
+def _atomic_write_file(path: str, content: str, mode: int = 0o600) -> None:
+    """Write file atomically with temp file and rename.
+
+    Args:
+        path: Target file path
+        content: Content to write
+        mode: File permissions (default 0o600)
+    """
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
 def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
     """Run the PROVIDERS onboarding stage.
 
@@ -149,11 +219,18 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
     Returns:
         True if stage completed successfully
     """
-    from clawrium.core.providers import load_providers, get_provider_api_key
+    from clawrium.core.providers import (
+        get_provider_api_key,
+        load_providers,
+        ProvidersFileCorruptedError,
+    )
 
     try:
         providers = load_providers()
-    except Exception:
+    except ProvidersFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] Providers file corrupted: {e}")
+        return False
+    except FileNotFoundError:
         providers = []
 
     if not providers:
@@ -168,11 +245,14 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
         model = provider.get("default_model", "-")
         key_status = "✓" if get_provider_api_key(name) else "✗"
         console.print(
-            f"  {i}. {rich_escape(name)} ({ptype}, {rich_escape(model)}) {key_status}"
+            f"  {i}. {rich_escape(name)} ({rich_escape(ptype)}, {rich_escape(model)}) {key_status}"
         )
 
     console.print()
-    choice = typer.prompt("Select provider", type=int, default="1")
+    if yes:
+        choice = 1
+    else:
+        choice = typer.prompt("Select provider", type=int, default=1)
 
     if choice < 1 or choice > len(providers):
         console.print("[red]Invalid selection[/red]")
@@ -181,7 +261,7 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
     selected = providers[choice - 1]
     provider_name = selected.get("name")
 
-    console.print("\nVerifying provider connectivity... ", end="")
+    console.print("\nSaving provider selection... ", end="")
 
     try:
         complete_stage(
@@ -194,7 +274,7 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
         console.print("[green]✓[/green]")
         return True
     except Exception as e:
-        console.print(f"[red]✗[/red] {e}")
+        console.print(f"[red]✗[/red] {rich_escape(str(e))}")
         return False
 
 
@@ -209,32 +289,53 @@ def _run_identity_stage(host: str, claw_type: str, yes: bool) -> bool:
     Returns:
         True if stage completed successfully
     """
-    from pathlib import Path
-
     console.print("[1/2] Create personality file (SOUL.md)")
 
     if yes:
         personality = "You are a helpful coding assistant focused on reliability and code quality."
     else:
-        console.print("  Describe your agent's personality (press Enter for default):")
+        console.print(
+            "  Describe your agent's personality (max 2000 chars, press Enter for default):"
+        )
         personality = typer.prompt(
             "> ",
             default="You are a helpful coding assistant focused on reliability and code quality.",
         )
 
-    soul_path = Path.home() / f".{claw_type}" / "SOUL.md"
-    soul_path.parent.mkdir(parents=True, exist_ok=True)
-    soul_path.write_text(f"# {claw_type.upper()} Personality\n\n{personality}\n")
-    console.print(f"  [green]✓[/green] Created {soul_path}")
+    if len(personality) > 2000:
+        console.print(
+            "[red]Error:[/red] Personality description exceeds 2000 character limit"
+        )
+        return False
+
+    config_dir = get_config_dir()
+    soul_dir = config_dir / "claws" / claw_type
+    soul_dir.mkdir(parents=True, exist_ok=True)
+    soul_path = soul_dir / "SOUL.md"
+
+    try:
+        _atomic_write_file(
+            str(soul_path),
+            f"# {claw_type.upper()} Personality\n\n{personality}\n",
+        )
+        console.print(f"  [green]✓[/green] Created {soul_path}")
+    except Exception as e:
+        console.print(
+            f"[red]Error:[/red] Failed to write SOUL.md: {rich_escape(str(e))}"
+        )
+        return False
 
     console.print("\n[2/2] Create identity file")
-    console.print("  [green]✓[/green] Created from template")
+    console.print("  [green]✓[/green] Using default identity configuration")
 
     try:
         complete_stage(host, claw_type, "identity", StageStatus.COMPLETE)
         return True
-    except Exception:
-        return True
+    except Exception as e:
+        console.print(
+            f"[red]Error:[/red] Failed to save identity stage: {rich_escape(str(e))}"
+        )
+        return False
 
 
 def _run_channels_stage(host: str, claw_type: str, yes: bool) -> bool:
@@ -260,7 +361,7 @@ def _run_channels_stage(host: str, claw_type: str, yes: bool) -> bool:
     if yes:
         choice = 1
     else:
-        choice = typer.prompt("Select", type=int, default="1")
+        choice = typer.prompt("Select", type=int, default=1)
 
     if choice < 1 or choice > len(channels):
         console.print("[red]Invalid selection[/red]")
@@ -278,8 +379,11 @@ def _run_channels_stage(host: str, claw_type: str, yes: bool) -> bool:
             {"default_channel": selected_channel},
         )
         return True
-    except Exception:
-        return True
+    except Exception as e:
+        console.print(
+            f"[red]Error:[/red] Failed to save channels stage: {rich_escape(str(e))}"
+        )
+        return False
 
 
 def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
@@ -299,8 +403,11 @@ def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
     try:
         complete_stage(host, claw_type, "validate", StageStatus.COMPLETE)
         return True
-    except Exception:
-        return True
+    except Exception as e:
+        console.print(
+            f"[red]Error:[/red] Failed to save validate stage: {rich_escape(str(e))}"
+        )
+        return False
 
 
 @agent_app.command()
@@ -326,7 +433,11 @@ def configure(
         clm agent configure zc-kevin --stage providers
         clm agent configure opc-work --yes
     """
-    host_alias, claw_type = _parse_claw_name(claw_name)
+    try:
+        host_alias, claw_type = _parse_claw_name(claw_name)
+    except KeyboardInterrupt:
+        console.print("\nCancelled.")
+        raise typer.Exit(code=1)
 
     try:
         host_data = get_host(host_alias)
@@ -341,7 +452,12 @@ def configure(
 
     display_host = host_data.get("alias") or host_data["hostname"]
 
-    installed_claw = _get_installed_claw(host_alias, claw_type)
+    try:
+        installed_claw = _get_installed_claw(host_alias, claw_type)
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] Hosts file corrupted: {e}")
+        raise typer.Exit(code=1)
+
     if not installed_claw:
         console.print(
             f"[red]Error:[/red] Claw '{rich_escape(claw_type)}' not installed on '{rich_escape(display_host)}'"
@@ -352,23 +468,21 @@ def configure(
         raise typer.Exit(code=1)
 
     try:
-        get_onboarding_state(host_alias, claw_type)
+        current_state = get_onboarding_state(host_alias, claw_type)
     except OnboardingNotFoundError:
         try:
             initialize_onboarding(host_alias, claw_type)
+            current_state = get_onboarding_state(host_alias, claw_type)
         except ClawNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
-
-    try:
-        current_state = get_onboarding_state(host_alias, claw_type)
-    except (OnboardingNotFoundError, ClawNotFoundError) as e:
+    except ClawNotFoundError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
 
     console.print(
         Panel(
-            f"[bold]Onboarding:[/bold] {claw_type} on {display_host}\n"
+            f"[bold]Onboarding:[/bold] {rich_escape(claw_type)} on {rich_escape(display_host)}\n"
             f"[bold]Current state:[/bold] {current_state.value.upper()}",
             title="Agent Configuration",
             border_style="cyan",
@@ -387,7 +501,7 @@ def configure(
 
     if stage:
         if stage not in stage_order:
-            console.print(f"[red]Error:[/red] Invalid stage '{stage}'")
+            console.print(f"[red]Error:[/red] Invalid stage '{rich_escape(stage)}'")
             console.print(f"Valid stages: {', '.join(stage_order)}")
             raise typer.Exit(code=1)
 
@@ -402,25 +516,29 @@ def configure(
             "validate": _run_validate_stage,
         }[stage]
 
-        success = stage_func(host_alias, claw_type, yes)
+        try:
+            success = stage_func(host_alias, claw_type, yes)
+        except KeyboardInterrupt:
+            console.print("\nCancelled.")
+            raise typer.Exit(code=1)
 
         if success:
             _stage_complete(stage)
         else:
-            console.print(f"[red]Stage {stage} failed.[/red]")
+            console.print(f"[red]Stage {rich_escape(stage)} failed.[/red]")
             raise typer.Exit(code=1)
 
-        console.print(f"\n[green]Stage {stage} complete.[/green]")
         raise typer.Exit(code=0)
 
     total_stages = len(STAGES)
-    state_order = ["pending", "providers", "identity", "channels", "validate", "ready"]
+    start_idx = STATE_RESUME_IDX.get(current_state.value, 0)
 
-    start_idx = state_order.index(current_state.value)
     if start_idx >= len(stage_order):
         console.print("\n[green]Onboarding already complete![/green]")
         console.print(f"State: {current_state.value.upper()}")
-        console.print(f"Run 'clm agent start {claw_name}' to start your agent.")
+        console.print(
+            f"Run 'clm agent start {rich_escape(claw_name)}' to start your agent."
+        )
         raise typer.Exit(code=0)
 
     console.print("\n[bold]Starting onboarding...[/bold]")
@@ -432,36 +550,46 @@ def configure(
         "validate": _run_validate_stage,
     }
 
-    for i, stage_name in enumerate(stage_order):
-        if i < start_idx:
-            continue
-
-        if can_skip_stage(claw_type, stage_name):
-            complete_stage(host_alias, claw_type, stage_name, StageStatus.SKIPPED)
-            continue
-
-        _stage_header(stage_name, i + 1, total_stages, stage_descriptions[stage_name])
-
-        success = stage_functions[stage_name](host_alias, claw_type, yes)
-
-        if not success:
-            console.print(f"[red]Onboarding failed at stage: {stage_name}[/red]")
-            raise typer.Exit(code=1)
-
-        try:
-            next_state_idx = i + 1
-            if next_state_idx < len(state_order) - 1:
-                next_state = OnboardingState(state_order[next_state_idx])
-                transition_state(host_alias, claw_type, next_state)
-        except InvalidTransitionError as e:
-            console.print(f"[yellow]Warning:[/yellow] {e}")
-
-        _stage_complete(stage_name)
-
     try:
-        transition_state(host_alias, claw_type, OnboardingState.READY)
-    except InvalidTransitionError:
-        pass
+        for i, stage_name in enumerate(stage_order):
+            if i < start_idx:
+                continue
+
+            if can_skip_stage(claw_type, stage_name):
+                try:
+                    complete_stage(
+                        host_alias, claw_type, stage_name, StageStatus.SKIPPED
+                    )
+                except Exception as e:
+                    console.print(
+                        f"[red]Error:[/red] Failed to skip stage: {rich_escape(str(e))}"
+                    )
+                    raise typer.Exit(code=1)
+                continue
+
+            _stage_header(
+                stage_name, i + 1, total_stages, stage_descriptions[stage_name]
+            )
+
+            success = stage_functions[stage_name](host_alias, claw_type, yes)
+
+            if not success:
+                console.print(
+                    f"[red]Onboarding failed at stage: {rich_escape(stage_name)}[/red]"
+                )
+                raise typer.Exit(code=1)
+
+            next_state = STAGE_TO_NEXT_STATE[stage_name]
+            try:
+                transition_state(host_alias, claw_type, next_state)
+            except InvalidTransitionError as e:
+                console.print(f"[yellow]Warning:[/yellow] {e}")
+
+            _stage_complete(stage_name)
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Onboarding cancelled.[/yellow]")
+        raise typer.Exit(code=1)
 
     console.print()
     console.print("═" * 51)
@@ -469,7 +597,9 @@ def configure(
     console.print("═" * 51)
     console.print()
     console.print("State: [green]READY[/green]")
-    console.print(f"Run 'clm agent start {claw_name}' to start your agent.")
+    console.print(
+        f"Run 'clm agent start {rich_escape(claw_name)}' to start your agent."
+    )
 
 
 @agent_app.command()
@@ -480,7 +610,9 @@ def remove(
 
     [Not yet implemented]
     """
-    console.print(f"[yellow]Not implemented:[/yellow] remove '{claw_name}'")
+    console.print(
+        f"[yellow]Not implemented:[/yellow] remove '{rich_escape(claw_name)}'"
+    )
     console.print("This command will allow removing agents in a future release.")
     raise typer.Exit(code=0)
 
@@ -493,7 +625,7 @@ def start(
 
     [Not yet implemented]
     """
-    console.print(f"[yellow]Not implemented:[/yellow] start '{claw_name}'")
+    console.print(f"[yellow]Not implemented:[/yellow] start '{rich_escape(claw_name)}'")
     console.print("This command will allow starting agents in a future release.")
     raise typer.Exit(code=0)
 
@@ -506,7 +638,7 @@ def stop(
 
     [Not yet implemented]
     """
-    console.print(f"[yellow]Not implemented:[/yellow] stop '{claw_name}'")
+    console.print(f"[yellow]Not implemented:[/yellow] stop '{rich_escape(claw_name)}'")
     console.print("This command will allow stopping agents in a future release.")
     raise typer.Exit(code=0)
 
@@ -519,7 +651,7 @@ def logs(
 
     [Not yet implemented]
     """
-    console.print(f"[yellow]Not implemented:[/yellow] logs '{claw_name}'")
+    console.print(f"[yellow]Not implemented:[/yellow] logs '{rich_escape(claw_name)}'")
     console.print("This command will allow viewing agent logs in a future release.")
     raise typer.Exit(code=0)
 
@@ -578,7 +710,7 @@ def secret_import(
     [Not yet implemented]
     """
     console.print(
-        f"[yellow]Not implemented:[/yellow] import secrets from '{source_claw}' to '{target_claw}'"
+        f"[yellow]Not implemented:[/yellow] import secrets from '{rich_escape(source_claw)}' to '{rich_escape(target_claw)}'"
     )
     console.print(
         "This command will allow importing secrets between claws in a future release."
