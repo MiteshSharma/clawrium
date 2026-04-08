@@ -36,6 +36,13 @@ console = Console()
 
 VALID_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
 
+STAGE_TO_CURRENT_STATE = {
+    "providers": OnboardingState.PROVIDERS,
+    "identity": OnboardingState.IDENTITY,
+    "channels": OnboardingState.CHANNELS,
+    "validate": OnboardingState.VALIDATE,
+}
+
 STAGE_TO_NEXT_STATE = {
     "providers": OnboardingState.IDENTITY,
     "identity": OnboardingState.CHANNELS,
@@ -397,8 +404,11 @@ def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
     Returns:
         True if stage completed successfully
     """
-    console.print("[1/2] Verify configuration files... [green]✓[/green]")
-    console.print("[2/2] Run agent self-test... [green]✓[/green]")
+    console.print("[yellow]Validation not yet implemented - skipped[/yellow]")
+    console.print()
+    console.print(
+        "Future validation will verify configuration files and run agent self-test."
+    )
 
     try:
         complete_stage(host, claw_type, "validate", StageStatus.COMPLETE)
@@ -571,6 +581,16 @@ def configure(
                 stage_name, i + 1, total_stages, stage_descriptions[stage_name]
             )
 
+            # Transition to the stage's state before running it
+            current_stage_state = STAGE_TO_CURRENT_STATE.get(stage_name)
+            current_state = get_onboarding_state(host_alias, claw_type)
+            if current_stage_state and current_state != current_stage_state:
+                try:
+                    transition_state(host_alias, claw_type, current_stage_state)
+                except InvalidTransitionError as e:
+                    console.print(f"[red]Error:[/red] {e}")
+                    raise typer.Exit(code=1)
+
             success = stage_functions[stage_name](host_alias, claw_type, yes)
 
             if not success:
@@ -583,7 +603,8 @@ def configure(
             try:
                 transition_state(host_alias, claw_type, next_state)
             except InvalidTransitionError as e:
-                console.print(f"[yellow]Warning:[/yellow] {e}")
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(code=1)
 
             _stage_complete(stage_name)
 
@@ -602,6 +623,74 @@ def configure(
     )
 
 
+def _show_start_blocked_error(
+    claw_name: str,
+    host_alias: str,
+    claw_type: str,
+    current_state: OnboardingState,
+    claw_record: dict,
+) -> None:
+    """Display error when start is blocked by incomplete onboarding."""
+    STAGES = [
+        ("providers", "Assign inference provider to this agent"),
+        ("identity", "Configure agent personality and behavior"),
+        ("channels", "Configure communication channels"),
+        ("validate", "Verify agent is properly configured"),
+    ]
+
+    if current_state == OnboardingState.PENDING:
+        console.print()
+        console.print(
+            f"[red]Error:[/red] Cannot start {rich_escape(claw_name)} - onboarding not started"
+        )
+        console.print()
+        console.print(
+            f"Run 'clm agent configure {rich_escape(claw_name)}' to begin onboarding."
+        )
+        console.print()
+        return
+
+    onboarding = claw_record.get("onboarding", {})
+    stages_data = onboarding.get("stages", {})
+
+    completed_count = sum(
+        1 for stage_name in [s[0] for s in STAGES]
+        if stages_data.get(stage_name, {}).get("status") == "complete"
+    )
+
+    total_stages = len(STAGES)
+
+    incomplete_stages = [
+        (name, desc)
+        for name, desc in STAGES
+        if stages_data.get(name, {}).get("status") != "complete"
+    ]
+
+    console.print()
+    console.print(
+        f"[red]Error:[/red] Cannot start {rich_escape(claw_name)} - onboarding incomplete"
+    )
+    console.print()
+    console.print(
+        f"Current state: {current_state.value.upper()} ({completed_count}/{total_stages})"
+    )
+    console.print()
+
+    if incomplete_stages:
+        console.print("Incomplete stages:")
+        for stage_name, stage_desc in incomplete_stages:
+            console.print(f"  ○ {stage_name:<10} - {stage_desc}")
+        console.print()
+
+    console.print(
+        f"Run 'clm agent configure {rich_escape(claw_name)}' to complete onboarding."
+    )
+    console.print()
+    console.print("To force start anyway (not recommended):")
+    console.print(f"  clm agent start {rich_escape(claw_name)} --force")
+    console.print()
+
+
 @agent_app.command()
 def remove(
     claw_name: str = typer.Argument(..., help="Claw name to remove"),
@@ -614,20 +703,85 @@ def remove(
         f"[yellow]Not implemented:[/yellow] remove '{rich_escape(claw_name)}'"
     )
     console.print("This command will allow removing agents in a future release.")
-    raise typer.Exit(code=0)
+    raise typer.Exit(code=1)
 
 
 @agent_app.command()
 def start(
     claw_name: str = typer.Argument(..., help="Claw name to start"),
+    force: bool = typer.Option(
+        False, "--force", "-f", help="Force start even if onboarding incomplete"
+    ),
 ) -> None:
     """Start an agent.
 
-    [Not yet implemented]
+    Checks onboarding state before allowing start.
+    Only agents in READY state can start normally.
+    Use --force to bypass this check (not recommended).
     """
-    console.print(f"[yellow]Not implemented:[/yellow] start '{rich_escape(claw_name)}'")
-    console.print("This command will allow starting agents in a future release.")
-    raise typer.Exit(code=0)
+    try:
+        host_alias, claw_type = _parse_claw_name(claw_name)
+
+        try:
+            host_data = get_host(host_alias)
+        except HostsFileCorruptedError as e:
+            console.print(f"[red]Error:[/red] {e}")
+            console.print("Run 'clm host list' to see if hosts.json can be read.")
+            raise typer.Exit(code=1)
+
+        if not host_data:
+            console.print(
+                f"[red]Error:[/red] Host '{rich_escape(host_alias)}' not found"
+            )
+            console.print("Run 'clm host add' to add a host first.")
+            raise typer.Exit(code=1)
+
+        display_host = host_data.get("alias", host_data.get("hostname", host_alias))
+
+        claw_record = _get_installed_claw(host_alias, claw_type)
+        if not claw_record:
+            console.print(
+                f"[red]Error:[/red] Claw '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
+            )
+            console.print(
+                f"Run 'clm agent install --claw {rich_escape(claw_type)} --host {rich_escape(host_alias)}' to install it."
+            )
+            raise typer.Exit(code=1)
+
+        try:
+            current_state = get_onboarding_state(host_alias, claw_type)
+        except OnboardingNotFoundError:
+            try:
+                initialize_onboarding(host_alias, claw_type)
+                current_state = get_onboarding_state(host_alias, claw_type)
+            except ClawNotFoundError as e:
+                console.print(f"[red]Error:[/red] {e}")
+                raise typer.Exit(code=1)
+
+        if current_state == OnboardingState.READY:
+            console.print(
+                f"[green]Starting agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
+            )
+            console.print("[dim]Agent start functionality coming soon.[/dim]")
+            raise typer.Exit(code=0)
+
+        if force:
+            console.print(
+                "[yellow]Warning: Starting agent with incomplete onboarding[/yellow]"
+            )
+            console.print(
+                f"[green]Starting agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
+            )
+            console.print("[dim]Agent start functionality coming soon.[/dim]")
+            raise typer.Exit(code=0)
+
+        _show_start_blocked_error(
+            claw_name, host_alias, claw_type, current_state, claw_record
+        )
+        raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        console.print("\nCancelled.")
+        raise typer.Exit(code=1)
 
 
 @agent_app.command()
