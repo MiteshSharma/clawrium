@@ -15,7 +15,7 @@ def create_host_with_ready_claw(
     config_dir: Path,
     hostname: str = "192.168.1.100",
     alias: str = "work",
-    claw_type: str = "opc",
+    claw_type: str = "openclaw",
 ) -> None:
     """Create a test host with a ready claw."""
     hosts_file = config_dir / "hosts.json"
@@ -48,7 +48,7 @@ def create_host_with_ready_claw(
                 claw_type: {
                     "version": "2026.4.2",
                     "status": "installed",
-                    "user": f"{claw_type}-{alias}",
+                    "user": "assistant",
                     "onboarding": {
                         "state": "ready",
                         "started_at": "2026-04-07T00:00:00Z",
@@ -71,17 +71,17 @@ class TestAgentStart:
     """Tests for clm agent start command."""
 
     def test_start_unknown_host_fails(self, isolated_config: Path):
-        """Start with unknown host fails."""
-        result = runner.invoke(app, ["agent", "start", "opc-unknown"])
+        """Start with unknown agent fails."""
+        result = runner.invoke(app, ["agent", "start", "unknown-agent"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
     def test_start_invalid_claw_name_fails(self, isolated_config: Path):
-        """Start with invalid claw name format fails."""
+        """Start with unknown agent name fails."""
         create_host_with_ready_claw(isolated_config)
         result = runner.invoke(app, ["agent", "start", "invalid"])
         assert result.exit_code == 1
-        assert "Invalid agent name format" in result.output
+        assert "not found" in result.output.lower()
 
     def test_start_claw_not_installed_fails(self, isolated_config: Path):
         """Start when claw not installed fails."""
@@ -98,9 +98,9 @@ class TestAgentStart:
         ]
         hosts_file.write_text(json.dumps(hosts_data, indent=2))
 
-        result = runner.invoke(app, ["agent", "start", "opc-work"])
+        result = runner.invoke(app, ["agent", "start", "assistant"])
         assert result.exit_code == 1
-        assert "not installed" in result.output
+        assert "not found" in result.output.lower()
 
     def test_start_incomplete_onboarding_blocked(self, isolated_config: Path):
         """Start with incomplete onboarding is blocked."""
@@ -113,8 +113,8 @@ class TestAgentStart:
                 "alias": "work",
                 "key_id": "work",
                 "claws": {
-                    "opc": {
-                        "user": "opc-work",
+                    "openclaw": {
+                        "user": "assistant",
                         "onboarding": {"state": "pending"},
                     }
                 },
@@ -122,7 +122,7 @@ class TestAgentStart:
         ]
         hosts_file.write_text(json.dumps(hosts_data, indent=2))
 
-        result = runner.invoke(app, ["agent", "start", "opc-work"])
+        result = runner.invoke(app, ["agent", "start", "assistant"])
         assert result.exit_code == 1
         assert "Cannot start" in result.output
         assert "onboarding not started" in result.output
@@ -146,7 +146,7 @@ class TestAgentStart:
                     "clawrium.core.lifecycle.get_config_dir",
                     return_value=isolated_config,
                 ):
-                    result = runner.invoke(app, ["agent", "start", "opc-work"])
+                    result = runner.invoke(app, ["agent", "start", "assistant"])
 
         assert result.exit_code == 0
         assert "Starting agent" in result.output
@@ -167,8 +167,8 @@ class TestAgentStart:
                 "user": "xclm",
                 "port": 22,
                 "claws": {
-                    "opc": {
-                        "user": "opc-work",
+                    "openclaw": {
+                        "user": "assistant",
                         "onboarding": {"state": "pending"},
                     }
                 },
@@ -199,7 +199,7 @@ class TestAgentStart:
                             return_value=isolated_config,
                         ):
                             result = runner.invoke(
-                                app, ["agent", "start", "opc-work", "--force"]
+                                app, ["agent", "start", "assistant", "--force"]
                             )
 
         assert result.exit_code == 0
@@ -210,8 +210,8 @@ class TestAgentStop:
     """Tests for clm agent stop command."""
 
     def test_stop_unknown_host_fails(self, isolated_config: Path):
-        """Stop with unknown host fails."""
-        result = runner.invoke(app, ["agent", "stop", "opc-unknown"])
+        """Stop with unknown agent fails."""
+        result = runner.invoke(app, ["agent", "stop", "unknown-agent"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
@@ -230,9 +230,9 @@ class TestAgentStop:
         ]
         hosts_file.write_text(json.dumps(hosts_data, indent=2))
 
-        result = runner.invoke(app, ["agent", "stop", "opc-work"])
+        result = runner.invoke(app, ["agent", "stop", "assistant"])
         assert result.exit_code == 1
-        assert "not installed" in result.output
+        assert "not found" in result.output.lower()
 
     def test_stop_installed_claw_succeeds(self, isolated_config: Path, tmp_path: Path):
         """Stop with installed claw succeeds."""
@@ -253,7 +253,7 @@ class TestAgentStop:
                     "clawrium.core.lifecycle.get_config_dir",
                     return_value=isolated_config,
                 ):
-                    result = runner.invoke(app, ["agent", "stop", "opc-work"])
+                    result = runner.invoke(app, ["agent", "stop", "assistant"])
 
         assert result.exit_code == 0
         assert "Stopping agent" in result.output
@@ -264,8 +264,8 @@ class TestAgentRestart:
     """Tests for clm agent restart command."""
 
     def test_restart_unknown_host_fails(self, isolated_config: Path):
-        """Restart with unknown host fails."""
-        result = runner.invoke(app, ["agent", "restart", "opc-unknown"])
+        """Restart with unknown agent fails."""
+        result = runner.invoke(app, ["agent", "restart", "unknown-agent"])
         assert result.exit_code == 1
         assert "not found" in result.output
 
@@ -290,7 +290,7 @@ class TestAgentRestart:
                     "clawrium.core.lifecycle.get_config_dir",
                     return_value=isolated_config,
                 ):
-                    result = runner.invoke(app, ["agent", "restart", "opc-work"])
+                    result = runner.invoke(app, ["agent", "restart", "assistant"])
 
         assert result.exit_code == 0
         assert "Restarting agent" in result.output

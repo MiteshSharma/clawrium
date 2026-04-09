@@ -74,9 +74,7 @@ def test_agent_remove_success(host_with_claw: tuple[Path, str, str]):
             "error": None,
         }
 
-        result = runner.invoke(
-            app, ["agent", "remove", f"opc-{alias}"], input="y\n"
-        )
+        result = runner.invoke(app, ["agent", "remove", f"opc-{alias}"], input="y\n")
 
         assert result.exit_code == 0
         assert "removed successfully" in result.output.lower()
@@ -112,9 +110,7 @@ def test_agent_remove_cancelled(host_with_claw: tuple[Path, str, str]):
     _, alias, _ = host_with_claw
 
     with patch("clawrium.core.lifecycle.remove_agent") as mock_remove:
-        result = runner.invoke(
-            app, ["agent", "remove", f"opc-{alias}"], input="n\n"
-        )
+        result = runner.invoke(app, ["agent", "remove", f"opc-{alias}"], input="n\n")
 
         assert result.exit_code == 0
         assert "cancelled" in result.output.lower()
@@ -130,14 +126,14 @@ def test_agent_remove_host_not_found(isolated_config: Path):
 
 
 def test_agent_remove_claw_not_installed(host_with_claw: tuple[Path, str, str]):
-    """Error when claw is not installed on host."""
+    """Error when named agent is not found."""
     _, alias, _ = host_with_claw
 
     # Try to remove a different claw type
     result = runner.invoke(app, ["agent", "remove", f"zc-{alias}", "--force"])
 
     assert result.exit_code == 1
-    assert "not installed" in result.output.lower()
+    assert "not found" in result.output.lower()
 
 
 def test_agent_remove_playbook_failure(host_with_claw: tuple[Path, str, str]):
@@ -155,9 +151,7 @@ def test_agent_remove_playbook_failure(host_with_claw: tuple[Path, str, str]):
             "error": "SSH connection failed",
         }
 
-        result = runner.invoke(
-            app, ["agent", "remove", f"opc-{alias}"], input="y\n"
-        )
+        result = runner.invoke(app, ["agent", "remove", f"opc-{alias}"], input="y\n")
 
         assert result.exit_code == 1
         assert "failed" in result.output.lower()
@@ -173,9 +167,7 @@ def test_agent_remove_lifecycle_error(host_with_claw: tuple[Path, str, str]):
     with patch("clawrium.core.lifecycle.remove_agent") as mock_remove:
         mock_remove.side_effect = LifecycleError("Test error message")
 
-        result = runner.invoke(
-            app, ["agent", "remove", f"opc-{alias}"], input="y\n"
-        )
+        result = runner.invoke(app, ["agent", "remove", f"opc-{alias}"], input="y\n")
 
         assert result.exit_code == 1
         assert "error" in result.output.lower()
@@ -211,9 +203,7 @@ def test_agent_remove_with_running_claw(host_with_claw: tuple[Path, str, str]):
             "error": None,
         }
 
-        result = runner.invoke(
-            app, ["agent", "remove", f"opc-{alias}"], input="y\n"
-        )
+        result = runner.invoke(app, ["agent", "remove", f"opc-{alias}"], input="y\n")
 
         assert result.exit_code == 0
         assert "removed successfully" in result.output.lower()
@@ -243,9 +233,7 @@ def test_agent_remove_event_callbacks(host_with_claw: tuple[Path, str, str]):
     with patch(
         "clawrium.core.lifecycle.remove_agent", side_effect=mock_remove_with_events
     ):
-        result = runner.invoke(
-            app, ["agent", "remove", f"opc-{alias}"], input="y\n"
-        )
+        result = runner.invoke(app, ["agent", "remove", f"opc-{alias}"], input="y\n")
 
         assert result.exit_code == 0
         # Event messages should appear in output
@@ -261,9 +249,7 @@ def test_agent_remove_keyboard_interrupt(host_with_claw: tuple[Path, str, str]):
     with patch("clawrium.core.lifecycle.remove_agent") as mock_remove:
         mock_remove.side_effect = KeyboardInterrupt()
 
-        result = runner.invoke(
-            app, ["agent", "remove", f"opc-{alias}"], input="y\n"
-        )
+        result = runner.invoke(app, ["agent", "remove", f"opc-{alias}"], input="y\n")
 
         assert result.exit_code == 1
         assert "cancelled" in result.output.lower()

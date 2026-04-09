@@ -17,7 +17,7 @@ def create_host_with_claw(
     hostname: str = "192.168.1.100",
     alias: str = "work",
     key_id: str = "work",
-    claw_type: str = "opc",
+    claw_type: str = "openclaw",
     onboarding_state: str = "pending",
 ) -> None:
     """Create a test host with a claw installed."""
@@ -52,7 +52,7 @@ def create_host_with_claw(
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "assistant",
-                    "user": f"{claw_type}-assistant",
+                    "user": "assistant",
                     "onboarding": {
                         "state": onboarding_state,
                         "started_at": "2026-04-06T00:00:00+00:00",
@@ -117,7 +117,7 @@ def test_start_ready_state_succeeds(isolated_config: Path):
                     "clawrium.core.lifecycle.get_config_dir",
                     return_value=isolated_config,
                 ):
-                    result = runner.invoke(app, ["agent", "start", "opc-work"])
+                    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     print("Exit code:", result.exit_code)
     print("Output:")
@@ -138,19 +138,19 @@ def test_start_pending_state_blocked(isolated_config: Path):
     """Start when state=PENDING is blocked and shows configure hint."""
     create_host_with_claw(isolated_config, onboarding_state="pending")
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Cannot start" in result.output
     assert "onboarding not started" in result.output
-    assert "clm agent configure opc-work" in result.output
+    assert "clm agent configure assistant" in result.output
 
 
 def test_start_providers_state_blocked(isolated_config: Path):
     """Start when state=PROVIDERS is blocked and shows incomplete stages."""
     create_host_with_claw(isolated_config, onboarding_state="providers")
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Cannot start" in result.output
@@ -166,7 +166,7 @@ def test_start_identity_state_blocked(isolated_config: Path):
     """Start when state=IDENTITY (1/4) shows correct stage count."""
     create_host_with_claw(isolated_config, onboarding_state="identity")
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Cannot start" in result.output
@@ -180,7 +180,7 @@ def test_start_channels_state_blocked(isolated_config: Path):
     """Start when state=CHANNELS is blocked."""
     create_host_with_claw(isolated_config, onboarding_state="channels")
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Cannot start" in result.output
@@ -193,7 +193,7 @@ def test_start_validate_state_blocked(isolated_config: Path):
     """Start when state=VALIDATE is blocked."""
     create_host_with_claw(isolated_config, onboarding_state="validate")
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Cannot start" in result.output
@@ -227,7 +227,7 @@ def test_start_with_force_when_not_ready_succeeds(isolated_config: Path):
                         return_value=isolated_config,
                     ):
                         result = runner.invoke(
-                            app, ["agent", "start", "opc-work", "--force"]
+                            app, ["agent", "start", "assistant", "--force"]
                         )
 
     assert result.exit_code == 0
@@ -236,21 +236,21 @@ def test_start_with_force_when_not_ready_succeeds(isolated_config: Path):
 
 
 def test_start_invalid_claw_name_fails(isolated_config: Path):
-    """Start with invalid claw name format fails."""
+    """Start with unknown name fails."""
     create_host_with_claw(isolated_config)
 
     result = runner.invoke(app, ["agent", "start", "invalid"])
 
     assert result.exit_code == 1
-    assert "Invalid agent name format" in result.output
+    assert "not found" in result.output.lower()
 
 
 def test_start_unknown_host_fails(isolated_config: Path):
-    """Start with unknown host fails."""
-    result = runner.invoke(app, ["agent", "start", "opc-unknown"])
+    """Start with unknown agent fails."""
+    result = runner.invoke(app, ["agent", "start", "unknown-agent"])
 
     assert result.exit_code == 1
-    assert "Host 'unknown' not found" in result.output
+    assert "not found" in result.output.lower()
 
 
 def test_start_claw_not_installed_fails(isolated_config: Path):
@@ -287,10 +287,10 @@ def test_start_claw_not_installed_fails(isolated_config: Path):
 
     hosts_file.write_text(json.dumps(hosts_data, indent=2))
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
-    assert "not installed" in result.output
+    assert "not found" in result.output.lower()
 
 
 def test_start_corrupted_hosts_file_fails(isolated_config: Path):
@@ -300,10 +300,10 @@ def test_start_corrupted_hosts_file_fails(isolated_config: Path):
 
     hosts_file.write_text("invalid json {")
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
-    assert "clm host list" in result.output
+    assert "corrupted" in result.output.lower()
 
 
 def test_start_missing_onboarding_initializes(isolated_config: Path):
@@ -335,11 +335,11 @@ def test_start_missing_onboarding_initializes(isolated_config: Path):
                 "tags": [],
             },
             "claws": {
-                "opc": {
+                "openclaw": {
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "assistant",
-                    "user": "opc-assistant",
+                    "user": "assistant",
                 }
             },
         }
@@ -347,7 +347,7 @@ def test_start_missing_onboarding_initializes(isolated_config: Path):
 
     hosts_file.write_text(json.dumps(hosts_data, indent=2))
 
-    result = runner.invoke(app, ["agent", "start", "opc-work"])
+    result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Cannot start" in result.output
@@ -358,8 +358,10 @@ def test_start_keyboard_interrupt_during_execution(isolated_config: Path):
     """Start handles KeyboardInterrupt gracefully."""
     create_host_with_claw(isolated_config, onboarding_state="ready")
 
-    with patch("clawrium.cli.agent.get_host", side_effect=KeyboardInterrupt):
-        result = runner.invoke(app, ["agent", "start", "opc-work"])
+    with patch(
+        "clawrium.cli.agent._resolve_agent_instance", side_effect=KeyboardInterrupt
+    ):
+        result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Cancelled" in result.output
@@ -395,11 +397,11 @@ def test_start_claw_not_found_during_initialization(isolated_config: Path):
                 "tags": [],
             },
             "claws": {
-                "opc": {
+                "openclaw": {
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "assistant",
-                    "user": "opc-assistant",
+                    "user": "assistant",
                 }
             },
         }
@@ -410,9 +412,9 @@ def test_start_claw_not_found_during_initialization(isolated_config: Path):
     # Mock initialize_onboarding to raise AgentNotFoundError
     with patch(
         "clawrium.cli.agent.initialize_onboarding",
-        side_effect=AgentNotFoundError("Claw 'opc' not found on host 'work'"),
+        side_effect=AgentNotFoundError("Claw 'openclaw' not found on host 'work'"),
     ):
-        result = runner.invoke(app, ["agent", "start", "opc-work"])
+        result = runner.invoke(app, ["agent", "start", "assistant"])
 
     assert result.exit_code == 1
     assert "Error:" in result.output

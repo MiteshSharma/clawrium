@@ -35,7 +35,7 @@ secret_app = typer.Typer(
 
 @secret_app.command(name="set")
 def set_cmd(
-    claw_name: str = typer.Argument(..., help="Agent name (e.g., opc-work)"),
+    claw_name: str = typer.Argument(..., help="Agent instance name"),
     key: str = typer.Argument(..., help="Secret key name (e.g., OPENAI_API_KEY)"),
     description: Optional[str] = typer.Option(
         None, "--description", "-d", help="Description of the secret"
@@ -101,7 +101,7 @@ def set_cmd(
 
 @secret_app.command(name="list")
 def list_cmd(
-    claw_name: str = typer.Argument(..., help="Agent name (e.g., zc-kevin)"),
+    claw_name: str = typer.Argument(..., help="Agent instance name"),
 ) -> None:
     """List secrets for an agent.
 

@@ -139,13 +139,9 @@ def get_missing_secrets(claw_type: str, host: dict, claw_record: dict) -> list[s
     Returns:
         List of missing required secret keys
     """
-    # Use claw name directly from record (set during installation)
-    # Falls back to deriving from user field for backward compatibility
-    claw_name = claw_record.get("name")
-    if not claw_name:
-        # Backward compatibility: extract from user field (e.g., "opc-work" -> "work")
-        claw_user = claw_record.get("user", "")
-        claw_name = claw_user.split("-", 1)[1] if "-" in claw_user else claw_user
+    # Use canonical instance name.
+    # For current installs this is stored in `user`; `name` is supported as fallback.
+    claw_name = claw_record.get("name") or claw_record.get("user", "")
 
     if not claw_name:
         # Cannot determine claw name - return empty (no secrets can be checked)

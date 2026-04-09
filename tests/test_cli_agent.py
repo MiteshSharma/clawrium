@@ -151,11 +151,11 @@ def test_agent_ps_no_claws():
 
 # Tests for placeholder commands
 def test_agent_configure_requires_valid_name():
-    """clm agent configure requires valid claw name format."""
+    """clm agent configure requires an installed agent name."""
     result = runner.invoke(app, ["agent", "configure", "opc-work"])
 
     assert result.exit_code == 1
-    assert "host" in result.output.lower() and "not found" in result.output.lower()
+    assert "not found" in result.output.lower()
 
 
 def test_agent_remove_placeholder():
