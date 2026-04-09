@@ -1,62 +1,65 @@
-name: zeroclaw
-description: "Lightweight AI assistant for edge devices and Raspberry Pi"
+agent:
+  type: zeroclaw
+  description: "Lightweight AI assistant for edge devices and Raspberry Pi"
 
-# Secrets required for this claw (install will fail if missing)
-required_secrets:
-  - key: LLM_PROVIDER_URL
-    description: "LLM API endpoint URL (e.g., http://192.168.1.100:11434)"
-  - key: LLM_MODEL
-    description: "Model name to use (e.g., llama3, gpt-4)"
+# Secrets required for this agent (installation fails when missing)
+secrets:
+  required:
+    - key: LLM_PROVIDER_URL
+      description: "LLM API endpoint URL (e.g., http://192.168.1.100:11434)"
+    - key: LLM_MODEL
+      description: "Model name to use (e.g., llama3, gpt-4)"
 
-# Optional secrets (claw works without them but with reduced functionality)
-optional_secrets:
-  - key: LLM_API_KEY
-    description: "API key for LLM provider (optional for local)"
+  # Optional secrets (agent still runs without them)
+  optional:
+    - key: LLM_API_KEY
+      description: "API key for LLM provider (optional for local)"
 
 # Onboarding workflow configuration
 onboarding:
-  providers:
-    required: true
-    description: "Assign inference provider"
-    tasks:
-      - id: select_provider
-        name: "Select inference provider"
-        type: provider_select
-      - id: verify_provider
-        name: "Verify provider connectivity"
-        type: provider_test
+  stages:
+    providers:
+      required: true
+      description: "Assign inference provider"
+      tasks:
+        - id: select_provider
+          name: "Select inference provider"
+          type: provider_select
+        - id: verify_provider
+          name: "Verify provider connectivity"
+          type: provider_test
 
-  identity:
-    required: false
-    auto_skip: true
-    description: "ZeroClaw uses minimal identity"
+    identity:
+      required: false
+      auto_skip: true
+      description: "ZeroClaw uses minimal identity"
 
-  channels:
-    required: true
-    description: "Configure communication channel"
-    tasks:
-      - id: confirm_cli
-        name: "Confirm CLI channel"
-        type: confirm
-        message: "ZeroClaw will use CLI for communication"
-        default: true
+    channels:
+      required: true
+      description: "Configure communication channel"
+      tasks:
+        - id: confirm_cli
+          name: "Confirm CLI channel"
+          type: confirm
+          message: "ZeroClaw will use CLI for communication"
+          default: true
 
-  validate:
-    description: "Verify installation"
-    tasks:
-      - id: binary_check
-        name: "Verify binary installed"
-        type: command
-        command: "zeroclaw --version"
-      - id: config_check
-        name: "Verify config exists"
-        type: file_exists
-        paths:
-          - "~/.zeroclaw/config.toml"
+    validate:
+      description: "Verify installation"
+      tasks:
+        - id: binary_check
+          name: "Verify binary installed"
+          type: command
+          command: "zeroclaw --version"
+        - id: config_check
+          name: "Verify config exists"
+          type: file_exists
+          paths:
+            - "~/.zeroclaw/config.toml"
 
 # Note: Same statically-linked binary is used across OS versions (Ubuntu 22.04/24.04)
 # so SHA256 checksums are identical per architecture.
-entries:
+platforms:
   # Raspberry Pi 2/3 (armv7l) - Debian 13 (trixie)
   - version: "0.5.7"
     os: debian

@@ -1189,12 +1189,12 @@ def registry_list() -> None:
 
 @registry_app.command(name="show")
 def registry_show(
-    claw_name: str = typer.Argument(..., help="Name of the agent type to show"),
+    agent_type: str = typer.Argument(..., help="Name of the agent type to show"),
 ) -> None:
     """Show detailed information about an agent type."""
     from clawrium.cli.registry import show
 
-    show(claw_name=claw_name)
+    show(agent_type=agent_type)
 
 
 agent_app.add_typer(registry_app, name="registry")

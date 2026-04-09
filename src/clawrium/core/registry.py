@@ -1,53 +1,60 @@
-"""Registry loading and claw manifest management.
+"""Registry loading and agent manifest management.
 
-This module provides functions to discover available claw types from bundled
-manifests and extract their requirements and platform compatibility.
+This module discovers available agent types from bundled manifests and validates
+platform compatibility, onboarding metadata, and secret requirements.
 """
 
 import logging
 import re
-from typing import NotRequired, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import yaml
-from packaging.version import Version, InvalidVersion
+from packaging.version import InvalidVersion, Version
 
 logger = logging.getLogger(__name__)
 
 
-class InvalidClawNameError(Exception):
-    """Raised when claw name contains invalid characters."""
+class InvalidAgentTypeError(Exception):
+    """Raised when an agent type contains invalid characters."""
 
     pass
 
 
-def validate_claw_name(claw_name: str) -> None:
-    """Validate claw name to prevent path traversal attacks.
+# Backward-compatible alias for external imports.
+InvalidClawNameError = InvalidAgentTypeError
+
+
+def validate_agent_type(agent_type: str) -> None:
+    """Validate agent type to prevent path traversal attacks.
 
     Args:
-        claw_name: Name of the claw to validate
+        agent_type: Type identifier to validate
 
     Raises:
-        InvalidClawNameError: If claw name contains invalid characters
+        InvalidAgentTypeError: If the identifier contains invalid characters
     """
-    if not claw_name:
-        raise InvalidClawNameError("Claw name cannot be empty")
+    if not agent_type:
+        raise InvalidAgentTypeError("Agent type cannot be empty")
 
-    # Only allow alphanumeric, underscore, and hyphen
-    if not re.match(r"^[a-zA-Z0-9_-]+$", claw_name):
-        raise InvalidClawNameError(
-            f"Claw name '{claw_name}' contains invalid characters. "
+    if not re.match(r"^[a-zA-Z0-9_-]+$", agent_type):
+        raise InvalidAgentTypeError(
+            f"Agent type '{agent_type}' contains invalid characters. "
             "Only alphanumeric, underscore, and hyphen are allowed."
         )
 
-    # Reject path traversal attempts
-    if ".." in claw_name or "/" in claw_name or "\\" in claw_name:
-        raise InvalidClawNameError(
-            f"Claw name '{claw_name}' contains path traversal characters"
+    if ".." in agent_type or "/" in agent_type or "\\" in agent_type:
+        raise InvalidAgentTypeError(
+            f"Agent type '{agent_type}' contains path traversal characters"
         )
 
 
+def validate_claw_name(claw_name: str) -> None:
+    """Backward-compatible wrapper around `validate_agent_type`."""
+    validate_agent_type(claw_name)
+
+
 class Requirements(TypedDict):
-    """Claw requirements specification."""
+    """Runtime requirements for a supported platform entry."""
 
     min_memory_mb: int
     gpu_required: bool
@@ -55,21 +62,21 @@ class Requirements(TypedDict):
 
 
 class SecretDefinition(TypedDict):
-    """Secret definition in manifest."""
+    """Secret definition in a manifest."""
 
     key: str
     description: str
 
 
-class ManifestEntry(TypedDict):
-    """Single platform entry in a claw manifest."""
+class PlatformEntry(TypedDict):
+    """Single supported platform in an agent manifest."""
 
     version: str
     os: str
     os_version: str
     arch: str
     requirements: Requirements
-    sha256: NotRequired[str]  # SHA256 checksum for binary verification
+    sha256: NotRequired[str]
 
 
 class OnboardingTask(TypedDict):
@@ -78,7 +85,6 @@ class OnboardingTask(TypedDict):
     id: str
     name: str
     type: str
-    # Optional fields for different task types
     path: NotRequired[str]
     template: NotRequired[str]
     prompt: NotRequired[str]
@@ -87,7 +93,7 @@ class OnboardingTask(TypedDict):
     message: NotRequired[str]
     command: NotRequired[str]
     paths: NotRequired[list[str]]
-    fields: NotRequired[list[dict]]
+    fields: NotRequired[list[dict[str, Any]]]
     min_select: NotRequired[int]
 
 
@@ -100,147 +106,534 @@ class OnboardingStage(TypedDict):
     auto_skip: NotRequired[bool]
 
 
-class ClawManifest(TypedDict):
-    """Complete claw manifest with all platform entries."""
+class OnboardingConfig(TypedDict):
+    """Onboarding configuration container."""
 
-    name: str
+    stages: NotRequired[dict[str, OnboardingStage]]
+
+
+class ManifestSecrets(TypedDict):
+    """Secret definitions for an agent manifest."""
+
+    required: NotRequired[list[SecretDefinition]]
+    optional: NotRequired[list[SecretDefinition]]
+
+
+class AgentInfo(TypedDict):
+    """Agent metadata at the top of a manifest."""
+
+    type: str
     description: str
-    entries: list[ManifestEntry]
-    required_secrets: NotRequired[list[SecretDefinition]]
-    optional_secrets: NotRequired[list[SecretDefinition]]
-    onboarding: NotRequired[dict[str, OnboardingStage]]
+
+
+class AgentManifest(TypedDict):
+    """Complete agent manifest."""
+
+    agent: AgentInfo
+    platforms: list[PlatformEntry]
+    secrets: NotRequired[ManifestSecrets]
+    onboarding: NotRequired[OnboardingConfig]
 
 
 class CompatibilityResult(TypedDict):
-    """Result of compatibility check between host and claw."""
+    """Result of a host compatibility check."""
 
     compatible: bool
-    matched_entry: ManifestEntry | None
+    matched_entry: PlatformEntry | None
     reasons: list[str]
 
 
 class ManifestNotFoundError(Exception):
-    """Raised when a claw manifest is not found."""
+    """Raised when an agent manifest is not found."""
 
     pass
 
 
 class ManifestParseError(Exception):
-    """Raised when a manifest YAML is malformed."""
+    """Raised when a manifest is malformed."""
 
     pass
 
 
-def load_manifest(claw_name: str) -> ClawManifest:
-    """Load claw manifest from bundled registry.
+def _raise_parse_error(agent_type: str, message: str) -> None:
+    """Raise a manifest parse error with a stable prefix."""
+    raise ManifestParseError(f"Manifest for '{agent_type}' {message}")
+
+
+def _as_dict(value: object, path: str, agent_type: str) -> dict[str, Any]:
+    """Validate and return a dictionary value."""
+    if not isinstance(value, dict):
+        _raise_parse_error(
+            agent_type, f"has invalid `{path}` section (expected object)"
+        )
+    return value
+
+
+def _validate_requirements(
+    requirements_value: object,
+    agent_type: str,
+    platform_index: int,
+) -> Requirements:
+    """Validate requirements for a platform entry."""
+    path = f"platforms[{platform_index}].requirements"
+    requirements = _as_dict(requirements_value, path, agent_type)
+
+    min_memory = requirements.get("min_memory_mb")
+    if not isinstance(min_memory, int) or min_memory < 0:
+        _raise_parse_error(
+            agent_type,
+            f"has invalid `{path}.min_memory_mb` (expected non-negative integer)",
+        )
+
+    gpu_required = requirements.get("gpu_required")
+    if not isinstance(gpu_required, bool):
+        _raise_parse_error(
+            agent_type, f"has invalid `{path}.gpu_required` (expected boolean)"
+        )
+
+    dependencies_value = requirements.get("dependencies")
+    if not isinstance(dependencies_value, dict):
+        _raise_parse_error(
+            agent_type, f"has invalid `{path}.dependencies` (expected object)"
+        )
+
+    dependencies: dict[str, str] = {}
+    for dependency_name, dependency_version in dependencies_value.items():
+        if not isinstance(dependency_name, str) or not dependency_name:
+            _raise_parse_error(
+                agent_type, f"has invalid dependency key in `{path}.dependencies`"
+            )
+        if not isinstance(dependency_version, str) or not dependency_version:
+            _raise_parse_error(
+                agent_type,
+                f"has invalid dependency constraint for `{dependency_name}` in `{path}.dependencies`",
+            )
+        dependencies[dependency_name] = dependency_version
+
+    return {
+        "min_memory_mb": min_memory,
+        "gpu_required": gpu_required,
+        "dependencies": dependencies,
+    }
+
+
+def _validate_platform_entry(
+    entry_value: object,
+    agent_type: str,
+    platform_index: int,
+) -> PlatformEntry:
+    """Validate one platform entry."""
+    path = f"platforms[{platform_index}]"
+    entry = _as_dict(entry_value, path, agent_type)
+
+    required_string_fields = ["version", "os", "os_version", "arch"]
+    validated_entry: PlatformEntry = {
+        "version": "",
+        "os": "",
+        "os_version": "",
+        "arch": "",
+        "requirements": {
+            "min_memory_mb": 0,
+            "gpu_required": False,
+            "dependencies": {},
+        },
+    }
+
+    for field_name in required_string_fields:
+        field_value = entry.get(field_name)
+        if not isinstance(field_value, str) or not field_value:
+            _raise_parse_error(
+                agent_type,
+                f"has invalid `{path}.{field_name}` (expected non-empty string)",
+            )
+        validated_entry[field_name] = field_value  # type: ignore[literal-required]
+
+    validated_entry["requirements"] = _validate_requirements(
+        entry.get("requirements"),
+        agent_type,
+        platform_index,
+    )
+
+    if "sha256" in entry:
+        sha256 = entry["sha256"]
+        if not isinstance(sha256, str) or not sha256:
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.sha256` (expected non-empty string)"
+            )
+        validated_entry["sha256"] = sha256
+
+    return validated_entry
+
+
+def _validate_secret_definitions(
+    secrets_value: object,
+    agent_type: str,
+) -> ManifestSecrets:
+    """Validate secret definitions."""
+    secrets = _as_dict(secrets_value, "secrets", agent_type)
+    validated: ManifestSecrets = {}
+
+    for secret_class in ("required", "optional"):
+        if secret_class not in secrets:
+            continue
+
+        section_value = secrets[secret_class]
+        if not isinstance(section_value, list):
+            _raise_parse_error(
+                agent_type,
+                f"has invalid `secrets.{secret_class}` (expected list)",
+            )
+
+        section_entries: list[SecretDefinition] = []
+        for index, item in enumerate(section_value):
+            item_path = f"secrets.{secret_class}[{index}]"
+            secret_definition = _as_dict(item, item_path, agent_type)
+
+            key = secret_definition.get("key")
+            if not isinstance(key, str) or not key:
+                _raise_parse_error(
+                    agent_type,
+                    f"has invalid `{item_path}.key` (expected non-empty string)",
+                )
+
+            description = secret_definition.get("description")
+            if not isinstance(description, str) or not description:
+                _raise_parse_error(
+                    agent_type,
+                    f"has invalid `{item_path}.description` (expected non-empty string)",
+                )
+
+            section_entries.append({"key": key, "description": description})
+
+        validated[secret_class] = section_entries
+
+    return validated
+
+
+def _validate_onboarding_task(
+    task_value: object,
+    agent_type: str,
+    stage_name: str,
+    task_index: int,
+) -> OnboardingTask:
+    """Validate one onboarding task."""
+    path = f"onboarding.stages.{stage_name}.tasks[{task_index}]"
+    task = _as_dict(task_value, path, agent_type)
+
+    required_string_fields = ["id", "name", "type"]
+    validated_task: OnboardingTask = {"id": "", "name": "", "type": ""}
+
+    for field_name in required_string_fields:
+        field_value = task.get(field_name)
+        if not isinstance(field_value, str) or not field_value:
+            _raise_parse_error(
+                agent_type,
+                f"has invalid `{path}.{field_name}` (expected non-empty string)",
+            )
+        validated_task[field_name] = field_value  # type: ignore[literal-required]
+
+    optional_string_fields = ["path", "template", "prompt", "message", "command"]
+    for field_name in optional_string_fields:
+        if field_name in task:
+            field_value = task[field_name]
+            if not isinstance(field_value, str):
+                _raise_parse_error(
+                    agent_type, f"has invalid `{path}.{field_name}` (expected string)"
+                )
+            validated_task[field_name] = field_value  # type: ignore[literal-required]
+
+    if "options" in task:
+        options = task["options"]
+        if not isinstance(options, list) or any(
+            not isinstance(option, str) for option in options
+        ):
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.options` (expected string list)"
+            )
+        validated_task["options"] = options
+
+    if "paths" in task:
+        paths = task["paths"]
+        if not isinstance(paths, list) or any(
+            not isinstance(item, str) for item in paths
+        ):
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.paths` (expected string list)"
+            )
+        validated_task["paths"] = paths
+
+    if "fields" in task:
+        fields = task["fields"]
+        if not isinstance(fields, list) or any(
+            not isinstance(field, dict) for field in fields
+        ):
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.fields` (expected object list)"
+            )
+        validated_task["fields"] = fields  # type: ignore[assignment]
+
+    if "default" in task:
+        default = task["default"]
+        if not isinstance(default, (str, bool)):
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.default` (expected string or boolean)"
+            )
+        validated_task["default"] = default
+
+    if "min_select" in task:
+        min_select = task["min_select"]
+        if not isinstance(min_select, int) or min_select < 0:
+            _raise_parse_error(
+                agent_type,
+                f"has invalid `{path}.min_select` (expected non-negative integer)",
+            )
+        validated_task["min_select"] = min_select
+
+    return validated_task
+
+
+def _validate_onboarding_stage(
+    stage_value: object,
+    agent_type: str,
+    stage_name: str,
+) -> OnboardingStage:
+    """Validate one onboarding stage definition."""
+    path = f"onboarding.stages.{stage_name}"
+    stage = _as_dict(stage_value, path, agent_type)
+
+    description = stage.get("description")
+    if not isinstance(description, str) or not description:
+        _raise_parse_error(
+            agent_type, f"has invalid `{path}.description` (expected non-empty string)"
+        )
+
+    validated_stage: OnboardingStage = {"description": description}
+
+    if "required" in stage:
+        required = stage["required"]
+        if not isinstance(required, bool):
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.required` (expected boolean)"
+            )
+        validated_stage["required"] = required
+
+    if "auto_skip" in stage:
+        auto_skip = stage["auto_skip"]
+        if not isinstance(auto_skip, bool):
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.auto_skip` (expected boolean)"
+            )
+        validated_stage["auto_skip"] = auto_skip
+
+    if "tasks" in stage:
+        tasks = stage["tasks"]
+        if not isinstance(tasks, list):
+            _raise_parse_error(
+                agent_type, f"has invalid `{path}.tasks` (expected list)"
+            )
+        validated_stage["tasks"] = [
+            _validate_onboarding_task(task, agent_type, stage_name, index)
+            for index, task in enumerate(tasks)
+        ]
+
+    return validated_stage
+
+
+def _validate_onboarding(
+    onboarding_value: object,
+    agent_type: str,
+) -> OnboardingConfig:
+    """Validate onboarding metadata."""
+    onboarding = _as_dict(onboarding_value, "onboarding", agent_type)
+    validated: OnboardingConfig = {}
+
+    if "stages" not in onboarding:
+        return validated
+
+    stages_value = onboarding["stages"]
+    stages = _as_dict(stages_value, "onboarding.stages", agent_type)
+
+    validated_stages: dict[str, OnboardingStage] = {}
+    for stage_name, stage_value in stages.items():
+        if not isinstance(stage_name, str) or not stage_name:
+            _raise_parse_error(
+                agent_type, "has invalid stage name under `onboarding.stages`"
+            )
+        validated_stages[stage_name] = _validate_onboarding_stage(
+            stage_value,
+            agent_type,
+            stage_name,
+        )
+
+    validated["stages"] = validated_stages
+    return validated
+
+
+def _validate_manifest(manifest_data: object, agent_type: str) -> AgentManifest:
+    """Validate the full manifest and return normalized data."""
+    root = _as_dict(manifest_data, "root", agent_type)
+
+    required_fields = ["agent", "platforms"]
+    missing_fields = [
+        field_name for field_name in required_fields if field_name not in root
+    ]
+    if missing_fields:
+        _raise_parse_error(
+            agent_type,
+            f"is missing required fields ({', '.join(missing_fields)})",
+        )
+
+    agent_info = _as_dict(root["agent"], "agent", agent_type)
+
+    manifest_agent_type = agent_info.get("type")
+    if not isinstance(manifest_agent_type, str) or not manifest_agent_type:
+        _raise_parse_error(
+            agent_type, "has invalid `agent.type` (expected non-empty string)"
+        )
+    if manifest_agent_type != agent_type:
+        _raise_parse_error(
+            agent_type,
+            f"has `agent.type={manifest_agent_type}` but was loaded as '{agent_type}'",
+        )
+
+    description = agent_info.get("description", "")
+    if not isinstance(description, str):
+        _raise_parse_error(
+            agent_type, "has invalid `agent.description` (expected string)"
+        )
+
+    platforms_value = root["platforms"]
+    if not isinstance(platforms_value, list) or not platforms_value:
+        _raise_parse_error(
+            agent_type, "has invalid `platforms` (expected non-empty list)"
+        )
+
+    platforms = [
+        _validate_platform_entry(entry, agent_type, index)
+        for index, entry in enumerate(platforms_value)
+    ]
+
+    validated_manifest: AgentManifest = {
+        "agent": {
+            "type": manifest_agent_type,
+            "description": description,
+        },
+        "platforms": platforms,
+    }
+
+    if "secrets" in root:
+        validated_manifest["secrets"] = _validate_secret_definitions(
+            root["secrets"],
+            agent_type,
+        )
+
+    if "onboarding" in root:
+        validated_manifest["onboarding"] = _validate_onboarding(
+            root["onboarding"],
+            agent_type,
+        )
+
+    return validated_manifest
+
+
+def load_manifest(claw_name: str) -> AgentManifest:
+    """Load an agent manifest from the bundled registry.
 
     Args:
-        claw_name: Name of the claw (e.g., "openclaw")
+        claw_name: Agent type identifier (for example, ``openclaw``)
 
     Returns:
-        Parsed ClawManifest dictionary
+        Parsed and validated `AgentManifest`
 
     Raises:
-        ManifestNotFoundError: If claw directory doesn't exist
-        ManifestParseError: If YAML is invalid
-        InvalidClawNameError: If claw name contains invalid characters
+        ManifestNotFoundError: If the registry directory does not exist
+        ManifestParseError: If the manifest file is malformed
+        InvalidAgentTypeError: If the provided type identifier is invalid
     """
-    # Validate claw name to prevent path traversal
-    validate_claw_name(claw_name)
+    validate_agent_type(claw_name)
 
     try:
-        # Use importlib.resources to read manifest from package
         from importlib.resources import files
 
         registry_package = files("clawrium.platform.registry")
-        claw_dir = registry_package / claw_name
+        agent_dir = registry_package / claw_name
 
-        # Check if claw directory exists
-        if not claw_dir.is_dir():
-            raise ManifestNotFoundError(f"Claw '{claw_name}' not found in registry")
+        if not agent_dir.is_dir():
+            raise ManifestNotFoundError(
+                f"Agent type '{claw_name}' not found in registry"
+            )
 
-        manifest_file = claw_dir / "manifest.yaml"
-
-        # Read and parse manifest
+        manifest_file = agent_dir / "manifest.yaml"
         manifest_text = manifest_file.read_text()
         manifest_data = yaml.safe_load(manifest_text)
 
-        if not isinstance(manifest_data, dict):
-            raise ManifestParseError(
-                f"Manifest for '{claw_name}' is not a valid YAML dict"
-            )
+        return _validate_manifest(manifest_data, claw_name)
 
-        # Validate basic structure
-        if "name" not in manifest_data or "entries" not in manifest_data:
-            raise ManifestParseError(
-                f"Manifest for '{claw_name}' missing required fields (name, entries)"
-            )
-
-        return manifest_data
-
-    except FileNotFoundError as e:
-        raise ManifestNotFoundError(f"Claw '{claw_name}' not found in registry") from e
-    except yaml.YAMLError as e:
+    except FileNotFoundError as error:
+        raise ManifestNotFoundError(
+            f"Agent type '{claw_name}' not found in registry"
+        ) from error
+    except yaml.YAMLError as error:
         raise ManifestParseError(
-            f"Failed to parse manifest for '{claw_name}': {e}"
-        ) from e
+            f"Failed to parse manifest for '{claw_name}': {error}"
+        ) from error
 
 
 def list_claws() -> list[str]:
-    """List all available claw types in the registry.
+    """List all available agent types in the registry.
 
     Returns:
-        Sorted list of claw names
+        Sorted list of available type identifiers
     """
     try:
         from importlib.resources import files
 
         registry_package = files("clawrium.platform.registry")
 
-        # List subdirectories that contain manifest.yaml
-        claws = []
+        agent_types: list[str] = []
         for item in registry_package.iterdir():
-            if item.is_dir():
-                manifest_file = item / "manifest.yaml"
-                try:
-                    # Check if manifest exists by trying to read it
-                    _ = manifest_file.read_text()
-                    claws.append(item.name)
-                except (FileNotFoundError, AttributeError):
-                    # Skip directories without manifest.yaml
-                    continue
+            if not item.is_dir():
+                continue
 
-        return sorted(claws)
+            manifest_file = item / "manifest.yaml"
+            try:
+                _ = manifest_file.read_text()
+                agent_types.append(item.name)
+            except (FileNotFoundError, AttributeError):
+                continue
 
-    except (ModuleNotFoundError, FileNotFoundError) as e:
-        logger.error("Failed to list claws: %s", e)
+        return sorted(agent_types)
+
+    except (ModuleNotFoundError, FileNotFoundError) as error:
+        logger.error("Failed to list agent types: %s", error)
         return []
 
 
-def get_claw_info(claw_name: str) -> dict:
-    """Get summary information about a claw.
+def get_claw_info(claw_name: str) -> dict[str, Any]:
+    """Get summary information about an agent type.
 
     Args:
-        claw_name: Name of the claw
+        claw_name: Agent type identifier
 
     Returns:
-        Dictionary with: name, description, latest_version, supported_platforms
+        Dictionary with: agent_type, description, latest_version, supported_platforms
 
     Raises:
-        ManifestNotFoundError: If claw doesn't exist
+        ManifestNotFoundError: If the type is not available
+        ManifestParseError: If no valid versions are found
     """
     manifest = load_manifest(claw_name)
 
-    # Find latest version (highest semver)
-    versions = []
-    for entry in manifest["entries"]:
+    versions: list[Version] = []
+    for platform in manifest["platforms"]:
         try:
-            versions.append(Version(entry["version"]))
+            versions.append(Version(platform["version"]))
         except InvalidVersion:
             logger.warning(
-                "Invalid version '%s' in manifest for %s", entry["version"], claw_name
+                "Invalid version '%s' in manifest for %s",
+                platform["version"],
+                claw_name,
             )
-            continue
 
     if not versions:
         raise ManifestParseError(
@@ -249,57 +642,53 @@ def get_claw_info(claw_name: str) -> dict:
 
     latest_version = str(max(versions))
 
-    # Build supported platforms list
-    platforms = []
-    for entry in manifest["entries"]:
-        platform = f"{entry['os']} {entry['os_version']} {entry['arch']}"
-        if platform not in platforms:
-            platforms.append(platform)
+    supported_platforms: list[str] = []
+    for platform in manifest["platforms"]:
+        platform_label = f"{platform['os']} {platform['os_version']} {platform['arch']}"
+        if platform_label not in supported_platforms:
+            supported_platforms.append(platform_label)
 
     return {
-        "name": manifest["name"],
-        "description": manifest.get("description", ""),
+        "agent_type": manifest["agent"]["type"],
+        "description": manifest["agent"].get("description", ""),
         "latest_version": latest_version,
-        "supported_platforms": sorted(platforms),
+        "supported_platforms": sorted(supported_platforms),
     }
 
 
 def get_required_secrets(claw_name: str) -> list[SecretDefinition]:
-    """Get list of required secrets for a claw.
+    """Get required secret definitions for an agent type.
 
     Args:
-        claw_name: Name of the claw
+        claw_name: Agent type identifier
 
     Returns:
-        List of SecretDefinition dicts. Empty list if claw has no required_secrets field.
-
-    Raises:
-        ManifestNotFoundError: If claw manifest doesn't exist
+        List of required `SecretDefinition` objects
     """
     manifest = load_manifest(claw_name)
-    return manifest.get("required_secrets", [])
+    return manifest.get("secrets", {}).get("required", [])
 
 
 def get_optional_secrets(claw_name: str) -> list[SecretDefinition]:
-    """Get list of optional secrets for a claw.
+    """Get optional secret definitions for an agent type.
 
     Args:
-        claw_name: Name of the claw
+        claw_name: Agent type identifier
 
     Returns:
-        List of SecretDefinition dicts. Empty list if claw has no optional_secrets field.
-
-    Raises:
-        ManifestNotFoundError: If claw manifest doesn't exist
+        List of optional `SecretDefinition` objects
     """
     manifest = load_manifest(claw_name)
-    return manifest.get("optional_secrets", [])
+    return manifest.get("secrets", {}).get("optional", [])
 
 
-def _parse_version_safe(version_str: str) -> Version:
-    """Parse version string to Version object, returning 0.0.0 for invalid versions."""
+def _parse_version_safe(version_text: str) -> Version:
+    """Parse semantic version text safely.
+
+    Invalid versions are mapped to `0.0.0` so sorting remains deterministic.
+    """
     try:
-        return Version(version_str)
+        return Version(version_text)
     except InvalidVersion:
         return Version("0.0.0")
 
@@ -309,30 +698,21 @@ def check_compatibility(
     hardware: dict,
     version: str | None = None,
 ) -> CompatibilityResult:
-    """Check if host hardware is compatible with a claw.
+    """Check whether host hardware is compatible with an agent type.
 
-    This implements sparse matrix matching - only explicitly supported
-    combinations (OS, version, arch) are valid. All requirements must
-    be met for compatibility.
+    Matching is sparse: only explicit platform entries are considered valid.
 
     Args:
-        claw_name: Name of the claw (e.g., "openclaw")
-        hardware: HardwareInfo dict from host (see hardware.py)
-        version: Optional specific version to check (default: any version)
+        claw_name: Agent type identifier
+        hardware: Host hardware details
+        version: Optional specific version to evaluate
 
     Returns:
-        CompatibilityResult with:
-            - compatible: True if host matches any manifest entry
-            - matched_entry: The ManifestEntry that matched, or None
-            - reasons: List of failure reasons (empty if compatible)
-
-    Raises:
-        ManifestNotFoundError: If claw manifest doesn't exist
+        Compatibility result with matched platform (if any) and reasons.
     """
     manifest = load_manifest(claw_name)
 
-    # Filter entries by version if specified (using semver comparison)
-    entries = manifest["entries"]
+    platforms = manifest["platforms"]
     if version:
         try:
             requested_version = Version(version)
@@ -342,53 +722,50 @@ def check_compatibility(
                 "matched_entry": None,
                 "reasons": [f"Invalid version format: {version}"],
             }
-        entries = [
-            e for e in entries if _parse_version_safe(e["version"]) == requested_version
+
+        platforms = [
+            platform
+            for platform in platforms
+            if _parse_version_safe(platform["version"]) == requested_version
         ]
-        if not entries:
+        if not platforms:
             return {
                 "compatible": False,
                 "matched_entry": None,
                 "reasons": [f"Version {version} not found in manifest"],
             }
     else:
-        # Sort entries by version descending so latest version is preferred
-        entries = sorted(
-            entries,
-            key=lambda e: _parse_version_safe(e["version"]),
+        platforms = sorted(
+            platforms,
+            key=lambda platform: _parse_version_safe(platform["version"]),
             reverse=True,
         )
 
-    # Collect all failure reasons across all entries
-    all_reasons = []
+    all_reasons: list[str] = []
 
-    # Try each entry in order
-    for entry in entries:
-        reasons = []
+    for platform in platforms:
+        reasons: list[str] = []
 
-        # Check platform match (OS, version, arch) - only one reason per entry
-        os_match = entry["os"] == hardware.get("os")
-        version_match = entry["os_version"] == hardware.get("os_version")
-        arch_match = entry["arch"] == hardware.get("architecture")
+        os_match = platform["os"] == hardware.get("os")
+        os_version_match = platform["os_version"] == hardware.get("os_version")
+        arch_match = platform["arch"] == hardware.get("architecture")
 
-        if not os_match or not version_match:
+        if not os_match or not os_version_match:
             reasons.append(
-                f"Requires {entry['os']} {entry['os_version']}, "
+                f"Requires {platform['os']} {platform['os_version']}, "
                 f"host has {hardware.get('os', 'unknown')} {hardware.get('os_version', 'unknown')}"
             )
         elif not arch_match:
             reasons.append(
-                f"Requires {entry['arch']}, host has {hardware.get('architecture', 'unknown')}"
+                f"Requires {platform['arch']}, host has {hardware.get('architecture', 'unknown')}"
             )
 
-        # Check memory requirement (use .get() for safety)
-        requirements = entry.get("requirements", {})
+        requirements = platform.get("requirements", {})
         min_memory = requirements.get("min_memory_mb", 0)
         host_memory = hardware.get("memtotal_mb", 0)
         if host_memory < min_memory:
             reasons.append(f"Requires {min_memory}MB RAM, host has {host_memory}MB")
 
-        # Check GPU requirement (use .get() for safety)
         if requirements.get("gpu_required", False):
             gpu = hardware.get("gpu", {})
             gpu_present = gpu.get("present")
@@ -397,28 +774,22 @@ def check_compatibility(
             elif gpu_present is None:
                 reasons.append("Requires GPU, but GPU detection failed")
 
-        # TODO: Dependency checking deferred to future phase
-        # Hardware dict doesn't include installed package versions yet
-
-        # If this entry matches all requirements, return success
         if not reasons:
             return {
                 "compatible": True,
-                "matched_entry": entry,
+                "matched_entry": platform,
                 "reasons": [],
             }
 
-        # Collect reasons from this entry
         all_reasons.extend(reasons)
 
-    # No entry matched - return failure with all collected reasons
-    # Deduplicate reasons while preserving order
-    unique_reasons = []
+    unique_reasons: list[str] = []
     seen = set()
-    for r in all_reasons:
-        if r not in seen:
-            unique_reasons.append(r)
-            seen.add(r)
+    for reason in all_reasons:
+        if reason in seen:
+            continue
+        seen.add(reason)
+        unique_reasons.append(reason)
 
     return {
         "compatible": False,
