@@ -78,10 +78,16 @@ def install(
         None, "--claw", "-c", help="Claw type to install"
     ),
     host: Optional[str] = typer.Option(None, "--host", "-H", help="Target host"),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Friendly name for the claw instance (max 32 chars, alphanumeric/hyphens/underscores)",
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Install a claw on a host."""
-    install_command(claw=claw, host=host, yes=yes)
+    install_command(claw=claw, host=host, name=name, yes=yes)
 
 
 @agent_app.command()
@@ -233,6 +239,85 @@ def _atomic_write_file(path: str, content: str, mode: int = 0o600) -> None:
         raise
 
 
+def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
+    """Sync provider configuration to remote agent via Ansible.
+
+    This replaces direct SSH config writes with proper Ansible-based configuration
+    management. All configuration is stored in hosts.json and applied via playbooks.
+
+    Args:
+        host: Host alias
+        claw_type: Claw type (zeroclaw, openclaw, etc.)
+        provider: Provider dict with name, type, endpoint, model, etc.
+
+    Raises:
+        RuntimeError: If configuration sync fails
+    """
+    import hashlib
+    from clawrium.core.lifecycle import configure_claw
+
+    host_data = get_host(host)
+    if not host_data:
+        raise RuntimeError(f"Host '{host}' not found")
+
+    result = _get_installed_claw(host, claw_type)
+    if not result:
+        raise RuntimeError(f"Claw '{claw_type}' not installed on '{host}'")
+
+    installed_name, claw_record = result
+
+    # Calculate or preserve gateway port
+    existing_config = claw_record.get("config", {})
+    existing_gateway = existing_config.get("gateway", {})
+
+    if existing_gateway.get("port"):
+        # Preserve existing port
+        gateway_port = existing_gateway["port"]
+    else:
+        # Calculate port on first configuration (same logic as install playbook)
+        port_hash = int(hashlib.md5(installed_name.encode()).hexdigest(), 16)
+        gateway_port = 40000 + (port_hash % 2000)
+
+    # Build gateway config based on claw type
+    if claw_type == "zeroclaw":
+        gateway_config = {
+            "host": "0.0.0.0",
+            "port": gateway_port,
+            "allow_public_bind": True
+        }
+    elif claw_type == "openclaw":
+        gateway_config = {
+            "bind": "lan",
+            "port": gateway_port
+        }
+    else:
+        # Default gateway config
+        gateway_config = {
+            "host": "0.0.0.0",
+            "port": gateway_port
+        }
+
+    # Build provider config
+    provider_config = {
+        "name": provider.get("name", ""),
+        "type": provider.get("type", "ollama"),
+        "endpoint": provider.get("endpoint", ""),
+        "default_model": provider.get("default_model", "")
+    }
+
+    # Build complete config data
+    config_data = {
+        "gateway": gateway_config,
+        "provider": provider_config
+    }
+
+    # Call configure_claw to apply configuration via Ansible
+    success, error = configure_claw(host, claw_type, config_data)
+
+    if not success:
+        raise RuntimeError(f"Failed to configure {claw_type}: {error}")
+
+
 def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
     """Run the PROVIDERS onboarding stage.
 
@@ -286,8 +371,21 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
     selected = providers[choice - 1]
     provider_name = selected.get("name")
 
-    console.print("\nSaving provider selection... ", end="")
+    # B3: Sync provider config to remote agent BEFORE completing the stage
+    console.print("\nSyncing config to agent... ", end="")
+    try:
+        _sync_provider_config(host, claw_type, selected)
+        console.print("[green]✓[/green]")
+    except Exception as e:
+        console.print(f"[red]✗[/red] {rich_escape(str(e))}")
+        console.print(
+            f"[red]Error:[/red] Failed to apply provider configuration. "
+            f"Run 'clm agent configure {claw_type[:2]}-{host} --stage providers' to retry."
+        )
+        return False
 
+    # Only complete stage after successful config sync
+    console.print("Saving provider selection... ", end="")
     try:
         complete_stage(
             host,
@@ -956,7 +1054,7 @@ def start(
             )
 
         console.print(
-            f"[green]Starting agent:[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
+            f"[green]Starting agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
         )
 
         def on_event(stage: str, message: str) -> None:
@@ -967,7 +1065,7 @@ def start(
 
         try:
             result = start_claw(
-                host_alias, installed_name, force=force, on_event=on_event
+                host_alias, claw_type, force=force, on_event=on_event
             )
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
@@ -1026,7 +1124,7 @@ def stop(
         installed_name, _ = result
 
         console.print(
-            f"[green]Stopping agent:[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
+            f"[green]Stopping agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
         )
 
         def on_event(stage: str, message: str) -> None:
@@ -1037,7 +1135,7 @@ def stop(
 
         try:
             result = stop_claw(
-                host_alias, installed_name, timeout=timeout, on_event=on_event
+                host_alias, claw_type, timeout=timeout, on_event=on_event
             )
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
@@ -1091,7 +1189,7 @@ def restart(
         installed_name, _ = result
 
         console.print(
-            f"[green]Restarting agent:[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
+            f"[green]Restarting agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
         )
 
         def on_event(stage: str, message: str) -> None:
@@ -1101,7 +1199,7 @@ def restart(
                 console.print(f"  {message}")
 
         try:
-            result = restart_claw(host_alias, installed_name, on_event=on_event)
+            result = restart_claw(host_alias, claw_type, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
