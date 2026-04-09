@@ -12,7 +12,7 @@ def test_registry_list_shows_table():
     result = runner.invoke(app, ["agent", "registry", "list"])
     assert result.exit_code == 0
     assert "openclaw" in result.output.lower()
-    assert "Available Claws" in result.output
+    assert "Available Agent Types" in result.output
 
 
 def test_registry_list_shows_version():
@@ -25,7 +25,7 @@ def test_registry_list_shows_version():
 
 
 def test_registry_show_openclaw():
-    """Test registry show displays claw details."""
+    """Test registry show displays agent details."""
     result = runner.invoke(app, ["agent", "registry", "show", "openclaw"])
     assert result.exit_code == 0
     assert "openclaw" in result.output.lower()
@@ -34,7 +34,7 @@ def test_registry_show_openclaw():
 
 
 def test_registry_show_not_found():
-    """Test registry show with unknown claw shows error."""
+    """Test registry show with unknown agent type shows error."""
     result = runner.invoke(app, ["agent", "registry", "show", "nonexistent"])
     assert result.exit_code == 1
     assert "not found" in result.output.lower()

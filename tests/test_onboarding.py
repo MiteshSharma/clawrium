@@ -369,11 +369,12 @@ class TestCanSkipStage:
 class TestGetStageTasks:
     """Tests for get_stage_tasks function."""
 
-    def test_returns_empty_for_claw_without_onboarding_config(self):
-        """Returns empty list when manifest has no onboarding.stages."""
-        # Current manifests don't have onboarding config
+    def test_returns_tasks_for_manifest_stage(self):
+        """Returns tasks when onboarding stage is defined in manifest."""
         tasks = get_stage_tasks("openclaw", "providers")
-        assert tasks == []
+        assert len(tasks) == 2
+        assert tasks[0]["type"] == "provider_select"
+        assert tasks[1]["type"] == "provider_test"
 
     def test_returns_empty_for_unknown_claw(self):
         """Returns empty list when manifest cannot be loaded."""

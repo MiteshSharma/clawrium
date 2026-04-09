@@ -15,13 +15,13 @@ def test_load_manifest_openclaw():
     manifest = load_manifest("openclaw")
 
     assert isinstance(manifest, dict)
-    assert manifest["name"] == "openclaw"
-    assert "description" in manifest
-    assert "entries" in manifest
-    assert len(manifest["entries"]) > 0
+    assert manifest["agent"]["type"] == "openclaw"
+    assert "description" in manifest["agent"]
+    assert "platforms" in manifest
+    assert len(manifest["platforms"]) > 0
 
     # Validate first entry structure
-    entry = manifest["entries"][0]
+    entry = manifest["platforms"][0]
     assert "version" in entry
     assert "os" in entry
     assert "os_version" in entry
@@ -36,7 +36,7 @@ def test_load_manifest_openclaw():
 
 
 def test_load_manifest_nonexistent():
-    """Test loading nonexistent claw raises ManifestNotFoundError."""
+    """Test loading nonexistent agent type raises ManifestNotFoundError."""
     with pytest.raises(ManifestNotFoundError, match="not found"):
         load_manifest("nonexistent")
 
@@ -72,16 +72,17 @@ def test_load_manifest_not_dict(monkeypatch):
 
     monkeypatch.setattr(registry.yaml, "safe_load", lambda x: ["item1", "item2"])
 
-    with pytest.raises(ManifestParseError, match="not a valid YAML dict"):
+    with pytest.raises(ManifestParseError, match="invalid `root` section"):
         load_manifest("openclaw")
 
 
 def test_load_manifest_missing_required_fields(monkeypatch):
-    """Test manifest missing name/entries raises ManifestParseError."""
-    # Monkeypatch yaml.safe_load to return dict missing 'entries'
+    """Test manifest missing required top-level fields raises ManifestParseError."""
     from clawrium.core import registry
 
-    monkeypatch.setattr(registry.yaml, "safe_load", lambda x: {"name": "incomplete"})
+    monkeypatch.setattr(
+        registry.yaml, "safe_load", lambda x: {"agent": {"type": "openclaw"}}
+    )
 
     with pytest.raises(ManifestParseError, match="missing required fields"):
         load_manifest("openclaw")
@@ -102,7 +103,7 @@ def test_get_claw_info_openclaw():
     info = get_claw_info("openclaw")
 
     assert isinstance(info, dict)
-    assert info["name"] == "openclaw"
+    assert info["agent_type"] == "openclaw"
     assert "description" in info
     assert "latest_version" in info
     assert "supported_platforms" in info
@@ -119,7 +120,7 @@ def test_get_claw_info_openclaw():
 
 
 def test_get_claw_info_nonexistent():
-    """Test get_claw_info with nonexistent claw raises ManifestNotFoundError."""
+    """Test get_claw_info with nonexistent agent type raises ManifestNotFoundError."""
     with pytest.raises(ManifestNotFoundError, match="not found"):
         get_claw_info("nonexistent")
 
@@ -243,7 +244,7 @@ def test_check_compatibility_gpu_required():
     # This should pass since openclaw doesn't require GPU
     assert result["compatible"] is True
 
-    # For a hypothetical claw that requires GPU, we'd need to test the failure case
+    # For a hypothetical agent type that requires GPU, we'd test the failure case.
     # This test validates the logic exists even if openclaw doesn't use it
 
 
@@ -270,7 +271,7 @@ def test_check_compatibility_all_requirements_met():
 
 
 def test_check_compatibility_nonexistent_claw():
-    """Test compatibility check with nonexistent claw raises ManifestNotFoundError."""
+    """Test compatibility check with nonexistent agent type raises ManifestNotFoundError."""
     from clawrium.core.registry import check_compatibility
 
     hardware = {
@@ -317,12 +318,12 @@ def test_load_manifest_zeroclaw():
     manifest = load_manifest("zeroclaw")
 
     assert isinstance(manifest, dict)
-    assert manifest["name"] == "zeroclaw"
-    assert "entries" in manifest
-    assert len(manifest["entries"]) > 0
+    assert manifest["agent"]["type"] == "zeroclaw"
+    assert "platforms" in manifest
+    assert len(manifest["platforms"]) > 0
 
     # Should have armv7l entries for Pi 2/3
-    archs = [e["arch"] for e in manifest["entries"]]
+    archs = [e["arch"] for e in manifest["platforms"]]
     assert "armv7l" in archs
 
 
@@ -507,7 +508,7 @@ def test_get_optional_secrets_returns_list():
 
 
 def test_get_required_secrets_nonexistent_raises():
-    """Test get_required_secrets with nonexistent claw raises ManifestNotFoundError."""
+    """Test get_required_secrets with nonexistent agent type raises ManifestNotFoundError."""
     from clawrium.core.registry import get_required_secrets
 
     with pytest.raises(ManifestNotFoundError, match="not found"):
@@ -515,7 +516,7 @@ def test_get_required_secrets_nonexistent_raises():
 
 
 def test_get_optional_secrets_nonexistent_raises():
-    """Test get_optional_secrets with nonexistent claw raises ManifestNotFoundError."""
+    """Test get_optional_secrets with nonexistent agent type raises ManifestNotFoundError."""
     from clawrium.core.registry import get_optional_secrets
 
     with pytest.raises(ManifestNotFoundError, match="not found"):
@@ -555,7 +556,7 @@ def test_validate_claw_name_valid():
 
     # These should not raise
     validate_claw_name("openclaw")
-    validate_claw_name("zero-claw")
+    validate_claw_name("zero-agent")
     validate_claw_name("claw_v2")
     validate_claw_name("Claw123")
 
@@ -638,9 +639,11 @@ def test_check_compatibility_gpu_required_but_missing(monkeypatch):
 
     # Create a fake manifest with GPU required
     fake_manifest = {
-        "name": "gpuclaw",
-        "description": "GPU-requiring claw",
-        "entries": [
+        "agent": {
+            "type": "gpuclaw",
+            "description": "GPU-requiring agent",
+        },
+        "platforms": [
             {
                 "version": "1.0.0",
                 "os": "ubuntu",
@@ -680,9 +683,11 @@ def test_check_compatibility_gpu_detection_failed(monkeypatch):
     from clawrium.core import registry
 
     fake_manifest = {
-        "name": "gpuclaw",
-        "description": "GPU-requiring claw",
-        "entries": [
+        "agent": {
+            "type": "gpuclaw",
+            "description": "GPU-requiring agent",
+        },
+        "platforms": [
             {
                 "version": "1.0.0",
                 "os": "ubuntu",
@@ -726,15 +731,16 @@ def test_load_manifest_openclaw_with_onboarding():
     assert "onboarding" in manifest
     onboarding = manifest["onboarding"]
     assert isinstance(onboarding, dict)
+    stages = onboarding["stages"]
 
     # Check all expected stages are present
-    assert "providers" in onboarding
-    assert "identity" in onboarding
-    assert "channels" in onboarding
-    assert "validate" in onboarding
+    assert "providers" in stages
+    assert "identity" in stages
+    assert "channels" in stages
+    assert "validate" in stages
 
     # Validate providers stage structure
-    providers = onboarding["providers"]
+    providers = stages["providers"]
     assert providers["required"] is True
     assert "description" in providers
     assert "tasks" in providers
@@ -743,7 +749,7 @@ def test_load_manifest_openclaw_with_onboarding():
     assert providers["tasks"][1]["type"] == "provider_test"
 
     # Validate identity stage structure
-    identity = onboarding["identity"]
+    identity = stages["identity"]
     assert identity["required"] is True
     assert "tasks" in identity
     assert len(identity["tasks"]) == 2
@@ -761,22 +767,23 @@ def test_load_manifest_zeroclaw_with_onboarding():
     assert "onboarding" in manifest
     onboarding = manifest["onboarding"]
     assert isinstance(onboarding, dict)
+    stages = onboarding["stages"]
 
     # Check all expected stages are present
-    assert "providers" in onboarding
-    assert "identity" in onboarding
-    assert "channels" in onboarding
-    assert "validate" in onboarding
+    assert "providers" in stages
+    assert "identity" in stages
+    assert "channels" in stages
+    assert "validate" in stages
 
     # Validate identity stage has auto_skip
-    identity = onboarding["identity"]
+    identity = stages["identity"]
     assert identity["required"] is False
     assert identity["auto_skip"] is True
     # Should not have tasks when auto_skip is true
     assert "tasks" not in identity or len(identity.get("tasks", [])) == 0
 
     # Validate channels stage uses confirm type
-    channels = onboarding["channels"]
+    channels = stages["channels"]
     assert channels["required"] is True
     assert "tasks" in channels
     assert len(channels["tasks"]) == 1
@@ -784,7 +791,7 @@ def test_load_manifest_zeroclaw_with_onboarding():
     assert channels["tasks"][0]["default"] is True
 
     # Validate validate stage structure
-    validate = onboarding["validate"]
+    validate = stages["validate"]
     assert "tasks" in validate
     # Should have binary_check and config_check
     task_ids = [t["id"] for t in validate["tasks"]]
@@ -801,7 +808,8 @@ def test_onboarding_task_types():
     task_types = set()
     for manifest in [manifest_openclaw, manifest_zeroclaw]:
         onboarding = manifest.get("onboarding", {})
-        for stage_name, stage in onboarding.items():
+        stages = onboarding.get("stages", {})
+        for stage_name, stage in stages.items():
             tasks = stage.get("tasks", [])
             for task in tasks:
                 task_types.add(task["type"])
@@ -825,7 +833,7 @@ def test_onboarding_stage_required_field():
     """Test that onboarding stages have required field with expected values."""
     manifest_openclaw = load_manifest("openclaw")
 
-    onboarding = manifest_openclaw["onboarding"]
+    onboarding = manifest_openclaw["onboarding"]["stages"]
 
     # providers, identity, channels should be required
     assert onboarding["providers"]["required"] is True
@@ -839,46 +847,38 @@ def test_onboarding_stage_required_field():
 
 def test_onboarding_backward_compatibility():
     """Test that manifests can be loaded even if they don't have onboarding section."""
-    # Create a mock manifest without onboarding
-    import yaml
     from clawrium.core import registry
 
-    mock_manifest_yaml = """
-name: testclaw
-description: "Test claw without onboarding"
-entries:
-  - version: "1.0.0"
-    os: ubuntu
-    os_version: "24.04"
-    arch: x86_64
-    requirements:
-      min_memory_mb: 1024
-      gpu_required: false
-      dependencies: {}
-"""
+    mock_manifest = {
+        "agent": {
+            "type": "openclaw",
+            "description": "Test agent without onboarding",
+        },
+        "platforms": [
+            {
+                "version": "1.0.0",
+                "os": "ubuntu",
+                "os_version": "24.04",
+                "arch": "x86_64",
+                "requirements": {
+                    "min_memory_mb": 1024,
+                    "gpu_required": False,
+                    "dependencies": {},
+                },
+            }
+        ],
+    }
 
-    # Mock the manifest loading to return our test manifest
-    original_load = registry.load_manifest
-
-    def mock_load(claw_name):
-        if claw_name == "testclaw":
-            return yaml.safe_load(mock_manifest_yaml)
-        return original_load(claw_name)
-
-    # Temporarily replace load_manifest
-    import pytest
-
+    original_safe_load = registry.yaml.safe_load
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(registry, "load_manifest", mock_load)
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: mock_manifest)
 
     try:
-        manifest = registry.load_manifest("testclaw")
+        manifest = registry.load_manifest("openclaw")
 
-        # Manifest should load successfully
-        assert manifest["name"] == "testclaw"
-        assert "entries" in manifest
-
-        # onboarding field should not be present (or be None/empty)
-        assert "onboarding" not in manifest or manifest.get("onboarding") is None
+        assert manifest["agent"]["type"] == "openclaw"
+        assert "platforms" in manifest
+        assert "onboarding" not in manifest
     finally:
+        monkeypatch.setattr(registry.yaml, "safe_load", original_safe_load)
         monkeypatch.undo()

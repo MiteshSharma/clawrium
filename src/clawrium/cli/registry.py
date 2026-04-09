@@ -1,4 +1,4 @@
-"""Registry commands for browsing available claws."""
+"""Registry commands for browsing available agent types."""
 
 import typer
 from rich.console import Console
@@ -11,7 +11,7 @@ from clawrium.core.registry import (
     load_manifest,
     ManifestNotFoundError,
     ManifestParseError,
-    InvalidClawNameError,
+    InvalidAgentTypeError,
 )
 
 __all__ = ["registry_app"]
@@ -20,21 +20,21 @@ console = Console()
 
 registry_app = typer.Typer(
     name="registry",
-    help="Browse available claw types",
+    help="Browse available agent types",
     no_args_is_help=True,
 )
 
 
 @registry_app.command(name="list")
 def list_registry() -> None:
-    """List available claw types in the registry."""
+    """List available agent types in the registry."""
     claws = list_claws()
 
     if not claws:
-        console.print("No claws available in registry.")
+        console.print("No agent types available in registry.")
         return
 
-    table = Table(title="Available Claws")
+    table = Table(title="Available Agent Types")
     table.add_column("Name", style="cyan")
     table.add_column("Latest Version", style="green")
     table.add_column("Description")
@@ -43,7 +43,7 @@ def list_registry() -> None:
         try:
             info = get_claw_info(claw_name)
             table.add_row(
-                escape(info["name"]),
+                escape(info["agent_type"]),
                 escape(info["latest_version"]),
                 escape(info["description"]),
             )
@@ -57,14 +57,14 @@ def list_registry() -> None:
 
 @registry_app.command()
 def show(
-    claw_name: str = typer.Argument(..., help="Name of the claw to show"),
+    claw_name: str = typer.Argument(..., help="Name of the agent type to show"),
 ) -> None:
-    """Show detailed information about a claw type."""
+    """Show detailed information about an agent type."""
     try:
         manifest = load_manifest(claw_name)
     except ManifestNotFoundError:
         console.print(
-            f"[red]Error:[/red] Claw '{escape(claw_name)}' not found in registry"
+            f"[red]Error:[/red] Agent type '{escape(claw_name)}' not found in registry"
         )
         raise typer.Exit(code=1)
     except ManifestParseError as e:
@@ -72,13 +72,13 @@ def show(
             f"[red]Error:[/red] Registry manifest is corrupted: {escape(str(e))}"
         )
         raise typer.Exit(code=1)
-    except InvalidClawNameError as e:
+    except InvalidAgentTypeError as e:
         console.print(f"[red]Error:[/red] {escape(str(e))}")
         raise typer.Exit(code=1)
 
     # Header info (escape manifest fields to prevent markup injection)
-    console.print(f"\n[bold cyan]{escape(manifest['name'])}[/bold cyan]")
-    console.print(f"{escape(manifest.get('description', ''))}\n")
+    console.print(f"\n[bold cyan]{escape(manifest['agent']['type'])}[/bold cyan]")
+    console.print(f"{escape(manifest['agent'].get('description', ''))}\n")
 
     # Supported platforms table
     table = Table(title="Supported Platforms")
@@ -88,7 +88,7 @@ def show(
     table.add_column("Min Memory")
     table.add_column("GPU Required")
 
-    for entry in manifest["entries"]:
+    for entry in manifest["platforms"]:
         reqs = entry["requirements"]
         table.add_row(
             entry["version"],
@@ -102,7 +102,7 @@ def show(
 
     # Dependencies section (if any entry has dependencies)
     all_deps = set()
-    for entry in manifest["entries"]:
+    for entry in manifest["platforms"]:
         for dep, version in entry["requirements"].get("dependencies", {}).items():
             all_deps.add(f"{dep} {version}")
 
