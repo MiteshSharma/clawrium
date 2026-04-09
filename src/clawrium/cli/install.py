@@ -26,10 +26,10 @@ def _select_claw() -> str:
     """Prompt user to select a claw from registry."""
     claws = list_claws()
     if not claws:
-        console.print("[red]Error:[/red] No claws available in registry")
+        console.print("[red]Error:[/red] No agent types available in registry")
         raise typer.Exit(code=1)
 
-    console.print("\n[bold]Available claws:[/bold]")
+    console.print("\n[bold]Available agent types:[/bold]")
     for i, claw in enumerate(claws, 1):
         try:
             info = get_claw_info(claw)
@@ -40,7 +40,7 @@ def _select_claw() -> str:
             console.print(f"  {i}. {escape(claw)} (manifest error)")
 
     console.print()
-    choice = typer.prompt("Select claw", type=int)
+    choice = typer.prompt("Select agent type", type=int)
     if choice < 1 or choice > len(claws):
         console.print("[red]Invalid selection[/red]")
         raise typer.Exit(code=1)
@@ -85,7 +85,7 @@ def _select_host() -> str:
 
 def install(
     claw: Optional[str] = typer.Option(
-        None, "--claw", "-c", help="Claw type to install (e.g., openclaw)"
+        None, "--type", "-t", help="Agent type to install (e.g., openclaw)"
     ),
     host: Optional[str] = typer.Option(
         None, "--host", "-H", help="Target host (hostname or alias)"
@@ -94,15 +94,15 @@ def install(
         None,
         "--name",
         "-n",
-        help="Friendly name for the claw instance (max 32 chars, alphanumeric/hyphens/underscores). "
+        help="Agent name for the instance (max 32 chars, alphanumeric/hyphens/underscores). "
         "Names are unique per host and immutable after installation.",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
-    """Install a claw on a host.
+    """Install an agent on a host.
 
     Without flags, prompts for claw and host selection interactively.
-    With --claw and --host flags, runs directly (per D-01 hybrid invocation).
+    With --type and --host flags, runs directly (per D-01 hybrid invocation).
     """
     # Step 1: Get claw (prompt if not provided per D-01)
     selected_claw = claw or _select_claw()
@@ -112,7 +112,7 @@ def install(
         get_claw_info(selected_claw)  # Validates claw exists
     except ManifestNotFoundError:
         console.print(
-            f"[red]Error:[/red] Claw '{escape(selected_claw)}' not found in registry"
+            f"[red]Error:[/red] Agent type '{escape(selected_claw)}' not found in registry"
         )
         raise typer.Exit(code=1)
 
@@ -144,7 +144,7 @@ def install(
 
     # Step 5: Show confirmation summary (per D-03)
     summary = Panel(
-        f"[bold]Claw:[/bold] {selected_claw}\n"
+        f"[bold]Agent Type:[/bold] {selected_claw}\n"
         f"[bold]Version:[/bold] {matched_version}\n"
         f"[bold]Host:[/bold] {display_host}\n"
         f"[bold]Architecture:[/bold] {hardware.get('architecture', 'unknown')}\n"

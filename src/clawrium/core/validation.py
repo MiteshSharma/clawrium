@@ -86,7 +86,7 @@ ERROR_MESSAGES = {
     ),
     "agent_not_installed": (
         "Agent binary not found on host. "
-        "Run 'clm agent install --claw {claw_type} --host {host}' first."
+        "Run 'clm agent install --type {claw_type} --host {host}' first."
     ),
     "agent_wrong_permissions": (
         "Agent binary has incorrect permissions. Expected {expected}, found {actual}."

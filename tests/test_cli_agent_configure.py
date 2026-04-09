@@ -141,7 +141,7 @@ class TestAgentConfigureParse:
         result = runner.invoke(app, ["agent", "configure", "invalidname"])
 
         assert result.exit_code == 1
-        assert "invalid claw name format" in result.output.lower()
+        assert "invalid agent name format" in result.output.lower()
 
     def test_invalid_name_empty_parts(self, isolated_config: Path):
         """Rejects names with empty parts."""
@@ -160,7 +160,7 @@ class TestAgentConfigureParse:
         result = runner.invoke(app, ["agent", "configure", "../etc-work"])
 
         assert result.exit_code == 1
-        assert "invalid claw type" in result.output.lower()
+        assert "invalid agent type" in result.output.lower()
 
     def test_invalid_characters_in_host_alias(self, isolated_config: Path):
         """Rejects host alias with invalid characters."""

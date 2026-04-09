@@ -65,7 +65,7 @@ def test_status_no_claws():
         result = runner.invoke(app, ["ps"])
 
     assert result.exit_code == 0
-    assert "No claws installed" in result.output
+    assert "No agents installed" in result.output
 
 
 def test_status_shows_claw_table(mock_hosts_with_claws):

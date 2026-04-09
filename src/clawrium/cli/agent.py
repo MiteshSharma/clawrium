@@ -1,6 +1,6 @@
 """Agent management commands for Clawrium.
 
-This is the primary interface for managing AI assistants (claws).
+This is the primary interface for managing AI assistants.
 """
 
 import os
@@ -67,7 +67,7 @@ STATE_RESUME_IDX = {
 
 agent_app = typer.Typer(
     name="agent",
-    help="Manage AI assistants (claws) in your fleet",
+    help="Manage AI agents in your fleet",
     no_args_is_help=True,
 )
 
@@ -75,18 +75,18 @@ agent_app = typer.Typer(
 @agent_app.command()
 def install(
     claw: Optional[str] = typer.Option(
-        None, "--claw", "-c", help="Claw type to install"
+        None, "--type", "-t", help="Agent type to install"
     ),
     host: Optional[str] = typer.Option(None, "--host", "-H", help="Target host"),
     name: Optional[str] = typer.Option(
         None,
         "--name",
         "-n",
-        help="Friendly name for the claw instance (max 32 chars, alphanumeric/hyphens/underscores)",
+        help="Agent name for the instance (max 32 chars, alphanumeric/hyphens/underscores)",
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
-    """Install a claw on a host."""
+    """Install an agent on a host."""
     install_command(claw=claw, host=host, name=name, yes=yes)
 
 
@@ -121,10 +121,10 @@ def _validate_name_component(name: str, component_type: str) -> None:
 
 
 def _parse_claw_name(claw_name: str) -> tuple[str, str]:
-    """Parse claw name into host and claw type.
+    """Parse agent name into host and agent type.
 
     Args:
-        claw_name: Full claw name (e.g., "opc-work" or "openclaw-work")
+        claw_name: Full agent name (e.g., "opc-work" or "openclaw-work")
 
     Returns:
         Tuple of (host_alias_or_name, claw_type)
@@ -134,39 +134,39 @@ def _parse_claw_name(claw_name: str) -> tuple[str, str]:
     """
     if "-" not in claw_name:
         console.print(
-            f"[red]Error:[/red] Invalid claw name format: '{rich_escape(claw_name)}'"
+            f"[red]Error:[/red] Invalid agent name format: '{rich_escape(claw_name)}'"
         )
         console.print(
-            "Expected format: <claw-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
+            "Expected format: <agent-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
         )
         raise typer.Exit(code=1)
 
     parts = claw_name.split("-", 1)
     if len(parts) != 2 or not all(parts):
         console.print(
-            f"[red]Error:[/red] Invalid claw name format: '{rich_escape(claw_name)}'"
+            f"[red]Error:[/red] Invalid agent name format: '{rich_escape(claw_name)}'"
         )
         console.print(
-            "Expected format: <claw-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
+            "Expected format: <agent-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
         )
         raise typer.Exit(code=1)
 
     claw_type, host_alias = parts
 
-    _validate_name_component(claw_type, "claw type")
+    _validate_name_component(claw_type, "agent type")
     _validate_name_component(host_alias, "host alias")
 
     return host_alias, claw_type
 
 
 def _resolve_alias_group(claw_type: str) -> set[str]:
-    """Resolve claw type to its alias group.
+    """Resolve agent type to its alias group.
 
     Args:
-        claw_type: Claw type (e.g., "opc", "openclaw", "zc")
+        claw_type: Agent type (e.g., "opc", "openclaw", "zc")
 
     Returns:
-        Set of aliases for this claw type (e.g., {"opc", "openclaw"})
+        Set of aliases for this agent type (e.g., {"opc", "openclaw"})
     """
     for group in ALIAS_GROUPS:
         if claw_type in group:
@@ -175,11 +175,11 @@ def _resolve_alias_group(claw_type: str) -> set[str]:
 
 
 def _get_installed_claw(host_alias: str, claw_type: str) -> tuple[str, dict] | None:
-    """Get installed claw record from host.
+    """Get installed agent record from host.
 
     Args:
         host_alias: Host alias or hostname
-        claw_type: Type of claw (e.g., "opc", "zc", "openclaw")
+        claw_type: Agent type (e.g., "opc", "zc", "openclaw")
 
     Returns:
         Tuple of (installed_name, claw_record) or None if not found
@@ -262,7 +262,7 @@ def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
 
     result = _get_installed_claw(host, claw_type)
     if not result:
-        raise RuntimeError(f"Claw '{claw_type}' not installed on '{host}'")
+        raise RuntimeError(f"Agent '{claw_type}' not installed on '{host}'")
 
     installed_name, claw_record = result
 
@@ -635,7 +635,7 @@ def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
 @agent_app.command()
 def configure(
     claw_name: str = typer.Argument(
-        ..., help="Claw name to configure (e.g., 'opc-work', 'zc-kevin')"
+        ..., help="Agent name to configure (e.g., 'opc-work', 'zc-kevin')"
     ),
     stage: Optional[str] = typer.Option(
         None,
@@ -682,10 +682,10 @@ def configure(
 
     if not result:
         console.print(
-            f"[red]Error:[/red] Claw '{rich_escape(claw_type)}' not installed on '{rich_escape(display_host)}'"
+            f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on '{rich_escape(display_host)}'"
         )
         console.print(
-            f"Run 'clm agent install --claw {rich_escape(claw_type)} --host {rich_escape(host_alias)}' first."
+            f"Run 'clm agent install --type {rich_escape(claw_type)} --host {rich_escape(host_alias)}' first."
         )
         raise typer.Exit(code=1)
 
@@ -908,7 +908,7 @@ def _show_start_blocked_error(
 
 @agent_app.command()
 def remove(
-    claw_name: str = typer.Argument(..., help="Claw name to remove"),
+    claw_name: str = typer.Argument(..., help="Agent name to remove"),
     force: bool = typer.Option(
         False, "--force", "-f", help="Skip confirmation prompt"
     ),
@@ -944,7 +944,7 @@ def remove(
         result = _get_installed_claw(host_alias, claw_type)
         if not result:
             console.print(
-                f"[red]Error:[/red] Claw '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
+                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
             )
             raise typer.Exit(code=1)
 
@@ -988,7 +988,7 @@ def remove(
 
 @agent_app.command()
 def start(
-    claw_name: str = typer.Argument(..., help="Claw name to start"),
+    claw_name: str = typer.Argument(..., help="Agent name to start"),
     force: bool = typer.Option(
         False, "--force", "-f", help="Force start even if onboarding incomplete"
     ),
@@ -1023,10 +1023,10 @@ def start(
         result = _get_installed_claw(host_alias, claw_type)
         if not result:
             console.print(
-                f"[red]Error:[/red] Claw '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
+                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
             )
             console.print(
-                f"Run 'clm agent install --claw {rich_escape(claw_type)} --host {rich_escape(host_alias)}' to install it."
+                f"Run 'clm agent install --type {rich_escape(claw_type)} --host {rich_escape(host_alias)}' to install it."
             )
             raise typer.Exit(code=1)
 
@@ -1085,7 +1085,7 @@ def start(
 
 @agent_app.command()
 def stop(
-    claw_name: str = typer.Argument(..., help="Claw name to stop"),
+    claw_name: str = typer.Argument(..., help="Agent name to stop"),
     timeout: int = typer.Option(
         30, "--timeout", "-t", help="Seconds to wait for graceful shutdown"
     ),
@@ -1117,7 +1117,7 @@ def stop(
         result = _get_installed_claw(host_alias, claw_type)
         if not result:
             console.print(
-                f"[red]Error:[/red] Claw '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
+                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
             )
             raise typer.Exit(code=1)
 
@@ -1154,7 +1154,7 @@ def stop(
 
 @agent_app.command()
 def restart(
-    claw_name: str = typer.Argument(..., help="Claw name to restart"),
+    claw_name: str = typer.Argument(..., help="Agent name to restart"),
 ) -> None:
     """Restart an agent.
 
@@ -1182,7 +1182,7 @@ def restart(
         result = _get_installed_claw(host_alias, claw_type)
         if not result:
             console.print(
-                f"[red]Error:[/red] Claw '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
+                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
             )
             raise typer.Exit(code=1)
 
@@ -1218,7 +1218,7 @@ def restart(
 
 @agent_app.command()
 def logs(
-    claw_name: str = typer.Argument(..., help="Claw name to view logs for"),
+    claw_name: str = typer.Argument(..., help="Agent name to view logs for"),
 ) -> None:
     """View agent logs.
 
@@ -1231,21 +1231,21 @@ def logs(
 
 secret_app = typer.Typer(
     name="secret",
-    help="Manage secrets for agent instances",
+    help="Manage secrets for agents",
     no_args_is_help=True,
 )
 
 
 @secret_app.command(name="set")
 def secret_set(
-    claw_name: str = typer.Argument(..., help="Claw name (e.g., opc-work)"),
+    claw_name: str = typer.Argument(..., help="Agent name (e.g., opc-work)"),
     key: str = typer.Argument(..., help="Secret key name (e.g., OPENAI_API_KEY)"),
     description: Optional[str] = typer.Option(
         None, "--description", "-d", help="Description of the secret"
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip overwrite confirmation"),
 ) -> None:
-    """Set a secret value for an agent instance."""
+    """Set a secret value for an agent."""
     from clawrium.cli.secret import set_cmd
 
     set_cmd(claw_name=claw_name, key=key, description=description, yes=yes)
@@ -1253,9 +1253,9 @@ def secret_set(
 
 @secret_app.command(name="list")
 def secret_list(
-    claw_name: str = typer.Argument(..., help="Claw name (e.g., zc-kevin)"),
+    claw_name: str = typer.Argument(..., help="Agent name (e.g., zc-kevin)"),
 ) -> None:
-    """List secrets for an agent instance."""
+    """List secrets for an agent."""
     from clawrium.cli.secret import list_cmd
 
     list_cmd(claw_name=claw_name)
@@ -1263,11 +1263,11 @@ def secret_list(
 
 @secret_app.command(name="remove")
 def secret_remove(
-    claw_name: str = typer.Argument(..., help="Claw name"),
+    claw_name: str = typer.Argument(..., help="Agent name"),
     key: str = typer.Argument(..., help="Secret key to remove"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
 ) -> None:
-    """Remove a secret from an agent instance."""
+    """Remove a secret from an agent."""
     from clawrium.cli.secret import remove_cmd
 
     remove_cmd(claw_name=claw_name, key=key, force=force)
@@ -1275,10 +1275,10 @@ def secret_remove(
 
 @secret_app.command(name="import")
 def secret_import(
-    source_claw: str = typer.Argument(..., help="Source claw to import secrets from"),
-    target_claw: str = typer.Argument(..., help="Target claw to import secrets to"),
+    source_claw: str = typer.Argument(..., help="Source agent to import secrets from"),
+    target_claw: str = typer.Argument(..., help="Target agent to import secrets to"),
 ) -> None:
-    """Import secrets from another claw instance.
+    """Import secrets from another agent.
 
     [Not yet implemented]
     """
@@ -1286,7 +1286,7 @@ def secret_import(
         f"[yellow]Not implemented:[/yellow] import secrets from '{rich_escape(source_claw)}' to '{rich_escape(target_claw)}'"
     )
     console.print(
-        "This command will allow importing secrets between claws in a future release."
+        "This command will allow importing secrets between agents in a future release."
     )
     raise typer.Exit(code=0)
 
@@ -1311,7 +1311,7 @@ def registry_list() -> None:
 
 @registry_app.command(name="show")
 def registry_show(
-    claw_name: str = typer.Argument(..., help="Name of the claw to show"),
+    claw_name: str = typer.Argument(..., help="Name of the agent type to show"),
 ) -> None:
     """Show detailed information about an agent type."""
     from clawrium.cli.registry import show

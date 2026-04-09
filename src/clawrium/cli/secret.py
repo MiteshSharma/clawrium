@@ -28,21 +28,21 @@ console = Console()
 
 secret_app = typer.Typer(
     name="secret",
-    help="Manage secrets for claw instances",
+    help="Manage secrets for agents",
     no_args_is_help=True,
 )
 
 
 @secret_app.command(name="set")
 def set_cmd(
-    claw_name: str = typer.Argument(..., help="Claw name (e.g., opc-work)"),
+    claw_name: str = typer.Argument(..., help="Agent name (e.g., opc-work)"),
     key: str = typer.Argument(..., help="Secret key name (e.g., OPENAI_API_KEY)"),
     description: Optional[str] = typer.Option(
         None, "--description", "-d", help="Description of the secret"
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip overwrite confirmation"),
 ) -> None:
-    """Set a secret value for a claw instance.
+    """Set a secret value for an agent.
 
     Prompts for the value using masked input (not visible on screen).
     """
@@ -101,9 +101,9 @@ def set_cmd(
 
 @secret_app.command(name="list")
 def list_cmd(
-    claw_name: str = typer.Argument(..., help="Claw name (e.g., zc-kevin)"),
+    claw_name: str = typer.Argument(..., help="Agent name (e.g., zc-kevin)"),
 ) -> None:
-    """List secrets for a claw instance.
+    """List secrets for an agent.
 
     Shows secret keys and metadata. Values are never displayed.
     Also shows missing required secrets.
@@ -133,7 +133,7 @@ def list_cmd(
     missing_keys = required_keys - stored_keys
 
     # Display claw header
-    console.print(f"\n[bold]Claw:[/bold] {name} ({hostname})")
+    console.print(f"\n[bold]Agent:[/bold] {name} ({hostname})")
 
     # Display stored secrets if any
     if instance_secrets:
@@ -172,11 +172,11 @@ def list_cmd(
 
 @secret_app.command(name="remove")
 def remove_cmd(
-    claw_name: str = typer.Argument(..., help="Claw name"),
+    claw_name: str = typer.Argument(..., help="Agent name"),
     key: str = typer.Argument(..., help="Secret key to remove"),
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
 ) -> None:
-    """Remove a secret from a claw instance.
+    """Remove a secret from an agent.
 
     Prompts for confirmation unless --force is specified.
     """

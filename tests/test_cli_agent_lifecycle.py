@@ -81,7 +81,7 @@ class TestAgentStart:
         create_host_with_ready_claw(isolated_config)
         result = runner.invoke(app, ["agent", "start", "invalid"])
         assert result.exit_code == 1
-        assert "Invalid claw name format" in result.output
+        assert "Invalid agent name format" in result.output
 
     def test_start_claw_not_installed_fails(self, isolated_config: Path):
         """Start when claw not installed fails."""
