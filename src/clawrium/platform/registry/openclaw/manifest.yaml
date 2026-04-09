@@ -1,70 +1,73 @@
-name: openclaw
-description: "Open-source AI assistant framework"
+agent:
+  type: openclaw
+  description: "Open-source AI assistant framework"
 
-# Secrets required for this claw (install will fail if missing)
-required_secrets:
-  - key: OPENAI_API_KEY
-    description: "OpenAI API key for LLM requests"
+# Secrets required for this agent (installation fails when missing)
+secrets:
+  required:
+    - key: OPENAI_API_KEY
+      description: "OpenAI API key for LLM requests"
 
-# Optional secrets (claw works without them but with reduced functionality)
-optional_secrets:
-  - key: ANTHROPIC_API_KEY
-    description: "Anthropic API key for Claude models"
+  # Optional secrets (agent still runs without them)
+  optional:
+    - key: ANTHROPIC_API_KEY
+      description: "Anthropic API key for Claude models"
 
 # Onboarding workflow configuration
 onboarding:
-  providers:
-    required: true
-    description: "Assign inference provider"
-    tasks:
-      - id: select_provider
-        name: "Select inference provider"
-        type: provider_select
-      - id: verify_provider
-        name: "Verify provider connectivity"
-        type: provider_test
+  stages:
+    providers:
+      required: true
+      description: "Assign inference provider"
+      tasks:
+        - id: select_provider
+          name: "Select inference provider"
+          type: provider_select
+        - id: verify_provider
+          name: "Verify provider connectivity"
+          type: provider_test
 
-  identity:
-    required: true
-    description: "Configure agent personality"
-    tasks:
-      - id: soul_file
-        name: "Create personality file"
-        type: file_create
-        path: "~/.openclaw/SOUL.md"
-        template: "templates/default-soul.md"
-        prompt: "Describe your agent's personality and purpose"
-      - id: identity_file
-        name: "Create identity file"
-        type: file_create
-        path: "~/.openclaw/IDENTITY.md"
-        template: "templates/default-identity.md"
+    identity:
+      required: true
+      description: "Configure agent personality"
+      tasks:
+        - id: soul_file
+          name: "Create personality file"
+          type: file_create
+          path: "~/.openclaw/SOUL.md"
+          template: "templates/default-soul.md"
+          prompt: "Describe your agent's personality and purpose"
+        - id: identity_file
+          name: "Create identity file"
+          type: file_create
+          path: "~/.openclaw/IDENTITY.md"
+          template: "templates/default-identity.md"
 
-  channels:
-    required: true
-    description: "Configure communication channels"
-    tasks:
-      - id: default_channel
-        name: "Select default channel"
-        type: select
-        options: [cli, web, whatsapp, slack, discord, telegram]
-        default: cli
+    channels:
+      required: true
+      description: "Configure communication channels"
+      tasks:
+        - id: default_channel
+          name: "Select default channel"
+          type: select
+          options: [cli, web, whatsapp, slack, discord, telegram]
+          default: cli
 
-  validate:
-    description: "Verify configuration"
-    tasks:
-      - id: config_check
-        name: "Verify configuration files"
-        type: file_exists
-        paths:
-          - "~/.openclaw/SOUL.md"
-          - "~/.openclaw/IDENTITY.md"
-      - id: self_test
-        name: "Run agent self-test"
-        type: command
-        command: "openclaw test --quick"
+    validate:
+      description: "Verify configuration"
+      tasks:
+        - id: config_check
+          name: "Verify configuration files"
+          type: file_exists
+          paths:
+            - "~/.openclaw/SOUL.md"
+            - "~/.openclaw/IDENTITY.md"
+        - id: self_test
+          name: "Run agent self-test"
+          type: command
+          command: "openclaw test --quick"
 
-entries:
+platforms:
   - version: "0.1.0"
     os: ubuntu
     os_version: "24.04"

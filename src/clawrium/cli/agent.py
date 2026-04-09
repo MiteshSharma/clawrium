@@ -283,33 +283,24 @@ def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
         gateway_config = {
             "host": "0.0.0.0",
             "port": gateway_port,
-            "allow_public_bind": True
+            "allow_public_bind": True,
         }
     elif claw_type == "openclaw":
-        gateway_config = {
-            "bind": "lan",
-            "port": gateway_port
-        }
+        gateway_config = {"bind": "lan", "port": gateway_port}
     else:
         # Default gateway config
-        gateway_config = {
-            "host": "0.0.0.0",
-            "port": gateway_port
-        }
+        gateway_config = {"host": "0.0.0.0", "port": gateway_port}
 
     # Build provider config
     provider_config = {
         "name": provider.get("name", ""),
         "type": provider.get("type", "ollama"),
         "endpoint": provider.get("endpoint", ""),
-        "default_model": provider.get("default_model", "")
+        "default_model": provider.get("default_model", ""),
     }
 
     # Build complete config data
-    config_data = {
-        "gateway": gateway_config,
-        "provider": provider_config
-    }
+    config_data = {"gateway": gateway_config, "provider": provider_config}
 
     # Call configure_agent to apply configuration via Ansible
     success, error = configure_agent(host, claw_type, config_data)
@@ -909,9 +900,7 @@ def _show_start_blocked_error(
 @agent_app.command()
 def remove(
     claw_name: str = typer.Argument(..., help="Agent name to remove"),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Skip confirmation prompt"
-    ),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
 ) -> None:
     """Remove an agent from a host.
 
@@ -1064,9 +1053,7 @@ def start(
                 console.print(f"  {message}")
 
         try:
-            result = start_agent(
-                host_alias, claw_type, force=force, on_event=on_event
-            )
+            result = start_agent(host_alias, claw_type, force=force, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -1311,12 +1298,12 @@ def registry_list() -> None:
 
 @registry_app.command(name="show")
 def registry_show(
-    claw_name: str = typer.Argument(..., help="Name of the agent type to show"),
+    agent_type: str = typer.Argument(..., help="Name of the agent type to show"),
 ) -> None:
     """Show detailed information about an agent type."""
     from clawrium.cli.registry import show
 
-    show(claw_name=claw_name)
+    show(agent_type=agent_type)
 
 
 agent_app.add_typer(registry_app, name="registry")
