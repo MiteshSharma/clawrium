@@ -8,7 +8,7 @@ runner = CliRunner()
 
 
 def test_registry_list_shows_table():
-    """Test that registry list shows available claws."""
+    """Test that registry list shows available agent types."""
     result = runner.invoke(app, ["agent", "registry", "list"])
     assert result.exit_code == 0
     assert "openclaw" in result.output.lower()

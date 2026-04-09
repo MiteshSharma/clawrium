@@ -89,7 +89,7 @@ def test_agent_no_args_shows_help():
 
 # Tests for clm agent install
 def test_agent_install_prompts_for_claw(isolated_config: Path):
-    """clm agent install with no --claw flag triggers claw selection prompt."""
+    """clm agent install with no --type flag triggers claw selection prompt."""
     create_test_keypair(isolated_config, "testhost")
     create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
 
@@ -98,13 +98,13 @@ def test_agent_install_prompts_for_claw(isolated_config: Path):
     )
 
     assert (
-        "available claw" in result.output.lower()
+        "available agent type" in result.output.lower()
         or "select claw" in result.output.lower()
     )
 
 
 def test_agent_install_with_flags(isolated_config: Path):
-    """clm agent install --claw --host skips prompts."""
+    """clm agent install --type --host skips prompts."""
     create_test_keypair(isolated_config, "testhost")
     create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
 
@@ -120,7 +120,7 @@ def test_agent_install_with_flags(isolated_config: Path):
 
         result = runner.invoke(
             app,
-            ["agent", "install", "--claw", "openclaw", "--host", "testhost", "--yes"],
+            ["agent", "install", "--type", "openclaw", "--host", "testhost", "--yes"],
             env=os.environ,
         )
 
@@ -146,7 +146,7 @@ def test_agent_ps_no_claws():
         result = runner.invoke(app, ["agent", "ps"])
 
     assert result.exit_code == 0
-    assert "No claws installed" in result.output
+    assert "No agents installed" in result.output
 
 
 # Tests for placeholder commands
@@ -222,7 +222,7 @@ def test_agent_registry_help():
 
 
 def test_agent_registry_list():
-    """clm agent registry list shows available claws."""
+    """clm agent registry list shows available agent types."""
     result = runner.invoke(app, ["agent", "registry", "list"])
 
     assert result.exit_code == 0

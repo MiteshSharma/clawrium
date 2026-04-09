@@ -242,7 +242,7 @@ def test_start_invalid_claw_name_fails(isolated_config: Path):
     result = runner.invoke(app, ["agent", "start", "invalid"])
 
     assert result.exit_code == 1
-    assert "Invalid claw name format" in result.output
+    assert "Invalid agent name format" in result.output
 
 
 def test_start_unknown_host_fails(isolated_config: Path):

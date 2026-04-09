@@ -1,4 +1,4 @@
-"""Fleet status command for viewing claw instances across hosts."""
+"""Fleet status command for viewing agent instances across hosts."""
 
 from collections import defaultdict
 from typing import Optional
@@ -27,7 +27,7 @@ def display_verbose_onboarding(
     """Display detailed onboarding stage breakdown.
 
     Args:
-        claw_name: Name of the claw
+        claw_name: Agent name
         host_alias: Host alias or hostname
         result: Health result containing onboarding stages
     """
@@ -71,7 +71,7 @@ def status(
 ) -> None:
     """Show fleet status across all hosts.
 
-    Displays claw instances grouped by claw type (per D-12) with live
+    Displays agent instances grouped by agent type (per D-12) with live
     health check (per D-13). Shows name, version, host, status (per D-14).
 
     Use --verbose to see detailed onboarding stage breakdown.
@@ -96,7 +96,7 @@ def status(
             console.print(f"[red]Error:[/red] Host '{escape(host)}' not found")
             raise typer.Exit(code=1)
 
-    # Collect all claws across hosts, grouped by claw type
+    # Collect all agents across hosts, grouped by agent type
     # Structure: {claw_name: [(host_record, claw_record), ...]}
     claws_by_type: dict[str, list[tuple[dict, dict]]] = defaultdict(list)
 
@@ -105,8 +105,8 @@ def status(
             claws_by_type[claw_name].append((h, claw_record))
 
     if not claws_by_type:
-        console.print("No claws installed on any host.")
-        console.print("Run 'clm install' to install a claw.")
+        console.print("No agents installed on any host.")
+        console.print("Run 'clm agent install' to install an agent.")
         return
 
     # Perform live health checks with progress spinner

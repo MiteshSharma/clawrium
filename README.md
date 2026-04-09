@@ -6,15 +6,15 @@
   <img src="docs/assets/clawrium-logo.png" alt="Clawrium Logo" width="600">
 </p>
 
-CLI tool for managing AI assistant fleets on local networks. Deploy and manage multiple claw instances across hosts from a single command center.
+CLI tool for managing AI agent fleets on local networks. Deploy and manage multiple agent instances across hosts from a single command center.
 
 **[Documentation](https://ric03uec.github.io/clawrium/)** | **[GitHub](https://github.com/ric03uec/clawrium)**
 
 ## Features
 
-### Universal Claw Support
+### Universal Agent Support
 
-Manage any claw from a single command center:
+Manage any agent from a single command center:
 - [OpenClaw](https://github.com/openclaw/openclaw)
 - [ZeroClaw](https://github.com/zeroclaw/zeroclaw)
 - [NemoClaw](https://github.com/nemoclaw/nemoclaw)
@@ -23,7 +23,7 @@ Manage any claw from a single command center:
 
 ### Normalized Configuration
 
-One config format, every claw. Clawrium standardizes settings across different claw types - define your preferences once and Clawrium translates them for each claw's native format.
+One config format, every agent. Clawrium standardizes settings across different agent types - define your preferences once and Clawrium translates them for each agent's native format.
 
 ### Multi-Model Freedom
 

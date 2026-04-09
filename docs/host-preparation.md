@@ -40,7 +40,7 @@ ssh user@hostname
 # Create xclm user
 sudo useradd -m -s /bin/bash xclm
 
-# Grant passwordless sudo (required for claw installation)
+# Grant passwordless sudo (required for agent installation)
 echo "xclm ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/xclm
 sudo chmod 440 /etc/sudoers.d/xclm
 
@@ -57,7 +57,7 @@ sudo chown -R xclm:xclm /home/xclm/.ssh
 exit
 ```
 
-**Security note:** xclm has full root access via sudo but no password is set (key-auth only). The private key is stored in `~/.config/clawrium/keys/<hostname>/` with 0600 permissions. Claw instances run as separate unprivileged users created by Clawrium.
+**Security note:** xclm has full root access via sudo but no password is set (key-auth only). The private key is stored in `~/.config/clawrium/keys/<hostname>/` with 0600 permissions. Agent instances run as separate unprivileged users created by Clawrium.
 
 ## P2. Add Host to Clawrium
 

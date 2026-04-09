@@ -2,7 +2,7 @@
 
 **An aquarium for your claws.**
 
-Clawrium is a CLI tool (`clm`) for managing AI Claw fleets (ZeroClaw, NemoClaw, OpenClaw, or any other claw) on local networks. It allows users to deploy and manage multiple claw instances across hosts without dealing with each host separately. Using Clawrium, you can
+Clawrium is a CLI tool (`clm`) for managing AI agent fleets (ZeroClaw, NemoClaw, OpenClaw, or any other agent) on local networks. It allows users to deploy and manage multiple agent instances across hosts without dealing with each host separately. Using Clawrium, you can
 1. manage any number of assistants on your local network
 2. manage the agent lifecycle (upgrades, secrets management, backups etc)
 3. track token usage across different agents and build guardrails
@@ -25,9 +25,11 @@ Clawrium is a CLI tool (`clm`) for managing AI Claw fleets (ZeroClaw, NemoClaw, 
 
 ## Key Concepts
 
-- **Host**: A machine in your network that runs one or more claws
-- **Claw**: An AI assistant instance (zeroclaw, nemoclaw, or openclaw)
-- **Registry**: Platform-defined claw types with versions, dependencies, and templates
+- **Host**: A machine in your network that runs one or more agents
+- **Agent**: An AI assistant instance (zeroclaw, nemoclaw, or openclaw)
+- **Agent Type**: The specific AI assistant implementation (e.g., zeroclaw, nemoclaw, openclaw)
+- **Agent Name**: The unique identifier for an installed agent instance
+- **Registry**: Platform-defined agent types with versions, dependencies, and templates
 
 ## User Data
 

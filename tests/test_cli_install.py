@@ -65,19 +65,19 @@ def create_host(
 
 
 def test_install_prompts_for_claw(isolated_config: Path):
-    """clm install with no --claw flag triggers claw selection prompt."""
+    """clm install with no --type flag triggers claw selection prompt."""
     # Setup: create host and keypair
     create_test_keypair(isolated_config, "testhost")
     create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
 
-    # Run without --claw, answer prompts with EOF to cancel
+    # Run without --type, answer prompts with EOF to cancel
     result = runner.invoke(
         app, ["agent", "install", "--host", "testhost"], input="\n", env=os.environ
     )
 
     # Should show claw selection prompt
     assert (
-        "available claw" in result.output.lower()
+        "available agent type" in result.output.lower()
         or "select claw" in result.output.lower()
     )
 
@@ -90,7 +90,7 @@ def test_install_prompts_for_host(isolated_config: Path):
 
     # Run without --host, answer prompts with EOF to cancel
     result = runner.invoke(
-        app, ["agent", "install", "--claw", "openclaw"], input="\n", env=os.environ
+        app, ["agent", "install", "--type", "openclaw"], input="\n", env=os.environ
     )
 
     # Should show host selection prompt
@@ -101,7 +101,7 @@ def test_install_prompts_for_host(isolated_config: Path):
 
 
 def test_install_with_flags_skips_prompts(isolated_config: Path):
-    """clm install --claw openclaw --host testhost skips prompts and goes to confirmation."""
+    """clm install --type openclaw --host testhost skips prompts and goes to confirmation."""
     # Setup: create host and keypair
     create_test_keypair(isolated_config, "testhost")
     create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
@@ -120,7 +120,7 @@ def test_install_with_flags_skips_prompts(isolated_config: Path):
         # Run with both flags, cancel at confirmation
         result = runner.invoke(
             app,
-            ["agent", "install", "--claw", "openclaw", "--host", "testhost"],
+            ["agent", "install", "--type", "openclaw", "--host", "testhost"],
             input="n\n",
             env=os.environ,
         )
@@ -141,7 +141,7 @@ def test_install_shows_confirmation(isolated_config: Path):
     # Run with flags, cancel at confirmation
     result = runner.invoke(
         app,
-        ["agent", "install", "--claw", "openclaw", "--host", "testhost"],
+        ["agent", "install", "--type", "openclaw", "--host", "testhost"],
         input="n\n",
         env=os.environ,
     )
@@ -175,7 +175,7 @@ def test_install_yes_skips_confirmation(isolated_config: Path):
         # Run with --yes flag
         result = runner.invoke(
             app,
-            ["agent", "install", "--claw", "openclaw", "--host", "testhost", "--yes"],
+            ["agent", "install", "--type", "openclaw", "--host", "testhost", "--yes"],
             env=os.environ,
         )
 
@@ -194,7 +194,7 @@ def test_install_cancelled_exits_0(isolated_config: Path):
     # Run and decline confirmation
     result = runner.invoke(
         app,
-        ["agent", "install", "--claw", "openclaw", "--host", "testhost"],
+        ["agent", "install", "--type", "openclaw", "--host", "testhost"],
         input="n\n",
         env=os.environ,
     )
@@ -218,7 +218,7 @@ def test_install_error_exits_1(isolated_config: Path):
         # Run with --yes to skip confirmation
         result = runner.invoke(
             app,
-            ["agent", "install", "--claw", "openclaw", "--host", "testhost", "--yes"],
+            ["agent", "install", "--type", "openclaw", "--host", "testhost", "--yes"],
             env=os.environ,
         )
 
@@ -262,7 +262,7 @@ def test_install_incompatible_exits_1(isolated_config: Path):
     # Try to install openclaw (requires x86_64)
     result = runner.invoke(
         app,
-        ["agent", "install", "--claw", "openclaw", "--host", "armhost"],
+        ["agent", "install", "--type", "openclaw", "--host", "armhost"],
         env=os.environ,
     )
 
@@ -283,9 +283,30 @@ def test_install_hosts_file_corrupted(isolated_config: Path):
     ):
         result = runner.invoke(
             app,
-            ["agent", "install", "--claw", "openclaw", "--host", "testhost"],
+            ["agent", "install", "--type", "openclaw", "--host", "testhost"],
             env=os.environ,
         )
 
     assert result.exit_code == 1
     assert "corrupted" in result.output.lower() or "error" in result.output.lower()
+
+
+
+
+def test_install_claw_flag_rejected(isolated_config: Path):
+    """Test that the old --claw flag is rejected with proper error message."""
+    # Setup: create host and keypair
+    create_test_keypair(isolated_config, "testhost")
+    create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
+    
+    # Try using the old --claw flag
+    result = runner.invoke(
+        app,
+        ["agent", "install", "--claw", "openclaw", "--host", "testhost"],
+        env=os.environ,
+    )
+    
+    # Should exit with error code 2 (Typer's "no such option" error)
+    assert result.exit_code == 2
+    # Should mention the flag issue
+    assert "no such option" in result.output.lower() or "claw" in result.output.lower()
