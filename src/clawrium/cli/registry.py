@@ -1,5 +1,7 @@
 """Registry commands for browsing available agent types."""
 
+import logging
+
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -16,6 +18,7 @@ from clawrium.core.registry import (
 
 __all__ = ["registry_app"]
 
+logger = logging.getLogger(__name__)
 console = Console()
 
 registry_app = typer.Typer(
@@ -29,6 +32,7 @@ registry_app = typer.Typer(
 def list_registry() -> None:
     """List available agent types in the registry."""
     claws = list_claws()
+    corrupted_count = 0
 
     if not claws:
         console.print("No agent types available in registry.")
@@ -49,31 +53,52 @@ def list_registry() -> None:
             )
         except ManifestNotFoundError:
             table.add_row(escape(claw_name), "?", "Manifest not found")
-        except ManifestParseError:
-            table.add_row(escape(claw_name), "?", "[red]Corrupted manifest[/red]")
+        except ManifestParseError as error:
+            logger.debug(
+                "Manifest parse failure while listing agent type '%s'",
+                claw_name,
+                exc_info=error,
+            )
+            corrupted_count += 1
+            table.add_row(escape(claw_name), "?", escape("Corrupted manifest"))
 
     console.print(table)
+    if corrupted_count:
+        console.print(
+            "\n[yellow]Warning:[/yellow] Some registry manifests are corrupted. "
+            "Reinstall Clawrium to restore bundled manifests: "
+            "https://github.com/ric03uec/clawrium#installation"
+        )
 
 
 @registry_app.command()
 def show(
-    claw_name: str = typer.Argument(..., help="Name of the agent type to show"),
+    agent_type: str = typer.Argument(
+        ..., help="Name of the agent type to show (e.g., zeroclaw)"
+    ),
 ) -> None:
     """Show detailed information about an agent type."""
     try:
-        manifest = load_manifest(claw_name)
+        manifest = load_manifest(agent_type)
     except ManifestNotFoundError:
         console.print(
-            f"[red]Error:[/red] Agent type '{escape(claw_name)}' not found in registry"
+            f"[red]Error:[/red] Agent type '{escape(agent_type)}' not found in registry. "
+            "Run 'clm agent registry list' to view available agent types."
         )
         raise typer.Exit(code=1)
     except ManifestParseError as e:
+        logger.debug("Registry manifest parse failure for '%s'", agent_type, exc_info=e)
         console.print(
-            f"[red]Error:[/red] Registry manifest is corrupted: {escape(str(e))}"
+            f"[red]Error:[/red] Registry manifest is corrupted: {escape(str(e))}. "
+            "Reinstall Clawrium to restore bundled manifests: "
+            "https://github.com/ric03uec/clawrium#installation"
         )
         raise typer.Exit(code=1)
     except InvalidAgentTypeError as e:
-        console.print(f"[red]Error:[/red] {escape(str(e))}")
+        console.print(
+            f"[red]Error:[/red] {escape(str(e))}. "
+            "Run 'clm agent registry list' to see valid agent type names."
+        )
         raise typer.Exit(code=1)
 
     # Header info (escape manifest fields to prevent markup injection)
@@ -99,6 +124,31 @@ def show(
         )
 
     console.print(table)
+
+    required_secrets = manifest.get("secrets", {}).get("required", [])
+    optional_secrets = manifest.get("secrets", {}).get("optional", [])
+
+    if required_secrets:
+        required_table = Table(title="Required Secrets")
+        required_table.add_column("Key", style="yellow")
+        required_table.add_column("Description")
+        for secret in required_secrets:
+            required_table.add_row(
+                escape(secret["key"]),
+                escape(secret["description"]),
+            )
+        console.print(required_table)
+
+    if optional_secrets:
+        optional_table = Table(title="Optional Secrets")
+        optional_table.add_column("Key", style="yellow")
+        optional_table.add_column("Description")
+        for secret in optional_secrets:
+            optional_table.add_row(
+                escape(secret["key"]),
+                escape(secret["description"]),
+            )
+        console.print(optional_table)
 
     # Dependencies section (if any entry has dependencies)
     all_deps = set()

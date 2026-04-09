@@ -1,13 +1,40 @@
 """Tests for registry loading functionality."""
 
+from copy import deepcopy
+
 import pytest
 from clawrium.core.registry import (
+    InvalidAgentTypeError,
     ManifestNotFoundError,
     ManifestParseError,
     get_claw_info,
     list_claws,
     load_manifest,
+    validate_agent_type,
 )
+
+
+def _valid_manifest() -> dict:
+    """Return a minimal valid manifest used by negative-path tests."""
+    return {
+        "agent": {
+            "type": "openclaw",
+            "description": "Test manifest",
+        },
+        "platforms": [
+            {
+                "version": "1.0.0",
+                "os": "ubuntu",
+                "os_version": "24.04",
+                "arch": "x86_64",
+                "requirements": {
+                    "min_memory_mb": 1024,
+                    "gpu_required": False,
+                    "dependencies": {},
+                },
+            }
+        ],
+    }
 
 
 def test_load_manifest_openclaw():
@@ -85,6 +112,97 @@ def test_load_manifest_missing_required_fields(monkeypatch):
     )
 
     with pytest.raises(ManifestParseError, match="missing required fields"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_agent_type_mismatch(monkeypatch):
+    """Test manifest with mismatched agent.type raises ManifestParseError."""
+    from clawrium.core import registry
+
+    manifest = _valid_manifest()
+    manifest["agent"]["type"] = "different-agent"
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="was loaded as"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_empty_platforms(monkeypatch):
+    """Test manifest with empty platforms raises ManifestParseError."""
+    from clawrium.core import registry
+
+    manifest = _valid_manifest()
+    manifest["platforms"] = []
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="platforms"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_invalid_required_secret_definition(monkeypatch):
+    """Test malformed required secret entry raises ManifestParseError."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    manifest["secrets"] = {"required": [{"key": "OPENAI_API_KEY"}]}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="secrets.required"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_invalid_onboarding_stage(monkeypatch):
+    """Test malformed onboarding stage raises ManifestParseError."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    manifest["onboarding"] = {
+        "stages": {
+            "providers": {
+                "required": True,
+            }
+        }
+    }
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="onboarding.stages.providers"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_invalid_onboarding_task(monkeypatch):
+    """Test malformed onboarding task raises ManifestParseError."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    manifest["onboarding"] = {
+        "stages": {
+            "providers": {
+                "required": True,
+                "description": "Assign provider",
+                "tasks": [
+                    {
+                        "id": "select_provider",
+                        "name": "Select provider",
+                    }
+                ],
+            }
+        }
+    }
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="tasks\\[0\\].type"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_negative_min_memory(monkeypatch):
+    """Test negative min_memory_mb raises ManifestParseError."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    manifest["platforms"][0]["requirements"]["min_memory_mb"] = -1
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="min_memory_mb"):
         load_manifest("openclaw")
 
 
@@ -530,24 +648,27 @@ def test_validate_claw_name_empty_raises():
     """Test validate_claw_name with empty string raises InvalidClawNameError."""
     from clawrium.core.registry import validate_claw_name, InvalidClawNameError
 
-    with pytest.raises(InvalidClawNameError, match="cannot be empty"):
+    with pytest.raises(InvalidClawNameError, match="cannot be empty") as exc:
         validate_claw_name("")
+    assert isinstance(exc.value, InvalidAgentTypeError)
 
 
 def test_validate_claw_name_with_slash_raises():
     """Test validate_claw_name with slash raises InvalidClawNameError."""
     from clawrium.core.registry import validate_claw_name, InvalidClawNameError
 
-    with pytest.raises(InvalidClawNameError, match="invalid characters"):
+    with pytest.raises(InvalidClawNameError, match="invalid characters") as exc:
         validate_claw_name("foo/bar")
+    assert isinstance(exc.value, InvalidAgentTypeError)
 
 
 def test_validate_claw_name_with_backslash_raises():
     """Test validate_claw_name with backslash raises InvalidClawNameError."""
     from clawrium.core.registry import validate_claw_name, InvalidClawNameError
 
-    with pytest.raises(InvalidClawNameError, match="invalid characters"):
+    with pytest.raises(InvalidClawNameError, match="invalid characters") as exc:
         validate_claw_name("foo\\bar")
+    assert isinstance(exc.value, InvalidAgentTypeError)
 
 
 def test_validate_claw_name_valid():
@@ -559,6 +680,36 @@ def test_validate_claw_name_valid():
     validate_claw_name("zero-agent")
     validate_claw_name("claw_v2")
     validate_claw_name("Claw123")
+
+
+def test_validate_agent_type_empty_raises():
+    """Test validate_agent_type with empty value raises InvalidAgentTypeError."""
+    with pytest.raises(InvalidAgentTypeError, match="cannot be empty"):
+        validate_agent_type("")
+
+
+def test_validate_agent_type_with_slash_raises():
+    """Test validate_agent_type with slash raises InvalidAgentTypeError."""
+    with pytest.raises(InvalidAgentTypeError, match="invalid characters"):
+        validate_agent_type("foo/bar")
+
+
+def test_validate_agent_type_with_backslash_raises():
+    """Test validate_agent_type with backslash raises InvalidAgentTypeError."""
+    with pytest.raises(InvalidAgentTypeError, match="invalid characters"):
+        validate_agent_type("foo\\bar")
+
+
+def test_validate_agent_type_with_dotdot_raises():
+    """Test validate_agent_type with dot traversal raises InvalidAgentTypeError."""
+    with pytest.raises(InvalidAgentTypeError, match="invalid characters"):
+        validate_agent_type("..")
+
+
+def test_validate_agent_type_valid():
+    """Test validate_agent_type with valid names passes."""
+    validate_agent_type("openclaw")
+    validate_agent_type("agent_v2")
 
 
 # check_compatibility version parameter tests
@@ -845,7 +996,7 @@ def test_onboarding_stage_required_field():
     assert validate.get("required", False) is False or validate.get("required") is None
 
 
-def test_onboarding_backward_compatibility():
+def test_onboarding_backward_compatibility(monkeypatch):
     """Test that manifests can be loaded even if they don't have onboarding section."""
     from clawrium.core import registry
 
@@ -869,16 +1020,9 @@ def test_onboarding_backward_compatibility():
         ],
     }
 
-    original_safe_load = registry.yaml.safe_load
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(registry.yaml, "safe_load", lambda _: mock_manifest)
+    manifest = registry.load_manifest("openclaw")
 
-    try:
-        manifest = registry.load_manifest("openclaw")
-
-        assert manifest["agent"]["type"] == "openclaw"
-        assert "platforms" in manifest
-        assert "onboarding" not in manifest
-    finally:
-        monkeypatch.setattr(registry.yaml, "safe_load", original_safe_load)
-        monkeypatch.undo()
+    assert manifest["agent"]["type"] == "openclaw"
+    assert "platforms" in manifest
+    assert "onboarding" not in manifest
