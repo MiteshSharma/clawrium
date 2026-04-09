@@ -382,36 +382,36 @@ class TestGetMissingSecrets:
         mock_key.assert_called_once_with("192.168.1.100", "openclaw", "work")
 
     def test_claw_name_derived_from_user_fallback(self):
-        """Falls back to deriving name from user field (opc-work -> work)."""
+        """Falls back to using user field directly."""
         host = {"hostname": "192.168.1.100"}
         claw_record = {"user": "opc-work"}  # No 'name' field
 
         with patch("clawrium.core.health.get_instance_key") as mock_key:
-            mock_key.return_value = "192.168.1.100:openclaw:work"
+            mock_key.return_value = "192.168.1.100:openclaw:opc-work"
             with patch("clawrium.core.health.get_instance_secrets", return_value={}):
                 with patch(
                     "clawrium.core.health.get_required_secrets", return_value=[]
                 ):
                     get_missing_secrets("openclaw", host, claw_record)
 
-        # Verify derived name was used
-        mock_key.assert_called_once_with("192.168.1.100", "openclaw", "work")
+        # Verify user value was used directly
+        mock_key.assert_called_once_with("192.168.1.100", "openclaw", "opc-work")
 
     def test_multi_hyphen_claw_name(self):
-        """Handles multi-hyphen user names (opc-my-claw -> my-claw)."""
+        """Preserves multi-hyphen user names exactly."""
         host = {"hostname": "192.168.1.100"}
         claw_record = {"user": "opc-my-claw"}  # Multi-hyphen
 
         with patch("clawrium.core.health.get_instance_key") as mock_key:
-            mock_key.return_value = "192.168.1.100:openclaw:my-claw"
+            mock_key.return_value = "192.168.1.100:openclaw:opc-my-claw"
             with patch("clawrium.core.health.get_instance_secrets", return_value={}):
                 with patch(
                     "clawrium.core.health.get_required_secrets", return_value=[]
                 ):
                     get_missing_secrets("openclaw", host, claw_record)
 
-        # Verify multi-hyphen name handled correctly (split on first hyphen only)
-        mock_key.assert_called_once_with("192.168.1.100", "openclaw", "my-claw")
+        # Verify full value is preserved
+        mock_key.assert_called_once_with("192.168.1.100", "openclaw", "opc-my-claw")
 
     def test_no_hyphen_fallback(self):
         """Handles user names without hyphen (uses full name)."""
@@ -511,10 +511,10 @@ def test_degraded_status_verifies_instance_key_argument(mock_host):
                     result = check_claw_health("openclaw", mock_host)
 
     # Verify correct instance key was passed
-    # mock_host has hostname 192.168.1.100, claw user opc-testhost -> name testhost
+    # mock_host has hostname 192.168.1.100 and claw user opc-testhost
     mock_get_secrets.assert_called_once()
     call_args = mock_get_secrets.call_args[0][0]
-    assert call_args == "192.168.1.100:openclaw:testhost"
+    assert call_args == "192.168.1.100:openclaw:opc-testhost"
     assert result["status"] == ClawStatus.DEGRADED
 
 

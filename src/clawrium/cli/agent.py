@@ -16,7 +16,7 @@ from rich.panel import Panel
 from clawrium.cli.install import install as install_command
 from clawrium.cli.status import status as status_command
 from clawrium.core.config import get_config_dir
-from clawrium.core.hosts import get_host, HostsFileCorruptedError
+from clawrium.core.hosts import get_host, load_hosts, HostsFileCorruptedError
 from clawrium.core.onboarding import (
     OnboardingState,
     StageStatus,
@@ -35,12 +35,6 @@ __all__ = ["agent_app"]
 console = Console()
 
 VALID_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
-
-ALIAS_GROUPS = [
-    {"opc", "openclaw"},
-    {"zc", "zeroclaw"},
-    {"nc", "nemoclaw"},
-]
 
 STAGE_TO_CURRENT_STATE = {
     "providers": OnboardingState.PROVIDERS,
@@ -120,86 +114,61 @@ def _validate_name_component(name: str, component_type: str) -> None:
         raise typer.Exit(code=1)
 
 
-def _parse_claw_name(claw_name: str) -> tuple[str, str]:
-    """Parse agent name into host and agent type.
+class AgentNameResolutionError(Exception):
+    """Raised when an agent name cannot be resolved."""
+
+
+class AmbiguousAgentNameError(AgentNameResolutionError):
+    """Raised when an agent name matches more than one instance."""
+
+
+def _resolve_agent_instance(agent_name: str) -> tuple[str, dict, str, dict, str]:
+    """Resolve an installed agent by canonical instance name.
 
     Args:
-        claw_name: Full agent name (e.g., "opc-work" or "openclaw-work")
+        agent_name: Generated or user-provided instance name
 
     Returns:
-        Tuple of (host_alias_or_name, claw_type)
+        Tuple of (hostname, host_data, claw_type, claw_record, canonical_name)
 
     Raises:
-        typer.Exit: If format is invalid or contains unsafe characters
-    """
-    if "-" not in claw_name:
-        console.print(
-            f"[red]Error:[/red] Invalid agent name format: '{rich_escape(claw_name)}'"
-        )
-        console.print(
-            "Expected format: <agent-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
-        )
-        raise typer.Exit(code=1)
-
-    parts = claw_name.split("-", 1)
-    if len(parts) != 2 or not all(parts):
-        console.print(
-            f"[red]Error:[/red] Invalid agent name format: '{rich_escape(claw_name)}'"
-        )
-        console.print(
-            "Expected format: <agent-type>-<host> (e.g., 'opc-work', 'zc-kevin')"
-        )
-        raise typer.Exit(code=1)
-
-    claw_type, host_alias = parts
-
-    _validate_name_component(claw_type, "agent type")
-    _validate_name_component(host_alias, "host alias")
-
-    return host_alias, claw_type
-
-
-def _resolve_alias_group(claw_type: str) -> set[str]:
-    """Resolve agent type to its alias group.
-
-    Args:
-        claw_type: Agent type (e.g., "opc", "openclaw", "zc")
-
-    Returns:
-        Set of aliases for this agent type (e.g., {"opc", "openclaw"})
-    """
-    for group in ALIAS_GROUPS:
-        if claw_type in group:
-            return group
-    return {claw_type}
-
-
-def _get_installed_claw(host_alias: str, claw_type: str) -> tuple[str, dict] | None:
-    """Get installed agent record from host.
-
-    Args:
-        host_alias: Host alias or hostname
-        claw_type: Agent type (e.g., "opc", "zc", "openclaw")
-
-    Returns:
-        Tuple of (installed_name, claw_record) or None if not found
-
-    Raises:
+        AgentNameResolutionError: If no matching instance exists
+        AmbiguousAgentNameError: If multiple instances share the same name
         HostsFileCorruptedError: If hosts.json is corrupted
     """
-    host_data = get_host(host_alias)
-    if not host_data:
-        return None
+    _validate_name_component(agent_name, "agent name")
 
-    claws = host_data.get("claws", {})
-    alias_group = _resolve_alias_group(claw_type)
+    matches: list[tuple[str, dict, str, dict, str]] = []
+    for host_data in load_hosts():
+        hostname = host_data.get("hostname")
+        if not hostname:
+            continue
 
-    for installed_name, claw_record in claws.items():
-        base = installed_name.split("-")[0]
-        if base in alias_group:
-            return (installed_name, claw_record)
+        for claw_type, claw_record in host_data.get("claws", {}).items():
+            canonical_name = claw_record.get("name") or claw_record.get("user")
+            if not canonical_name:
+                continue
+            if canonical_name == agent_name:
+                matches.append(
+                    (hostname, host_data, claw_type, claw_record, canonical_name)
+                )
 
-    return None
+    if not matches:
+        raise AgentNameResolutionError(
+            f"Agent '{agent_name}' not found. Use 'clm agent ps' to list installed agents."
+        )
+
+    if len(matches) > 1:
+        formatted = ", ".join(
+            f"{name} ({claw_type} on {h.get('alias') or h.get('hostname')})"
+            for _, h, claw_type, _, name in matches
+        )
+        raise AmbiguousAgentNameError(
+            f"Agent name '{agent_name}' is ambiguous: {formatted}. "
+            "Use unique instance names per host."
+        )
+
+    return matches[0]
 
 
 def _stage_header(
@@ -260,11 +229,10 @@ def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
     if not host_data:
         raise RuntimeError(f"Host '{host}' not found")
 
-    result = _get_installed_claw(host, claw_type)
-    if not result:
+    claw_record = host_data.get("claws", {}).get(claw_type)
+    if not claw_record:
         raise RuntimeError(f"Agent '{claw_type}' not installed on '{host}'")
-
-    installed_name, claw_record = result
+    installed_name = claw_record.get("name") or claw_record.get("user") or claw_type
 
     # Calculate or preserve gateway port
     existing_config = claw_record.get("config", {})
@@ -283,33 +251,24 @@ def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
         gateway_config = {
             "host": "0.0.0.0",
             "port": gateway_port,
-            "allow_public_bind": True
+            "allow_public_bind": True,
         }
     elif claw_type == "openclaw":
-        gateway_config = {
-            "bind": "lan",
-            "port": gateway_port
-        }
+        gateway_config = {"bind": "lan", "port": gateway_port}
     else:
         # Default gateway config
-        gateway_config = {
-            "host": "0.0.0.0",
-            "port": gateway_port
-        }
+        gateway_config = {"host": "0.0.0.0", "port": gateway_port}
 
     # Build provider config
     provider_config = {
         "name": provider.get("name", ""),
         "type": provider.get("type", "ollama"),
         "endpoint": provider.get("endpoint", ""),
-        "default_model": provider.get("default_model", "")
+        "default_model": provider.get("default_model", ""),
     }
 
     # Build complete config data
-    config_data = {
-        "gateway": gateway_config,
-        "provider": provider_config
-    }
+    config_data = {"gateway": gateway_config, "provider": provider_config}
 
     # Call configure_agent to apply configuration via Ansible
     success, error = configure_agent(host, claw_type, config_data)
@@ -635,7 +594,7 @@ def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
 @agent_app.command()
 def configure(
     claw_name: str = typer.Argument(
-        ..., help="Agent name to configure (e.g., 'opc-work', 'zc-kevin')"
+        ..., help="Agent instance name to configure (generated or user-provided)"
     ),
     stage: Optional[str] = typer.Option(
         None,
@@ -651,52 +610,36 @@ def configure(
     Use --stage to run a specific stage only.
 
     Examples:
-        clm agent configure opc-work
-        clm agent configure zc-kevin --stage providers
-        clm agent configure opc-work --yes
+        clm agent configure wise-hypatia
+        clm agent configure clever-einstein --stage providers
+        clm agent configure work-assistant --yes
     """
     try:
-        host_alias, claw_type = _parse_claw_name(claw_name)
-    except KeyboardInterrupt:
-        console.print("\nCancelled.")
-        raise typer.Exit(code=1)
-
-    try:
-        host_data = get_host(host_alias)
+        (
+            hostname,
+            host_data,
+            claw_type,
+            _,
+            installed_name,
+        ) = _resolve_agent_instance(claw_name)
     except HostsFileCorruptedError as e:
         console.print(f"[red]Error:[/red] {e}")
         raise typer.Exit(code=1)
-
-    if not host_data:
-        console.print(f"[red]Error:[/red] Host '{rich_escape(host_alias)}' not found")
-        console.print("Run 'clm host add' to register a host first.")
+    except AgentNameResolutionError as e:
+        console.print(f"[red]Error:[/red] {rich_escape(str(e))}")
+        raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        console.print("\nCancelled.")
         raise typer.Exit(code=1)
 
     display_host = host_data.get("alias") or host_data["hostname"]
 
     try:
-        result = _get_installed_claw(host_alias, claw_type)
-    except HostsFileCorruptedError as e:
-        console.print(f"[red]Error:[/red] Hosts file corrupted: {e}")
-        raise typer.Exit(code=1)
-
-    if not result:
-        console.print(
-            f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on '{rich_escape(display_host)}'"
-        )
-        console.print(
-            f"Run 'clm agent install --type {rich_escape(claw_type)} --host {rich_escape(host_alias)}' first."
-        )
-        raise typer.Exit(code=1)
-
-    installed_name, _ = result
-
-    try:
-        current_state = get_onboarding_state(host_alias, installed_name)
+        current_state = get_onboarding_state(hostname, claw_type)
     except OnboardingNotFoundError:
         try:
-            initialize_onboarding(host_alias, installed_name)
-            current_state = get_onboarding_state(host_alias, installed_name)
+            initialize_onboarding(hostname, claw_type)
+            current_state = get_onboarding_state(hostname, claw_type)
         except AgentNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -741,7 +684,7 @@ def configure(
         }[stage]
 
         try:
-            success = stage_func(host_alias, installed_name, yes)
+            success = stage_func(hostname, claw_type, yes)
         except KeyboardInterrupt:
             console.print("\nCancelled.")
             raise typer.Exit(code=1)
@@ -761,7 +704,7 @@ def configure(
         console.print("\n[green]Onboarding already complete![/green]")
         console.print(f"State: {current_state.value.upper()}")
         console.print(
-            f"Run 'clm agent start {rich_escape(claw_name)}' to start your agent."
+            f"Run 'clm agent start {rich_escape(installed_name)}' to start your agent."
         )
         raise typer.Exit(code=0)
 
@@ -779,11 +722,9 @@ def configure(
             if i < start_idx:
                 continue
 
-            if can_skip_stage(installed_name, stage_name):
+            if can_skip_stage(claw_type, stage_name):
                 try:
-                    complete_stage(
-                        host_alias, installed_name, stage_name, StageStatus.SKIPPED
-                    )
+                    complete_stage(hostname, claw_type, stage_name, StageStatus.SKIPPED)
                 except Exception as e:
                     console.print(
                         f"[red]Error:[/red] Failed to skip stage: {rich_escape(str(e))}"
@@ -797,15 +738,15 @@ def configure(
 
             # Transition to the stage's state before running it
             current_stage_state = STAGE_TO_CURRENT_STATE.get(stage_name)
-            current_state = get_onboarding_state(host_alias, installed_name)
+            current_state = get_onboarding_state(hostname, claw_type)
             if current_stage_state and current_state != current_stage_state:
                 try:
-                    transition_state(host_alias, installed_name, current_stage_state)
+                    transition_state(hostname, claw_type, current_stage_state)
                 except InvalidTransitionError as e:
                     console.print(f"[red]Error:[/red] {e}")
                     raise typer.Exit(code=1)
 
-            success = stage_functions[stage_name](host_alias, installed_name, yes)
+            success = stage_functions[stage_name](hostname, claw_type, yes)
 
             if not success:
                 console.print(
@@ -815,7 +756,7 @@ def configure(
 
             next_state = STAGE_TO_NEXT_STATE[stage_name]
             try:
-                transition_state(host_alias, installed_name, next_state)
+                transition_state(hostname, claw_type, next_state)
             except InvalidTransitionError as e:
                 console.print(f"[red]Error:[/red] {e}")
                 raise typer.Exit(code=1)
@@ -833,13 +774,11 @@ def configure(
     console.print()
     console.print("State: [green]READY[/green]")
     console.print(
-        f"Run 'clm agent start {rich_escape(claw_name)}' to start your agent."
+        f"Run 'clm agent start {rich_escape(installed_name)}' to start your agent."
     )
 
 
 def _show_start_blocked_error(
-    claw_name: str,
-    host_alias: str,
     installed_name: str,
     current_state: OnboardingState,
     claw_record: dict,
@@ -855,11 +794,11 @@ def _show_start_blocked_error(
     if current_state == OnboardingState.PENDING:
         console.print()
         console.print(
-            f"[red]Error:[/red] Cannot start {rich_escape(claw_name)} - onboarding not started"
+            f"[red]Error:[/red] Cannot start {rich_escape(installed_name)} - onboarding not started"
         )
         console.print()
         console.print(
-            f"Run 'clm agent configure {rich_escape(claw_name)}' to begin onboarding."
+            f"Run 'clm agent configure {rich_escape(installed_name)}' to begin onboarding."
         )
         console.print()
         return
@@ -883,7 +822,7 @@ def _show_start_blocked_error(
 
     console.print()
     console.print(
-        f"[red]Error:[/red] Cannot start {rich_escape(claw_name)} - onboarding incomplete"
+        f"[red]Error:[/red] Cannot start {rich_escape(installed_name)} - onboarding incomplete"
     )
     console.print()
     console.print(
@@ -898,20 +837,18 @@ def _show_start_blocked_error(
         console.print()
 
     console.print(
-        f"Run 'clm agent configure {rich_escape(claw_name)}' to complete onboarding."
+        f"Run 'clm agent configure {rich_escape(installed_name)}' to complete onboarding."
     )
     console.print()
     console.print("To force start anyway (not recommended):")
-    console.print(f"  clm agent start {rich_escape(claw_name)} --force")
+    console.print(f"  clm agent start {rich_escape(installed_name)} --force")
     console.print()
 
 
 @agent_app.command()
 def remove(
     claw_name: str = typer.Argument(..., help="Agent name to remove"),
-    force: bool = typer.Option(
-        False, "--force", "-f", help="Skip confirmation prompt"
-    ),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
 ) -> None:
     """Remove an agent from a host.
 
@@ -919,36 +856,18 @@ def remove(
     and removes the agent from local configuration.
 
     Examples:
-        clm agent remove opc-work
-        clm agent remove zc-kevin --force
+        clm agent remove wise-hypatia
+        clm agent remove work-assistant --force
     """
     from clawrium.core.lifecycle import remove_agent, LifecycleError
 
     try:
-        host_alias, claw_type = _parse_claw_name(claw_name)
-
-        try:
-            host_data = get_host(host_alias)
-        except HostsFileCorruptedError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise typer.Exit(code=1)
-
-        if not host_data:
-            console.print(
-                f"[red]Error:[/red] Host '{rich_escape(host_alias)}' not found"
-            )
-            raise typer.Exit(code=1)
-
-        display_host = host_data.get("alias", host_data.get("hostname", host_alias))
-
-        result = _get_installed_claw(host_alias, claw_type)
-        if not result:
-            console.print(
-                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
-            )
-            raise typer.Exit(code=1)
-
-        installed_name, _ = result
+        hostname, host_data, claw_type, _, installed_name = _resolve_agent_instance(
+            claw_name
+        )
+        display_host = host_data.get("alias") or host_data.get("hostname")
+        if not display_host:
+            display_host = hostname
 
         # Confirmation prompt (unless --force)
         if not force:
@@ -970,7 +889,7 @@ def remove(
                 console.print(f"  {message}")
 
         try:
-            result = remove_agent(host_alias, installed_name, on_event=on_event)
+            result = remove_agent(hostname, claw_type, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -981,6 +900,12 @@ def remove(
             console.print(f"[red]✗[/red] Failed to remove agent: {result['error']}")
             raise typer.Exit(code=1)
 
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except AgentNameResolutionError as e:
+        console.print(f"[red]Error:[/red] {rich_escape(str(e))}")
+        raise typer.Exit(code=1)
     except KeyboardInterrupt:
         console.print("\nCancelled.")
         raise typer.Exit(code=1)
@@ -1002,50 +927,25 @@ def start(
     from clawrium.core.lifecycle import start_agent, LifecycleError
 
     try:
-        host_alias, claw_type = _parse_claw_name(claw_name)
+        hostname, host_data, claw_type, claw_record, installed_name = (
+            _resolve_agent_instance(claw_name)
+        )
+        display_host = host_data.get("alias") or host_data.get("hostname")
+        if not display_host:
+            display_host = hostname
 
         try:
-            host_data = get_host(host_alias)
-        except HostsFileCorruptedError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            console.print("Run 'clm host list' to see if hosts.json can be read.")
-            raise typer.Exit(code=1)
-
-        if not host_data:
-            console.print(
-                f"[red]Error:[/red] Host '{rich_escape(host_alias)}' not found"
-            )
-            console.print("Run 'clm host add' to add a host first.")
-            raise typer.Exit(code=1)
-
-        display_host = host_data.get("alias", host_data.get("hostname", host_alias))
-
-        result = _get_installed_claw(host_alias, claw_type)
-        if not result:
-            console.print(
-                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
-            )
-            console.print(
-                f"Run 'clm agent install --type {rich_escape(claw_type)} --host {rich_escape(host_alias)}' to install it."
-            )
-            raise typer.Exit(code=1)
-
-        installed_name, claw_record = result
-
-        try:
-            current_state = get_onboarding_state(host_alias, installed_name)
+            current_state = get_onboarding_state(hostname, claw_type)
         except OnboardingNotFoundError:
             try:
-                initialize_onboarding(host_alias, installed_name)
-                current_state = get_onboarding_state(host_alias, installed_name)
+                initialize_onboarding(hostname, claw_type)
+                current_state = get_onboarding_state(hostname, claw_type)
             except AgentNotFoundError as e:
                 console.print(f"[red]Error:[/red] {e}")
                 raise typer.Exit(code=1)
 
         if current_state != OnboardingState.READY and not force:
-            _show_start_blocked_error(
-                claw_name, host_alias, installed_name, current_state, claw_record
-            )
+            _show_start_blocked_error(installed_name, current_state, claw_record)
             raise typer.Exit(code=1)
 
         if force and current_state != OnboardingState.READY:
@@ -1054,7 +954,7 @@ def start(
             )
 
         console.print(
-            f"[green]Starting agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
+            f"[green]Starting agent:[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
         )
 
         def on_event(stage: str, message: str) -> None:
@@ -1064,9 +964,7 @@ def start(
                 console.print(f"  {message}")
 
         try:
-            result = start_agent(
-                host_alias, claw_type, force=force, on_event=on_event
-            )
+            result = start_agent(hostname, claw_type, force=force, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -1078,6 +976,12 @@ def start(
             console.print(f"[red]✗[/red] Failed to start agent: {result['error']}")
             raise typer.Exit(code=1)
 
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except AgentNameResolutionError as e:
+        console.print(f"[red]Error:[/red] {rich_escape(str(e))}")
+        raise typer.Exit(code=1)
     except KeyboardInterrupt:
         console.print("\nCancelled.")
         raise typer.Exit(code=1)
@@ -1098,33 +1002,15 @@ def stop(
     from clawrium.core.lifecycle import stop_agent, LifecycleError
 
     try:
-        host_alias, claw_type = _parse_claw_name(claw_name)
-
-        try:
-            host_data = get_host(host_alias)
-        except HostsFileCorruptedError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise typer.Exit(code=1)
-
-        if not host_data:
-            console.print(
-                f"[red]Error:[/red] Host '{rich_escape(host_alias)}' not found"
-            )
-            raise typer.Exit(code=1)
-
-        display_host = host_data.get("alias", host_data.get("hostname", host_alias))
-
-        result = _get_installed_claw(host_alias, claw_type)
-        if not result:
-            console.print(
-                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
-            )
-            raise typer.Exit(code=1)
-
-        installed_name, _ = result
+        hostname, host_data, claw_type, _, installed_name = _resolve_agent_instance(
+            claw_name
+        )
+        display_host = host_data.get("alias") or host_data.get("hostname")
+        if not display_host:
+            display_host = hostname
 
         console.print(
-            f"[green]Stopping agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
+            f"[green]Stopping agent:[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
         )
 
         def on_event(stage: str, message: str) -> None:
@@ -1134,9 +1020,7 @@ def stop(
                 console.print(f"  {message}")
 
         try:
-            result = stop_agent(
-                host_alias, claw_type, timeout=timeout, on_event=on_event
-            )
+            result = stop_agent(hostname, claw_type, timeout=timeout, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -1147,6 +1031,12 @@ def stop(
             console.print(f"[red]✗[/red] Failed to stop agent: {result['error']}")
             raise typer.Exit(code=1)
 
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except AgentNameResolutionError as e:
+        console.print(f"[red]Error:[/red] {rich_escape(str(e))}")
+        raise typer.Exit(code=1)
     except KeyboardInterrupt:
         console.print("\nCancelled.")
         raise typer.Exit(code=1)
@@ -1163,33 +1053,15 @@ def restart(
     from clawrium.core.lifecycle import restart_agent, LifecycleError
 
     try:
-        host_alias, claw_type = _parse_claw_name(claw_name)
-
-        try:
-            host_data = get_host(host_alias)
-        except HostsFileCorruptedError as e:
-            console.print(f"[red]Error:[/red] {e}")
-            raise typer.Exit(code=1)
-
-        if not host_data:
-            console.print(
-                f"[red]Error:[/red] Host '{rich_escape(host_alias)}' not found"
-            )
-            raise typer.Exit(code=1)
-
-        display_host = host_data.get("alias", host_data.get("hostname", host_alias))
-
-        result = _get_installed_claw(host_alias, claw_type)
-        if not result:
-            console.print(
-                f"[red]Error:[/red] Agent '{rich_escape(claw_type)}' not installed on {rich_escape(display_host)}"
-            )
-            raise typer.Exit(code=1)
-
-        installed_name, _ = result
+        hostname, host_data, claw_type, _, installed_name = _resolve_agent_instance(
+            claw_name
+        )
+        display_host = host_data.get("alias") or host_data.get("hostname")
+        if not display_host:
+            display_host = hostname
 
         console.print(
-            f"[green]Restarting agent:[/green] {rich_escape(claw_type)} on {rich_escape(display_host)}"
+            f"[green]Restarting agent:[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
         )
 
         def on_event(stage: str, message: str) -> None:
@@ -1199,7 +1071,7 @@ def restart(
                 console.print(f"  {message}")
 
         try:
-            result = restart_agent(host_alias, claw_type, on_event=on_event)
+            result = restart_agent(hostname, claw_type, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -1211,6 +1083,12 @@ def restart(
             console.print(f"[red]✗[/red] Failed to restart agent: {result['error']}")
             raise typer.Exit(code=1)
 
+    except HostsFileCorruptedError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except AgentNameResolutionError as e:
+        console.print(f"[red]Error:[/red] {rich_escape(str(e))}")
+        raise typer.Exit(code=1)
     except KeyboardInterrupt:
         console.print("\nCancelled.")
         raise typer.Exit(code=1)
@@ -1238,7 +1116,7 @@ secret_app = typer.Typer(
 
 @secret_app.command(name="set")
 def secret_set(
-    claw_name: str = typer.Argument(..., help="Agent name (e.g., opc-work)"),
+    claw_name: str = typer.Argument(..., help="Agent instance name"),
     key: str = typer.Argument(..., help="Secret key name (e.g., OPENAI_API_KEY)"),
     description: Optional[str] = typer.Option(
         None, "--description", "-d", help="Description of the secret"
@@ -1253,7 +1131,7 @@ def secret_set(
 
 @secret_app.command(name="list")
 def secret_list(
-    claw_name: str = typer.Argument(..., help="Agent name (e.g., zc-kevin)"),
+    claw_name: str = typer.Argument(..., help="Agent instance name"),
 ) -> None:
     """List secrets for an agent."""
     from clawrium.cli.secret import list_cmd

@@ -250,7 +250,7 @@ def get_installed_claw(claw_name: str) -> tuple[str, str, str]:
     3. The claw_type key itself (e.g., "zeroclaw")
 
     Args:
-        claw_name: Name of the claw instance (e.g., "opc-work", "zc-kevin", "zeroclaw").
+        claw_name: Name of the claw instance (generated or user-provided).
 
     Returns:
         Tuple of (hostname, claw_type, claw_name).

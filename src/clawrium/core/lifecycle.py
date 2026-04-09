@@ -142,7 +142,9 @@ def _run_lifecycle_playbook(
         return False, "SSH key not found"
 
     claw_record = host.get("claws", {}).get(claw_name, {})
-    agent_name = claw_record.get("user", f"{claw_name[:3]}-{hostname}")
+    agent_name = claw_record.get("name") or claw_record.get("user")
+    if not agent_name:
+        return False, f"No agent name recorded for '{claw_name}' on '{hostname}'"
 
     # Validate agent_name to prevent path traversal/injection in Ansible playbooks
     # Use the same validation as agent name validation
@@ -155,11 +157,7 @@ def _run_lifecycle_playbook(
     instance_key = None
     secret_vars = {}
     try:
-        instance_key = get_instance_key(
-            hostname,
-            claw_name,
-            agent_name.split("-")[1] if "-" in agent_name else "default",
-        )
+        instance_key = get_instance_key(hostname, claw_name, agent_name)
         instance_secrets = get_instance_secrets(instance_key)
         for key, entry in instance_secrets.items():
             secret_vars[key.lower()] = entry.get("value", "")
@@ -178,7 +176,6 @@ def _run_lifecycle_playbook(
             "vars": {
                 "agent_name": agent_name,
                 "agent_type": claw_name,
-                "service_name": f"{claw_name}-{agent_name.split('-', 1)[1] if '-' in agent_name else hostname}",
                 **secret_vars,
             },
         }
@@ -265,9 +262,12 @@ def start_agent(
         state = OnboardingState.PENDING
 
     if state != OnboardingState.READY and not force:
+        agent_display_name = (
+            claw_record.get("name") or claw_record.get("user") or claw_name
+        )
         raise LifecycleError(
             f"Cannot start {claw_name}: onboarding incomplete (state={state_value}). "
-            f"Run 'clm agent configure {claw_name[:3]}-{hostname}' first."
+            f"Run 'clm agent configure {agent_display_name}' first."
         )
 
     emit("start", f"Starting {claw_name} on {hostname}...")
@@ -471,7 +471,10 @@ def configure_agent(
     if config_data.get("provider") and config_data["provider"].get("default_model"):
         model_name = config_data["provider"]["default_model"]
         if not re.match(r"^[a-zA-Z0-9_.:/+-]+$", model_name):
-            return False, f"Invalid model name: '{model_name}'. Model names must contain only alphanumeric characters, dots, colons, slashes, underscores, plus, and hyphens."
+            return (
+                False,
+                f"Invalid model name: '{model_name}'. Model names must contain only alphanumeric characters, dots, colons, slashes, underscores, plus, and hyphens.",
+            )
 
     # Load provider API key from secrets if provider is configured
     provider_api_key = ""
@@ -505,7 +508,9 @@ def configure_agent(
     if not ssh_key:
         return False, "SSH key not found"
 
-    agent_name = claw_record.get("user", f"{claw_name[:3]}-{hostname}")
+    agent_name = claw_record.get("name") or claw_record.get("user")
+    if not agent_name:
+        return False, f"No agent name recorded for '{claw_name}' on '{hostname}'"
 
     # Validate agent_name to prevent path traversal/injection in Ansible playbooks
     if not re.match(r"^[a-z][a-z0-9_-]{0,31}$", agent_name):
@@ -593,7 +598,10 @@ def configure_agent(
                 claw_name,
                 hostname,
             )
-            return False, f"Configuration applied but failed to update local state for {claw_name} on {hostname}"
+            return (
+                False,
+                f"Configuration applied but failed to update local state for {claw_name} on {hostname}",
+            )
 
         emit("configure", f"Successfully configured {claw_name}")
         return True, None
@@ -697,9 +705,7 @@ def remove_agent(
                 "error": f"Remote removal succeeded but host '{hostname}' not found in local config. State may be inconsistent.",
             }
     except Exception as e:
-        logger.error(
-            "Failed to update local configuration after remote cleanup: %s", e
-        )
+        logger.error("Failed to update local configuration after remote cleanup: %s", e)
         return {
             "success": False,
             "agent": claw_name,

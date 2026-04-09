@@ -62,7 +62,7 @@ def create_host_with_claw(
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "assistant",
-                    "user": f"{claw_type}-assistant",
+                    "user": "assistant",
                     "onboarding": {
                         "state": onboarding_state,
                         "started_at": "2026-04-06T00:00:00+00:00",
@@ -134,14 +134,14 @@ def create_provider(
 
 
 class TestAgentConfigureParse:
-    """Tests for claw name parsing."""
+    """Tests for agent name validation and lookup."""
 
     def test_invalid_name_no_dash(self, isolated_config: Path):
-        """Rejects names without dash separator."""
+        """Unknown names are rejected."""
         result = runner.invoke(app, ["agent", "configure", "invalidname"])
 
         assert result.exit_code == 1
-        assert "invalid agent name format" in result.output.lower()
+        assert "not found" in result.output.lower()
 
     def test_invalid_name_empty_parts(self, isolated_config: Path):
         """Rejects names with empty parts."""
@@ -156,43 +156,43 @@ class TestAgentConfigureParse:
         assert result.exit_code != 0
 
     def test_invalid_characters_in_claw_type(self, isolated_config: Path):
-        """Rejects claw type with path traversal."""
+        """Rejects invalid characters in agent name."""
         result = runner.invoke(app, ["agent", "configure", "../etc-work"])
 
         assert result.exit_code == 1
-        assert "invalid agent type" in result.output.lower()
+        assert "invalid agent name" in result.output.lower()
 
     def test_invalid_characters_in_host_alias(self, isolated_config: Path):
-        """Rejects host alias with invalid characters."""
+        """Rejects invalid characters in agent name."""
         result = runner.invoke(app, ["agent", "configure", "opc-../etc"])
 
         assert result.exit_code == 1
-        assert "invalid host alias" in result.output.lower()
+        assert "invalid agent name" in result.output.lower()
 
 
 class TestAgentConfigureHostNotFound:
-    """Tests for host not found errors."""
+    """Tests for missing agent errors."""
 
     def test_host_not_found(self, isolated_config: Path):
-        """Shows error when host doesn't exist."""
+        """Shows error when agent instance doesn't exist."""
         result = runner.invoke(app, ["agent", "configure", "opc-nonexistent"])
 
         assert result.exit_code == 1
-        assert "host" in result.output.lower() and "not found" in result.output.lower()
+        assert "not found" in result.output.lower()
 
 
 class TestAgentConfigureClawNotInstalled:
-    """Tests for claw not installed errors."""
+    """Tests for missing agent errors."""
 
     def test_claw_not_installed(self, isolated_config: Path):
-        """Shows error when claw not installed on host."""
+        """Shows error when named agent is not found."""
         create_test_keypair(isolated_config, "work")
         create_host_with_claw(isolated_config, claw_type="zeroclaw")
 
         result = runner.invoke(app, ["agent", "configure", "openclaw-work"])
 
         assert result.exit_code == 1
-        assert "not installed" in result.output.lower()
+        assert "not found" in result.output.lower()
 
 
 class TestAgentConfigureSingleStage:
@@ -206,7 +206,7 @@ class TestAgentConfigureSingleStage:
 
         result = runner.invoke(
             app,
-            ["agent", "configure", "openclaw-work", "--stage", "invalid_stage"],
+            ["agent", "configure", "assistant", "--stage", "invalid_stage"],
             env=os.environ,
         )
 
@@ -228,12 +228,12 @@ class TestAgentConfigureSingleStage:
 
             result = runner.invoke(
                 app,
-                ["agent", "configure", "openclaw-work", "--stage", stage_name, "--yes"],
+                ["agent", "configure", "assistant", "--stage", stage_name, "--yes"],
                 env=os.environ,
             )
 
             assert result.exit_code == 0
-            mock_run.assert_called_once_with("work", "openclaw", True)
+            mock_run.assert_called_once_with("192.168.1.100", "openclaw", True)
 
     def test_single_stage_failure(self, isolated_config: Path):
         """Stage failure exits with code 1."""
@@ -249,7 +249,7 @@ class TestAgentConfigureSingleStage:
                 [
                     "agent",
                     "configure",
-                    "openclaw-work",
+                    "assistant",
                     "--stage",
                     "providers",
                     "--yes",
@@ -275,7 +275,7 @@ class TestAgentConfigureFullWizard:
 
         result = runner.invoke(
             app,
-            ["agent", "configure", "openclaw-work"],
+            ["agent", "configure", "assistant"],
             env=os.environ,
         )
 
@@ -299,7 +299,7 @@ class TestAgentConfigureFullWizard:
 
             result = runner.invoke(
                 app,
-                ["agent", "configure", "openclaw-work", "--yes"],
+                ["agent", "configure", "assistant", "--yes"],
                 env=os.environ,
             )
 
@@ -324,7 +324,7 @@ class TestAgentConfigureFullWizard:
 
             result = runner.invoke(
                 app,
-                ["agent", "configure", "openclaw-work", "--yes"],
+                ["agent", "configure", "assistant", "--yes"],
                 env=os.environ,
             )
 
@@ -354,7 +354,7 @@ class TestAgentConfigureYes:
 
             result = runner.invoke(
                 app,
-                ["agent", "configure", "openclaw-work", "--yes"],
+                ["agent", "configure", "assistant", "--yes"],
                 env=os.environ,
             )
 
@@ -635,10 +635,10 @@ class TestHostsFileCorruptedError:
         create_test_keypair(isolated_config, "work")
 
         with patch(
-            "clawrium.cli.agent.get_host",
+            "clawrium.cli.agent.load_hosts",
             side_effect=HostsFileCorruptedError("corrupted"),
         ):
-            result = runner.invoke(app, ["agent", "configure", "opc-work"])
+            result = runner.invoke(app, ["agent", "configure", "assistant"])
 
         assert result.exit_code == 1
         assert "corrupted" in result.output.lower()
@@ -675,7 +675,7 @@ class TestCanSkipStage:
 
             result = runner.invoke(
                 app,
-                ["agent", "configure", "openclaw-work", "--yes"],
+                ["agent", "configure", "assistant", "--yes"],
                 env=os.environ,
             )
 
