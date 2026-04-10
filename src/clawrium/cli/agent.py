@@ -78,10 +78,17 @@ def install(
         "-n",
         help="Agent name for the instance (max 32 chars, alphanumeric/hyphens/underscores)",
     ),
+    cleanup_failed: bool = typer.Option(
+        False,
+        "--cleanup-failed",
+        help="Remove incomplete or failed installation of this agent type before retrying",
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Install an agent on a host."""
-    install_command(claw=claw, host=host, name=name, yes=yes)
+    install_command(
+        claw=claw, host=host, name=name, cleanup_failed=cleanup_failed, yes=yes
+    )
 
 
 @agent_app.command()

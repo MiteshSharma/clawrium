@@ -251,7 +251,15 @@ def test_install_incomplete_error_exits_1(isolated_config: Path):
         with patch("typer.prompt", return_value=3):
             result = runner.invoke(
                 app,
-                ["agent", "install", "--type", "openclaw", "--host", "testhost", "--yes"],
+                [
+                    "agent",
+                    "install",
+                    "--type",
+                    "openclaw",
+                    "--host",
+                    "testhost",
+                    "--yes",
+                ],
                 env=os.environ,
             )
 
@@ -342,3 +350,209 @@ def test_install_claw_flag_rejected(isolated_config: Path):
     assert result.exit_code == 2
     # Should mention the flag issue
     assert "no such option" in result.output.lower() or "claw" in result.output.lower()
+
+
+def test_install_cleanup_failed_flag_is_forwarded_to_run_installation(
+    isolated_config: Path,
+):
+    """--cleanup-failed flag is passed as cleanup_failed=True to run_installation."""
+    create_test_keypair(isolated_config, "testhost")
+    create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
+
+    with patch("clawrium.cli.install.run_installation") as mock_install:
+        mock_install.return_value = {
+            "success": True,
+            "agent": "openclaw",
+            "version": "1.0.0",
+            "host": "192.168.1.100",
+            "playbooks_run": [],
+            "error": None,
+        }
+
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                "--type",
+                "openclaw",
+                "--host",
+                "testhost",
+                "--yes",
+                "--cleanup-failed",
+            ],
+            env=os.environ,
+        )
+
+        assert result.exit_code == 0
+        mock_install.assert_called_once()
+        assert mock_install.call_args.kwargs["cleanup_failed"] is True
+
+
+def test_install_without_cleanup_failed_defaults_to_false(isolated_config: Path):
+    """Without --cleanup-failed, cleanup_failed=False is passed to run_installation."""
+    create_test_keypair(isolated_config, "testhost")
+    create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
+
+    with patch("clawrium.cli.install.run_installation") as mock_install:
+        mock_install.return_value = {
+            "success": True,
+            "agent": "openclaw",
+            "version": "1.0.0",
+            "host": "192.168.1.100",
+            "playbooks_run": [],
+            "error": None,
+        }
+
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                "--type",
+                "openclaw",
+                "--host",
+                "testhost",
+                "--yes",
+            ],
+            env=os.environ,
+        )
+
+        assert result.exit_code == 0
+        mock_install.assert_called_once()
+        assert mock_install.call_args.kwargs["cleanup_failed"] is False
+
+
+def test_install_cleanup_failed_skips_prompt(isolated_config: Path):
+    """--cleanup-failed skips interactive prompt on IncompleteInstallationError."""
+    create_test_keypair(isolated_config, "testhost")
+    create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
+
+    from clawrium.core.install import IncompleteInstallationError
+
+    with patch("clawrium.cli.install.run_installation") as mock_install:
+        mock_install.side_effect = [
+            IncompleteInstallationError(
+                hostname="192.168.1.100",
+                claw_name="openclaw",
+                details={
+                    "status": "failed",
+                    "installed_at": None,
+                    "error": "Base playbook failed",
+                    "agent_name": "work-assistant",
+                    "version": "0.1.0",
+                },
+            ),
+            {
+                "success": True,
+                "agent": "openclaw",
+                "version": "1.0.0",
+                "host": "192.168.1.100",
+                "playbooks_run": [],
+                "error": None,
+            },
+        ]
+
+        with patch("typer.prompt") as mock_prompt:
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "install",
+                    "--type",
+                    "openclaw",
+                    "--host",
+                    "testhost",
+                    "--yes",
+                    "--cleanup-failed",
+                ],
+                env=os.environ,
+            )
+
+        assert result.exit_code == 0
+        assert "success" in result.output.lower()
+        assert mock_install.call_count == 2
+        second_call = mock_install.call_args_list[1]
+        assert second_call.kwargs["cleanup_failed"] is True
+        mock_prompt.assert_not_called()
+
+
+def test_install_cleanup_failed_retry_fails(isolated_config: Path):
+    """When --cleanup-failed retry also fails, InstallationError is shown."""
+    create_test_keypair(isolated_config, "testhost")
+    create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
+
+    from clawrium.core.install import IncompleteInstallationError, InstallationError
+
+    with patch("clawrium.cli.install.run_installation") as mock_install:
+        mock_install.side_effect = [
+            IncompleteInstallationError(
+                hostname="192.168.1.100",
+                claw_name="openclaw",
+                details={
+                    "status": "failed",
+                    "installed_at": None,
+                    "error": "Base playbook failed",
+                    "agent_name": "work-assistant",
+                    "version": "0.1.0",
+                },
+            ),
+            InstallationError("Retry playbook failed"),
+        ]
+
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "install",
+                "--type",
+                "openclaw",
+                "--host",
+                "testhost",
+                "--yes",
+                "--cleanup-failed",
+            ],
+            env=os.environ,
+        )
+
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower()
+
+
+def test_install_without_cleanup_failed_shows_prompt(isolated_config: Path):
+    """Without --cleanup-failed, IncompleteInstallationError shows interactive prompt."""
+    create_test_keypair(isolated_config, "testhost")
+    create_host(isolated_config, "192.168.1.100", alias="testhost", key_id="testhost")
+
+    from clawrium.core.install import IncompleteInstallationError
+
+    with patch("clawrium.cli.install.run_installation") as mock_install:
+        mock_install.side_effect = IncompleteInstallationError(
+            hostname="192.168.1.100",
+            claw_name="openclaw",
+            details={
+                "status": "failed",
+                "installed_at": None,
+                "error": "Base playbook failed",
+                "agent_name": "work-assistant",
+                "version": "0.1.0",
+            },
+        )
+
+        with patch("typer.prompt", return_value=3) as mock_prompt:
+            result = runner.invoke(
+                app,
+                [
+                    "agent",
+                    "install",
+                    "--type",
+                    "openclaw",
+                    "--host",
+                    "testhost",
+                    "--yes",
+                ],
+                env=os.environ,
+            )
+
+        assert "incomplete installation" in result.output.lower()
+        mock_prompt.assert_called()
