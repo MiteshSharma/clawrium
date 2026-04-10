@@ -78,7 +78,8 @@ class TestConfigureClaw:
                 return_value=playbook,
             ):
                 with patch(
-                    "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
                 ):
                     with patch(
                         "clawrium.core.lifecycle.ansible_runner.run",
@@ -135,8 +136,12 @@ class TestConfigureClaw:
                 "clawrium.core.lifecycle._get_lifecycle_playbook_path",
                 return_value=playbook,
             ):
-                with patch("clawrium.core.lifecycle.get_host_private_key", return_value=None):
-                    success, error = configure_agent("test-host", "zeroclaw", config_data)
+                with patch(
+                    "clawrium.core.lifecycle.get_host_private_key", return_value=None
+                ):
+                    success, error = configure_agent(
+                        "test-host", "zeroclaw", config_data
+                    )
 
         assert success is False
         assert "SSH key not found" in error
@@ -163,9 +168,12 @@ class TestConfigureClaw:
                 return_value=playbook,
             ):
                 with patch(
-                    "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
                 ):
-                    success, error = configure_agent("test-host", "zeroclaw", config_data)
+                    success, error = configure_agent(
+                        "test-host", "zeroclaw", config_data
+                    )
 
         assert success is False
         assert "Invalid agent_name format" in error
@@ -197,7 +205,8 @@ class TestConfigureClaw:
                 return_value=playbook,
             ):
                 with patch(
-                    "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
                 ):
                     with patch(
                         "clawrium.core.lifecycle.ansible_runner.run",
@@ -243,7 +252,8 @@ class TestConfigureClaw:
                 return_value=playbook,
             ):
                 with patch(
-                    "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
                 ):
                     with patch(
                         "clawrium.core.lifecycle.ansible_runner.run",
@@ -298,13 +308,16 @@ class TestConfigureClaw:
                 return_value=playbook,
             ):
                 with patch(
-                    "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
                 ):
                     with patch(
                         "clawrium.core.lifecycle.ansible_runner.run",
                         return_value=mock_runner,
                     ):
-                        with patch("clawrium.core.lifecycle.update_host") as mock_update:
+                        with patch(
+                            "clawrium.core.lifecycle.update_host"
+                        ) as mock_update:
                             with patch(
                                 "clawrium.core.providers.get_provider_api_key",
                                 return_value="",
@@ -500,13 +513,16 @@ class TestOpenClawTemplate:
                 return_value=playbook,
             ):
                 with patch(
-                    "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
                 ):
                     with patch(
                         "clawrium.core.lifecycle.ansible_runner.run",
                         return_value=mock_runner,
                     ) as mock_ansible:
-                        with patch("clawrium.core.lifecycle.update_host") as mock_update:
+                        with patch(
+                            "clawrium.core.lifecycle.update_host"
+                        ) as mock_update:
                             with patch(
                                 "clawrium.core.providers.get_provider_api_key",
                                 return_value="sk-or-test",
@@ -524,19 +540,233 @@ class TestOpenClawTemplate:
                                 # Verify config passed includes model and gateway settings
                                 ansible_vars = inventory.get("all", {}).get("vars", {})
                                 assert "config" in ansible_vars
-                                assert ansible_vars["config"]["provider"]["default_model"] == "deepseek/deepseek-chat-v3"
-                                assert ansible_vars["config"]["gateway"]["port"] == 40000
-                                assert ansible_vars["config"]["gateway"]["bind"] == "lan"
+                                assert (
+                                    ansible_vars["config"]["provider"]["default_model"]
+                                    == "deepseek/deepseek-chat-v3"
+                                )
+                                assert (
+                                    ansible_vars["config"]["gateway"]["port"] == 40000
+                                )
+                                assert (
+                                    ansible_vars["config"]["gateway"]["bind"] == "lan"
+                                )
                                 # Verify template_path and agent metadata with exact values
                                 assert "template_path" in ansible_vars
                                 # Template path should point to openclaw templates directory
-                                assert "openclaw/templates" in str(ansible_vars["template_path"])
+                                assert "openclaw/templates" in str(
+                                    ansible_vars["template_path"]
+                                )
                                 assert ansible_vars["agent_name"] == "ocl-test"
                                 assert ansible_vars["agent_type"] == "openclaw"
                                 # Verify envvars contains API key
                                 envvars = call_args.kwargs.get("envvars", {})
                                 assert "CLAWRIUM_PROVIDER_API_KEY" in envvars
-                                assert envvars["CLAWRIUM_PROVIDER_API_KEY"] == "sk-or-test"
+                                assert (
+                                    envvars["CLAWRIUM_PROVIDER_API_KEY"] == "sk-or-test"
+                                )
 
         assert success is True, f"Configuration failed: {error}"
         assert error is None
+
+
+class TestEnvTemplate:
+    """Tests for OpenClaw .env.j2 template rendering."""
+
+    def _render_env_template(self, config, env_values=None):
+        """Helper to render the .env.j2 template."""
+        template_dir = (
+            Path(__file__).parent.parent
+            / "src/clawrium/platform/registry/openclaw/templates"
+        )
+        env_values = env_values or {}
+        env = Environment(loader=FileSystemLoader(str(template_dir)))
+        env.globals["lookup"] = lambda lookup_type, key: (
+            env_values.get(key, "") if lookup_type == "env" else ""
+        )
+        template = env.get_template(".env.j2")
+        return template.render(config=config)
+
+    @staticmethod
+    def _parse_env(rendered):
+        """Parse rendered env file into key/value map."""
+        result = {}
+        for line in rendered.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            result[key] = value
+        return result
+
+    def test_env_anthropic_provider(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "anthropic",
+                "default_model": "anthropic/claude-opus-4-6",
+            },
+        }
+        rendered = self._render_env_template(
+            config,
+            {"CLAWRIUM_PROVIDER_API_KEY": "anthropic-key"},
+        )
+        env_map = self._parse_env(rendered)
+
+        assert env_map["ANTHROPIC_API_KEY"] == "anthropic-key"
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "anthropic/claude-opus-4-6"
+
+    def test_env_openai_provider(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {"type": "openai", "default_model": "openai/gpt-5.4"},
+        }
+        rendered = self._render_env_template(
+            config,
+            {"CLAWRIUM_PROVIDER_API_KEY": "openai-key"},
+        )
+        env_map = self._parse_env(rendered)
+
+        assert env_map["OPENAI_API_KEY"] == "openai-key"
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "openai/gpt-5.4"
+
+    def test_env_ollama_provider(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "ollama",
+                "endpoint": "http://localhost:11434",
+                "default_model": "llama3.1:8b",
+            },
+        }
+        rendered = self._render_env_template(config)
+        env_map = self._parse_env(rendered)
+
+        assert env_map["OPENCLAW_OLLAMA_URL"] == "http://localhost:11434"
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "llama3.1:8b"
+
+    def test_env_openrouter_provider(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "openrouter",
+                "default_model": "deepseek/deepseek-chat-v3",
+            },
+        }
+        rendered = self._render_env_template(
+            config,
+            {"CLAWRIUM_PROVIDER_API_KEY": "openrouter-key"},
+        )
+        env_map = self._parse_env(rendered)
+
+        assert env_map["OPENROUTER_API_KEY"] == "openrouter-key"
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "deepseek/deepseek-chat-v3"
+
+    def test_env_bedrock_provider(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "bedrock",
+                "default_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            },
+        }
+        rendered = self._render_env_template(config)
+        env_map = self._parse_env(rendered)
+
+        assert "# Bedrock uses AWS credentials from environment/profile" in rendered
+        assert "AWS_ACCESS_KEY_ID" not in env_map
+        assert "AWS_SECRET_ACCESS_KEY" not in env_map
+        assert (
+            env_map["OPENCLAW_DEFAULT_MODEL"]
+            == "anthropic.claude-3-7-sonnet-20250219-v1:0"
+        )
+
+    def test_env_vertex_provider(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "vertex",
+                "default_model": "google/gemini-2.5-pro",
+            },
+        }
+        rendered = self._render_env_template(
+            config,
+            {"CLAWRIUM_PROVIDER_API_KEY": "/etc/gcp/service-account.json"},
+        )
+        env_map = self._parse_env(rendered)
+
+        assert (
+            env_map["GOOGLE_APPLICATION_CREDENTIALS"] == "/etc/gcp/service-account.json"
+        )
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "google/gemini-2.5-pro"
+
+    def test_env_zai_provider(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {"type": "zai", "default_model": "zai/glm-4.6"},
+        }
+        rendered = self._render_env_template(
+            config,
+            {"CLAWRIUM_PROVIDER_API_KEY": "zai-key"},
+        )
+        env_map = self._parse_env(rendered)
+
+        assert env_map["ZAI_API_KEY"] == "zai-key"
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "zai/glm-4.6"
+
+    def test_env_missing_api_key(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "openrouter",
+                "default_model": "deepseek/deepseek-chat-v3",
+            },
+        }
+        rendered = self._render_env_template(config)
+        env_map = self._parse_env(rendered)
+
+        assert "OPENROUTER_API_KEY" not in env_map
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "deepseek/deepseek-chat-v3"
+
+    def test_env_missing_default_model(self):
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {"type": "openai"},
+        }
+        rendered = self._render_env_template(
+            config,
+            {"CLAWRIUM_PROVIDER_API_KEY": "openai-key"},
+        )
+        env_map = self._parse_env(rendered)
+
+        assert env_map["OPENAI_API_KEY"] == "openai-key"
+        assert "OPENCLAW_DEFAULT_MODEL" not in env_map
+
+    def test_env_gateway_config(self):
+        config = {"gateway": {"bind": "loopback", "port": 40123}}
+        rendered = self._render_env_template(config)
+        env_map = self._parse_env(rendered)
+
+        assert env_map["OPENCLAW_GATEWAY_BIND"] == "loopback"
+        assert env_map["OPENCLAW_GATEWAY_PORT"] == "40123"
+
+    def test_env_gateway_auth(self):
+        config = {"gateway": {"bind": "lan", "port": 40209, "auth": "secret-token"}}
+        rendered = self._render_env_template(config)
+        env_map = self._parse_env(rendered)
+
+        assert env_map["OPENCLAW_GATEWAY_AUTH_MODE"] == "token"
+        assert env_map["OPENCLAW_GATEWAY_AUTH_TOKEN"] == "secret-token"
+
+    def test_env_no_provider(self):
+        config = {"gateway": {"bind": "lan", "port": 40209}}
+        rendered = self._render_env_template(config)
+        env_map = self._parse_env(rendered)
+
+        assert env_map["OPENCLAW_GATEWAY_BIND"] == "lan"
+        assert env_map["OPENCLAW_GATEWAY_PORT"] == "40209"
+        assert "OPENCLAW_DEFAULT_MODEL" not in env_map
+        assert "ANTHROPIC_API_KEY" not in env_map
+        assert "OPENAI_API_KEY" not in env_map
+        assert "OPENROUTER_API_KEY" not in env_map
+        assert "GOOGLE_APPLICATION_CREDENTIALS" not in env_map
+        assert "ZAI_API_KEY" not in env_map
