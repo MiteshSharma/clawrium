@@ -70,6 +70,9 @@ clm host status
 # List available commands
 clm --help
 
+# Chat with an installed OpenClaw agent
+clm chat <agent-name>
+
 # Manage hosts
 clm host list
 clm host add <name> --ip <address>

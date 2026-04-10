@@ -18,6 +18,7 @@ __all__ = [
     "get_host_by_key_id",
     "update_host",
     "remove_agent_from_host",
+    "get_agent_by_name",
     "HOSTS_FILE",
     "HostsFileCorruptedError",
     "DuplicateHostError",
@@ -309,3 +310,58 @@ def remove_agent_from_host(hostname: str, agent_type: str) -> bool:
         return h
 
     return update_host(hostname, updater)
+
+
+def get_agent_by_name(agent_name: str) -> tuple[dict, str, dict] | None:
+    """Resolve an installed agent by user-facing name.
+
+    Matches against each host's installed agent records in this priority:
+    1) explicit `agent_name`
+    2) legacy `name`
+    3) agent type key (e.g. "openclaw")
+
+    Args:
+        agent_name: Name provided by the user.
+
+    Returns:
+        Tuple of (host_record, agent_type, agent_record) if uniquely found,
+        None if not found.
+
+    Raises:
+        ValueError: If multiple installed agents match the given name.
+    """
+    query = agent_name.strip()
+    if not query:
+        return None
+
+    matches: list[tuple[dict, str, dict]] = []
+    for host in load_hosts():
+        agents = host.get("agents")
+        if not isinstance(agents, dict):
+            continue
+        for agent_type, agent_record in agents.items():
+            if not isinstance(agent_record, dict):
+                continue
+            candidates = [
+                agent_record.get("agent_name"),
+                agent_record.get("name"),
+                agent_type,
+            ]
+            if any(isinstance(v, str) and v == query for v in candidates):
+                matches.append((host, agent_type, agent_record))
+
+    if not matches:
+        return None
+    if len(matches) > 1:
+        labels = []
+        for host, agent_type, agent_record in matches:
+            host_label = host.get("alias") or host.get("hostname") or "unknown-host"
+            agent_label = (
+                agent_record.get("agent_name") or agent_record.get("name") or agent_type
+            )
+            labels.append(f"{agent_label}@{host_label}")
+        raise ValueError(
+            f"Agent name '{query}' is ambiguous across hosts: {', '.join(labels)}"
+        )
+
+    return matches[0]
