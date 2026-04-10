@@ -219,12 +219,22 @@ def status(
                 else:
                     status_display = "[yellow]unknown[/yellow]"
 
-            # Also show install state if failed
+            # Also show install state if failed or incomplete
             install_status = claw_record.get("status", "")
             if install_status == "failed":
-                status_display = "[red]install failed[/red]"
+                error_msg = claw_record.get("error", "unknown error")
+                if isinstance(error_msg, str) and len(error_msg) > 50:
+                    error_display = escape(error_msg[:50]) + "..."
+                elif isinstance(error_msg, str):
+                    error_display = escape(error_msg)
+                else:
+                    error_display = "unknown error"
+                status_display = f"[red]install failed[/red] ({error_display})"
             elif install_status == "installing":
-                status_display = "[yellow]installing...[/yellow]"
+                if claw_record.get("installed_at") is None:
+                    status_display = "[yellow]incomplete install[/yellow]"
+                else:
+                    status_display = "[yellow]installing...[/yellow]"
 
             table.add_row(
                 escape(full_name),

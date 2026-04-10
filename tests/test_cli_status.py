@@ -176,7 +176,7 @@ def test_status_host_filter_not_found(mock_hosts_with_claws):
 
 
 def test_status_shows_failed_install():
-    """Failed installation shows install failed status."""
+    """Failed installation shows install failed status with error message."""
     hosts = [
         {
             "hostname": "192.168.1.100",
@@ -192,7 +192,6 @@ def test_status_shows_failed_install():
         }
     ]
 
-    # Health check returns unknown since not really installed
     mock_health = MagicMock(
         return_value={
             "agent": "openclaw",
@@ -212,10 +211,167 @@ def test_status_shows_failed_install():
             result = runner.invoke(app, ["ps"])
 
     assert "install failed" in result.output
+    assert "Playbook failed" in result.output
+
+
+def test_status_shows_failed_install_truncates_long_error():
+    """Failed installation truncates error messages longer than 50 chars."""
+    long_error = "A" * 60
+    hosts = [
+        {
+            "hostname": "192.168.1.100",
+            "alias": "server1",
+            "agents": {
+                "openclaw": {
+                    "version": "0.1.0",
+                    "status": "failed",
+                    "error": long_error,
+                    "agent_name": "opc-server1",
+                }
+            },
+        }
+    ]
+
+    mock_health = MagicMock(
+        return_value={
+            "agent": "openclaw",
+            "host": "192.168.1.100",
+            "status": ClawStatus.STOPPED,
+            "agent_name": "opc-server1",
+            "error": None,
+            "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": False,
+            "onboarding_stages": None,
+        }
+    )
+
+    with patch("clawrium.cli.status.load_hosts", return_value=hosts):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["ps"])
+
+    assert "install failed" in result.output
+    assert "A" * 50 + "..." in result.output
+    assert "A" * 60 not in result.output
+
+
+def test_status_shows_failed_install_no_error_field():
+    """Failed installation without error field shows 'unknown error'."""
+    hosts = [
+        {
+            "hostname": "192.168.1.100",
+            "alias": "server1",
+            "agents": {
+                "openclaw": {
+                    "version": "0.1.0",
+                    "status": "failed",
+                    "agent_name": "opc-server1",
+                }
+            },
+        }
+    ]
+
+    mock_health = MagicMock(
+        return_value={
+            "agent": "openclaw",
+            "host": "192.168.1.100",
+            "status": ClawStatus.STOPPED,
+            "agent_name": "opc-server1",
+            "error": None,
+            "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": False,
+            "onboarding_stages": None,
+        }
+    )
+
+    with patch("clawrium.cli.status.load_hosts", return_value=hosts):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["ps"])
+
+    assert "install failed" in result.output
+    assert "unknown error" in result.output
 
 
 def test_status_shows_installing_status():
-    """Installing status shows installing indicator."""
+    """Installing status with installed_at shows 'installing...'."""
+    hosts = [
+        {
+            "hostname": "192.168.1.100",
+            "alias": "server1",
+            "agents": {
+                "openclaw": {
+                    "version": "0.1.0",
+                    "status": "installing",
+                    "installed_at": "2026-04-10T10:00:00Z",
+                    "agent_name": "opc-server1",
+                }
+            },
+        }
+    ]
+
+    mock_health = MagicMock(
+        return_value={
+            "agent": "openclaw",
+            "host": "192.168.1.100",
+            "status": ClawStatus.UNKNOWN,
+            "agent_name": "opc-server1",
+            "error": None,
+            "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": None,
+            "onboarding_stages": None,
+        }
+    )
+    with patch("clawrium.cli.status.load_hosts", return_value=hosts):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["ps"])
+
+    assert result.exit_code == 0
+    assert "installing" in result.output.lower()
+    assert mock_health.call_count == 1
+
+
+def test_status_shows_incomplete_install():
+    """Installing status without installed_at shows 'incomplete install'."""
+    hosts = [
+        {
+            "hostname": "192.168.1.100",
+            "alias": "server1",
+            "agents": {
+                "openclaw": {
+                    "version": "0.1.0",
+                    "status": "installing",
+                    "installed_at": None,
+                    "agent_name": "opc-server1",
+                }
+            },
+        }
+    ]
+
+    mock_health = MagicMock(
+        return_value={
+            "agent": "openclaw",
+            "host": "192.168.1.100",
+            "status": ClawStatus.UNKNOWN,
+            "agent_name": "opc-server1",
+            "error": None,
+            "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": None,
+            "onboarding_stages": None,
+        }
+    )
+    with patch("clawrium.cli.status.load_hosts", return_value=hosts):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["ps"])
+
+    assert result.exit_code == 0
+    assert "incomplete install" in result.output
+
+
+def test_status_shows_incomplete_install_no_installed_at_field():
+    """Installing status with missing installed_at key shows 'incomplete install'."""
     hosts = [
         {
             "hostname": "192.168.1.100",
@@ -248,8 +404,32 @@ def test_status_shows_installing_status():
             result = runner.invoke(app, ["ps"])
 
     assert result.exit_code == 0
-    assert "installing" in result.output.lower()
-    assert mock_health.call_count == 1
+    assert "incomplete install" in result.output
+
+
+def test_status_successful_install_unchanged(mock_hosts_with_claws):
+    """Successfully installed agents display is unchanged."""
+    mock_health = MagicMock(
+        return_value={
+            "agent": "openclaw",
+            "host": "192.168.1.100",
+            "status": ClawStatus.RUNNING,
+            "agent_name": "opc-server1",
+            "error": None,
+            "missing_secrets": None,
+            "onboarding_step": None,
+            "process_running": True,
+            "onboarding_stages": None,
+        }
+    )
+
+    with patch("clawrium.cli.status.load_hosts", return_value=mock_hosts_with_claws):
+        with patch("clawrium.cli.status.check_claw_health", mock_health):
+            result = runner.invoke(app, ["ps"])
+
+    assert result.exit_code == 0
+    assert "install failed" not in result.output
+    assert "incomplete install" not in result.output
 
 
 def test_status_hosts_file_corrupted():
