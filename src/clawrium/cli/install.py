@@ -87,7 +87,9 @@ def _select_host() -> str:
     return selected.get("alias") or selected["hostname"]
 
 
-def _handle_incomplete_installation(error: IncompleteInstallationError) -> tuple[bool, bool]:
+def _handle_incomplete_installation(
+    error: IncompleteInstallationError,
+) -> tuple[bool, bool]:
     """Prompt user to handle incomplete installation.
 
     Returns:
@@ -184,6 +186,11 @@ def install(
         help="Agent name for the instance (max 32 chars, alphanumeric/hyphens/underscores). "
         "Names are unique per host and immutable after installation.",
     ),
+    cleanup_failed: bool = typer.Option(
+        False,
+        "--cleanup-failed",
+        help="Remove incomplete or failed installation of this agent type before retrying",
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
 ) -> None:
     """Install an agent on a host.
@@ -248,7 +255,6 @@ def install(
     # Step 6: Run installation with progress spinner (per D-02)
     console.print()  # Blank line before progress
 
-    cleanup_failed = False
     resume = False
 
     try:
@@ -264,24 +270,41 @@ def install(
         )
 
     except IncompleteInstallationError as e:
-        # Handle incomplete installation with interactive prompt
-        cleanup_failed, resume = _handle_incomplete_installation(e)
-        # Retry installation with user's choice
-        try:
-            result = _run_installation_with_progress(
-                selected_claw, selected_host, name, cleanup_failed, resume
-            )
-
-            # Success
+        if cleanup_failed:
+            agent_name = e.details.get("agent_name") or e.claw_name
             console.print(
-                f"[green]Success![/green] {selected_claw} v{result['version']} installed as '{name}' on {display_host}"
-                if name
-                else f"[green]Success![/green] {selected_claw} v{result['version']} installed on {display_host}"
+                f"[yellow]Removing incomplete installation of {selected_claw} "
+                f"({agent_name}) from {display_host} and retrying...[/yellow]"
             )
+            try:
+                result = _run_installation_with_progress(
+                    selected_claw, selected_host, None, True, False
+                )
+                console.print(
+                    f"[green]Success![/green] {selected_claw} v{result['version']} installed on {display_host}"
+                )
+            except InstallationError as retry_error:
+                console.print(f"[red]Installation failed:[/red] {retry_error}")
+                raise typer.Exit(code=1)
+        else:
+            # Handle incomplete installation with interactive prompt
+            cleanup_failed, resume = _handle_incomplete_installation(e)
+            # Retry installation with user's choice
+            try:
+                result = _run_installation_with_progress(
+                    selected_claw, selected_host, name, cleanup_failed, resume
+                )
 
-        except InstallationError as retry_error:
-            console.print(f"[red]Installation failed:[/red] {retry_error}")
-            raise typer.Exit(code=1)
+                # Success
+                console.print(
+                    f"[green]Success![/green] {selected_claw} v{result['version']} installed as '{name}' on {display_host}"
+                    if name
+                    else f"[green]Success![/green] {selected_claw} v{result['version']} installed on {display_host}"
+                )
+
+            except InstallationError as retry_error:
+                console.print(f"[red]Installation failed:[/red] {retry_error}")
+                raise typer.Exit(code=1)
 
     except InstallationError as e:
         # Error display per D-10
