@@ -17,6 +17,7 @@ from rich.console import Console
 
 from clawrium.cli.init import init as init_command
 from clawrium.cli.agent import agent_app
+from clawrium.cli.chat import chat as chat_command
 from clawrium.cli.host import host_app
 from clawrium.cli.provider import provider_app
 from clawrium.cli.status import status as status_command
@@ -58,6 +59,15 @@ def ps(
 ) -> None:
     """Quick fleet overview - show agents and hosts status."""
     status_command(host=host, verbose=verbose)
+
+
+@app.command()
+def chat(
+    agent_name: str = typer.Argument(..., help="Installed agent name to chat with"),
+    session: str = typer.Option("main", "--session", "-s", help="Gateway session key"),
+) -> None:
+    """Start interactive chat with an agent."""
+    chat_command(agent_name=agent_name, session=session)
 
 
 @app.command()
