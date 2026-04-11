@@ -39,13 +39,13 @@ class TestRunLifecyclePlaybook:
             "key_id": "test",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"openclaw": {"agent_name": "opc-work"}},
+            "agents": {"opc-work": {"type": "openclaw"}},
         }
 
         with patch("clawrium.core.lifecycle._get_lifecycle_playbook_path") as mock_path:
             mock_path.return_value = tmp_path / "nonexistent.yaml"
             success, error = _run_lifecycle_playbook(
-                "openclaw", "192.168.1.100", "start", host
+                "openclaw", "opc-work", "192.168.1.100", "start", host
             )
 
         assert success is False
@@ -57,7 +57,7 @@ class TestRunLifecyclePlaybook:
             "key_id": "missing-key",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"openclaw": {"agent_name": "opc-work"}},
+            "agents": {"opc-work": {"type": "openclaw"}},
         }
 
         playbook_path = tmp_path / "start.yaml"
@@ -69,7 +69,7 @@ class TestRunLifecyclePlaybook:
                 "clawrium.core.lifecycle.get_host_private_key", return_value=None
             ):
                 success, error = _run_lifecycle_playbook(
-                    "openclaw", "192.168.1.100", "start", host
+                    "openclaw", "opc-work", "192.168.1.100", "start", host
                 )
 
         assert success is False

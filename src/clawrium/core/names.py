@@ -212,7 +212,11 @@ def is_name_available_on_host(name: str, host: dict) -> bool:
     Returns:
         True if name is available, False if already in use
     """
-    for agent_config in host.get("agents", {}).values():
+    agents = host.get("agents", {})
+    if name in agents:
+        return False
+
+    for agent_config in agents.values():
         if agent_config.get("agent_name") == name or agent_config.get("name") == name:
             return False
     return True

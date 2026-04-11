@@ -288,15 +288,17 @@ def get_host_by_key_id(key_id: str) -> dict | None:
     return None
 
 
-def remove_agent_from_host(hostname: str, agent_type: str) -> bool:
-    """Remove an agent from a host's record atomically.
+def remove_agent_from_host(hostname: str, agent_identifier: str) -> bool:
+    """Remove an agent instance from a host's record atomically.
 
     Acquires exclusive lock for the entire load-modify-save operation
     to prevent TOCTOU races from concurrent operations.
 
     Args:
         hostname: The hostname of the host.
-        agent_type: Type of the agent to remove (e.g., "openclaw").
+        agent_identifier: Agent instance name (preferred).
+            For backward compatibility, if no instance key matches this value,
+            a unique matching record by ``record["type"]`` is removed.
 
     Returns:
         True if the host was found (operation attempted), False if host not found.
@@ -305,8 +307,22 @@ def remove_agent_from_host(hostname: str, agent_type: str) -> bool:
     """
 
     def updater(h: dict) -> dict:
-        if "agents" in h and agent_type in h["agents"]:
-            del h["agents"][agent_type]
+        agents = h.get("agents")
+        if not isinstance(agents, dict):
+            return h
+
+        if agent_identifier in agents:
+            del agents[agent_identifier]
+            return h
+
+        # Backward compatibility: remove by unique type match.
+        matches = [
+            key
+            for key, record in agents.items()
+            if isinstance(record, dict) and record.get("type") == agent_identifier
+        ]
+        if len(matches) == 1:
+            del agents[matches[0]]
         return h
 
     return update_host(hostname, updater)
@@ -316,9 +332,9 @@ def get_agent_by_name(agent_name: str) -> tuple[dict, str, dict] | None:
     """Resolve an installed agent by user-facing name.
 
     Matches against each host's installed agent records in this priority:
-    1) explicit `agent_name`
-    2) legacy `name`
-    3) agent type key (e.g. "openclaw")
+    1) instance key in `host["agents"]`
+    2) explicit `agent_name`
+    3) legacy `name`
 
     Args:
         agent_name: Name provided by the user.
@@ -339,13 +355,19 @@ def get_agent_by_name(agent_name: str) -> tuple[dict, str, dict] | None:
         agents = host.get("agents")
         if not isinstance(agents, dict):
             continue
-        for agent_type, agent_record in agents.items():
+        for agent_key, agent_record in agents.items():
             if not isinstance(agent_record, dict):
                 continue
+
+            agent_type = agent_record.get("type")
+            if not isinstance(agent_type, str) or not agent_type:
+                # Backward compatibility for old type-keyed records
+                agent_type = agent_key
+
             candidates = [
+                agent_key,
                 agent_record.get("agent_name"),
                 agent_record.get("name"),
-                agent_type,
             ]
             if any(isinstance(v, str) and v == query for v in candidates):
                 matches.append((host, agent_type, agent_record))

@@ -151,10 +151,12 @@ def _resolve_agent_instance(agent_name: str) -> tuple[str, dict, str, dict, str]
         if not hostname:
             continue
 
-        for claw_type, claw_record in host_data.get("agents", {}).items():
-            canonical_name = claw_record.get("agent_name") or claw_record.get("name")
-            if not canonical_name:
-                continue
+        for agent_key, claw_record in host_data.get("agents", {}).items():
+            # Agent name can be the dict key, or explicit agent_name/name field
+            canonical_name = (
+                claw_record.get("agent_name") or claw_record.get("name") or agent_key
+            )
+            claw_type = claw_record.get("type") or agent_key
             if canonical_name == agent_name:
                 matches.append(
                     (hostname, host_data, claw_type, claw_record, canonical_name)
@@ -215,7 +217,12 @@ def _atomic_write_file(path: str, content: str, mode: int = 0o600) -> None:
         raise
 
 
-def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
+def _sync_provider_config(
+    host: str,
+    claw_type: str,
+    provider: dict,
+    installed_name: str | None = None,
+) -> None:
     """Sync provider configuration to remote agent via Ansible.
 
     This replaces direct SSH config writes with proper Ansible-based configuration
@@ -236,12 +243,23 @@ def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
     if not host_data:
         raise RuntimeError(f"Host '{host}' not found")
 
-    claw_record = host_data.get("agents", {}).get(claw_type)
+    agents = host_data.get("agents", {})
+    if installed_name is None:
+        if isinstance(agents, dict) and claw_type in agents:
+            installed_name = claw_type
+        else:
+            matches = [
+                key
+                for key, record in agents.items()
+                if isinstance(record, dict)
+                and (record.get("agent_name") or record.get("name"))
+            ]
+            if len(matches) == 1:
+                installed_name = matches[0]
+
+    claw_record = host_data.get("agents", {}).get(installed_name or "")
     if not claw_record:
-        raise RuntimeError(f"Agent '{claw_type}' not installed on '{host}'")
-    installed_name = (
-        claw_record.get("agent_name") or claw_record.get("name") or claw_type
-    )
+        raise RuntimeError(f"Agent '{installed_name}' not installed on '{host}'")
 
     # Calculate or preserve gateway port
     existing_config = claw_record.get("config", {})
@@ -292,13 +310,23 @@ def _sync_provider_config(host: str, claw_type: str, provider: dict) -> None:
     config_data = {"gateway": gateway_config, "provider": provider_config}
 
     # Call configure_agent to apply configuration via Ansible
-    success, error = configure_agent(host, claw_type, config_data)
+    success, error = configure_agent(
+        host,
+        claw_type,
+        config_data,
+        agent_name=installed_name,
+    )
 
     if not success:
         raise RuntimeError(f"Failed to configure {claw_type}: {error}")
 
 
-def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
+def _run_providers_stage(
+    host: str,
+    claw_type: str,
+    yes: bool,
+    installed_name: str | None = None,
+) -> bool:
     """Run the PROVIDERS onboarding stage.
 
     Args:
@@ -354,7 +382,7 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
     # B3: Sync provider config to remote agent BEFORE completing the stage
     console.print("\nSyncing config to agent... ", end="")
     try:
-        _sync_provider_config(host, claw_type, selected)
+        _sync_provider_config(host, claw_type, selected, installed_name)
         console.print("[green]✓[/green]")
     except Exception as e:
         console.print(f"[red]✗[/red] {rich_escape(str(e))}")
@@ -369,7 +397,7 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
     try:
         complete_stage(
             host,
-            claw_type,
+            installed_name or claw_type,
             "providers",
             StageStatus.COMPLETE,
             {"provider_id": provider_name},
@@ -381,7 +409,12 @@ def _run_providers_stage(host: str, claw_type: str, yes: bool) -> bool:
         return False
 
 
-def _run_identity_stage(host: str, claw_type: str, yes: bool) -> bool:
+def _run_identity_stage(
+    host: str,
+    claw_type: str,
+    yes: bool,
+    installed_name: str | None = None,
+) -> bool:
     """Run the IDENTITY onboarding stage.
 
     Args:
@@ -432,7 +465,9 @@ def _run_identity_stage(host: str, claw_type: str, yes: bool) -> bool:
     console.print("  [green]✓[/green] Using default identity configuration")
 
     try:
-        complete_stage(host, claw_type, "identity", StageStatus.COMPLETE)
+        complete_stage(
+            host, installed_name or claw_type, "identity", StageStatus.COMPLETE
+        )
         return True
     except Exception as e:
         console.print(
@@ -441,7 +476,12 @@ def _run_identity_stage(host: str, claw_type: str, yes: bool) -> bool:
         return False
 
 
-def _run_channels_stage(host: str, claw_type: str, yes: bool) -> bool:
+def _run_channels_stage(
+    host: str,
+    claw_type: str,
+    yes: bool,
+    installed_name: str | None = None,
+) -> bool:
     """Run the CHANNELS onboarding stage.
 
     Args:
@@ -476,7 +516,7 @@ def _run_channels_stage(host: str, claw_type: str, yes: bool) -> bool:
     try:
         complete_stage(
             host,
-            claw_type,
+            installed_name or claw_type,
             "channels",
             StageStatus.COMPLETE,
             {"default_channel": selected_channel},
@@ -489,7 +529,12 @@ def _run_channels_stage(host: str, claw_type: str, yes: bool) -> bool:
         return False
 
 
-def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
+def _run_validate_stage(
+    host: str,
+    claw_type: str,
+    yes: bool,
+    installed_name: str | None = None,
+) -> bool:
     """Run the VALIDATE onboarding stage.
 
     Performs comprehensive validation of agent configuration:
@@ -518,7 +563,8 @@ def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
     all_warnings = []
 
     console.print("[1/4] Validating agent installation...")
-    install_result = validate_agent_installation(host, claw_type)
+    agent_name = installed_name or claw_type
+    install_result = validate_agent_installation(host, agent_name)
     if install_result.passed:
         console.print("  [green]✓[/green] Agent installed")
     else:
@@ -603,7 +649,9 @@ def _run_validate_stage(host: str, claw_type: str, yes: bool) -> bool:
         console.print("[green]Validation passed[/green]")
 
     try:
-        complete_stage(host, claw_type, "validate", StageStatus.COMPLETE)
+        complete_stage(
+            host, installed_name or claw_type, "validate", StageStatus.COMPLETE
+        )
         return True
     except Exception as e:
         console.print(
@@ -656,11 +704,11 @@ def configure(
     display_host = host_data.get("alias") or host_data["hostname"]
 
     try:
-        current_state = get_onboarding_state(hostname, claw_type)
+        current_state = get_onboarding_state(hostname, installed_name)
     except OnboardingNotFoundError:
         try:
-            initialize_onboarding(hostname, claw_type)
-            current_state = get_onboarding_state(hostname, claw_type)
+            initialize_onboarding(hostname, installed_name)
+            current_state = get_onboarding_state(hostname, installed_name)
         except AgentNotFoundError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -705,7 +753,7 @@ def configure(
         }[stage]
 
         try:
-            success = stage_func(hostname, claw_type, yes)
+            success = stage_func(hostname, claw_type, yes, installed_name)
         except KeyboardInterrupt:
             console.print("\nCancelled.")
             raise typer.Exit(code=1)
@@ -745,7 +793,9 @@ def configure(
 
             if can_skip_stage(claw_type, stage_name):
                 try:
-                    complete_stage(hostname, claw_type, stage_name, StageStatus.SKIPPED)
+                    complete_stage(
+                        hostname, installed_name, stage_name, StageStatus.SKIPPED
+                    )
                 except Exception as e:
                     console.print(
                         f"[red]Error:[/red] Failed to skip stage: {rich_escape(str(e))}"
@@ -759,15 +809,17 @@ def configure(
 
             # Transition to the stage's state before running it
             current_stage_state = STAGE_TO_CURRENT_STATE.get(stage_name)
-            current_state = get_onboarding_state(hostname, claw_type)
+            current_state = get_onboarding_state(hostname, installed_name)
             if current_stage_state and current_state != current_stage_state:
                 try:
-                    transition_state(hostname, claw_type, current_stage_state)
+                    transition_state(hostname, installed_name, current_stage_state)
                 except InvalidTransitionError as e:
                     console.print(f"[red]Error:[/red] {e}")
                     raise typer.Exit(code=1)
 
-            success = stage_functions[stage_name](hostname, claw_type, yes)
+            success = stage_functions[stage_name](
+                hostname, claw_type, yes, installed_name
+            )
 
             if not success:
                 console.print(
@@ -777,7 +829,7 @@ def configure(
 
             next_state = STAGE_TO_NEXT_STATE[stage_name]
             try:
-                transition_state(hostname, claw_type, next_state)
+                transition_state(hostname, installed_name, next_state)
             except InvalidTransitionError as e:
                 console.print(f"[red]Error:[/red] {e}")
                 raise typer.Exit(code=1)
@@ -910,7 +962,12 @@ def remove(
                 console.print(f"  {message}")
 
         try:
-            result = remove_agent(hostname, claw_type, on_event=on_event)
+            if installed_name in host_data.get("agents", {}):
+                result = remove_agent(
+                    hostname, claw_type, agent_name=installed_name, on_event=on_event
+                )
+            else:
+                result = remove_agent(hostname, claw_type, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -956,11 +1013,11 @@ def start(
             display_host = hostname
 
         try:
-            current_state = get_onboarding_state(hostname, claw_type)
+            current_state = get_onboarding_state(hostname, installed_name)
         except OnboardingNotFoundError:
             try:
-                initialize_onboarding(hostname, claw_type)
-                current_state = get_onboarding_state(hostname, claw_type)
+                initialize_onboarding(hostname, installed_name)
+                current_state = get_onboarding_state(hostname, installed_name)
             except AgentNotFoundError as e:
                 console.print(f"[red]Error:[/red] {e}")
                 raise typer.Exit(code=1)
@@ -985,7 +1042,21 @@ def start(
                 console.print(f"  {message}")
 
         try:
-            result = start_agent(hostname, claw_type, force=force, on_event=on_event)
+            if installed_name in host_data.get("agents", {}):
+                result = start_agent(
+                    hostname,
+                    claw_type,
+                    agent_name=installed_name,
+                    force=force,
+                    on_event=on_event,
+                )
+            else:
+                result = start_agent(
+                    hostname,
+                    claw_type,
+                    force=force,
+                    on_event=on_event,
+                )
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -1041,7 +1112,21 @@ def stop(
                 console.print(f"  {message}")
 
         try:
-            result = stop_agent(hostname, claw_type, timeout=timeout, on_event=on_event)
+            if installed_name in host_data.get("agents", {}):
+                result = stop_agent(
+                    hostname,
+                    claw_type,
+                    agent_name=installed_name,
+                    timeout=timeout,
+                    on_event=on_event,
+                )
+            else:
+                result = stop_agent(
+                    hostname,
+                    claw_type,
+                    timeout=timeout,
+                    on_event=on_event,
+                )
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)
@@ -1092,7 +1177,15 @@ def restart(
                 console.print(f"  {message}")
 
         try:
-            result = restart_agent(hostname, claw_type, on_event=on_event)
+            if installed_name in host_data.get("agents", {}):
+                result = restart_agent(
+                    hostname,
+                    claw_type,
+                    agent_name=installed_name,
+                    on_event=on_event,
+                )
+            else:
+                result = restart_agent(hostname, claw_type, on_event=on_event)
         except LifecycleError as e:
             console.print(f"[red]Error:[/red] {e}")
             raise typer.Exit(code=1)

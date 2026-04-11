@@ -13,30 +13,59 @@
         create_home: yes
         shell: /bin/bash
 
-    - name: Check if OpenClaw binary exists
+    - name: Check if per-agent OpenClaw binary exists
       ansible.builtin.stat:
         path: "/home/{{ agent_name }}/.openclaw/bin/openclaw"
-      register: openclaw_binary_stat
+      register: openclaw_agent_binary_stat
 
-    - name: Read installed OpenClaw version
+    - name: Check if global OpenClaw binary exists
+      ansible.builtin.stat:
+        path: /usr/local/bin/openclaw
+      register: openclaw_global_binary_stat
+
+    - name: Read per-agent OpenClaw version
       ansible.builtin.command:
         argv:
           - /home/{{ agent_name }}/.openclaw/bin/openclaw
           - --version
       become_user: "{{ agent_name }}"
-      register: openclaw_version_check
+      register: openclaw_agent_version_check
       changed_when: false
       failed_when: false
-      when: openclaw_binary_stat.stat.exists and openclaw_binary_stat.stat.executable
+      when: openclaw_agent_binary_stat.stat.exists and openclaw_agent_binary_stat.stat.executable
 
-    - name: Parse installed OpenClaw version
+    - name: Parse per-agent OpenClaw version
       ansible.builtin.set_fact:
-        openclaw_installed_version: "{{ (openclaw_version_check.stdout | default('') | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)', '\\1') | first | default('')) | regex_replace('^v', '') }}"
-      when: openclaw_binary_stat.stat.exists and openclaw_binary_stat.stat.executable
+        openclaw_agent_installed_version: "{{ (openclaw_agent_version_check.stdout | default('') | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)', '\\1') | first | default('')) | regex_replace('^v', '') }}"
+      when: openclaw_agent_binary_stat.stat.exists and openclaw_agent_binary_stat.stat.executable
+
+    - name: Read global OpenClaw version
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/openclaw
+          - --version
+      register: openclaw_global_version_check
+      changed_when: false
+      failed_when: false
+      when: openclaw_global_binary_stat.stat.exists and openclaw_global_binary_stat.stat.executable
+
+    - name: Parse global OpenClaw version
+      ansible.builtin.set_fact:
+        openclaw_global_installed_version: "{{ (openclaw_global_version_check.stdout | default('') | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)', '\\1') | first | default('')) | regex_replace('^v', '') }}"
+      when: openclaw_global_binary_stat.stat.exists and openclaw_global_binary_stat.stat.executable
 
     - name: Compute OpenClaw install skip condition
       ansible.builtin.set_fact:
-        openclaw_already_installed_and_matching: "{{ (openclaw_binary_stat.stat.exists and openclaw_binary_stat.stat.executable and (openclaw_version_check.rc | default(1)) == 0 and (openclaw_installed_version | default('')) == openclaw_target_version) | bool }}"
+        openclaw_use_global_binary: "{{ (openclaw_global_binary_stat.stat.exists and openclaw_global_binary_stat.stat.executable and (openclaw_global_version_check.rc | default(1)) == 0 and (openclaw_global_installed_version | default('')) == openclaw_target_version) | bool }}"
+        openclaw_use_agent_binary: "{{ (openclaw_agent_binary_stat.stat.exists and openclaw_agent_binary_stat.stat.executable and (openclaw_agent_version_check.rc | default(1)) == 0 and (openclaw_agent_installed_version | default('')) == openclaw_target_version) | bool }}"
+
+    - name: Choose OpenClaw runtime binary path
+      ansible.builtin.set_fact:
+        openclaw_runtime_binary: "{{ '/usr/local/bin/openclaw' if openclaw_use_global_binary else '/home/' ~ agent_name ~ '/.openclaw/bin/openclaw' }}"
+
+    - name: Finalize OpenClaw install skip condition
+      ansible.builtin.set_fact:
+        openclaw_already_installed_and_matching: "{{ (openclaw_use_global_binary or openclaw_use_agent_binary) | bool }}"
 
     - name: Mark install as skipped when already installed
       ansible.builtin.debug:
@@ -46,8 +75,10 @@
     - name: Download OpenClaw installer script
       ansible.builtin.get_url:
         url: https://openclaw.ai/install-cli.sh
-        dest: "/tmp/openclaw-install-{{ agent_name }}.sh"
+        dest: "/home/{{ agent_name }}/openclaw-install.sh"
         mode: "0700"
+        owner: "{{ agent_name }}"
+        group: "{{ agent_name }}"
         force: yes
         timeout: 30
         checksum: "{{ installer_checksum | default(omit) }}"
@@ -57,7 +88,7 @@
       ansible.builtin.command:
         argv:
           - /bin/bash
-          - "/tmp/openclaw-install-{{ agent_name }}.sh"
+          - "/home/{{ agent_name }}/openclaw-install.sh"
           - --prefix
           - "/home/{{ agent_name }}/.openclaw"
           - --install-method
@@ -71,7 +102,7 @@
 
     - name: Clean up installer script
       ansible.builtin.file:
-        path: "/tmp/openclaw-install-{{ agent_name }}.sh"
+        path: "/home/{{ agent_name }}/openclaw-install.sh"
         state: absent
       when: not openclaw_already_installed_and_matching
 
@@ -125,7 +156,7 @@
           User={{ agent_name }}
           WorkingDirectory=/home/{{ agent_name }}/workspace
           EnvironmentFile=/home/{{ agent_name }}/.openclaw/env
-          ExecStart=/home/{{ agent_name }}/.openclaw/bin/openclaw gateway run --allow-unconfigured
+          ExecStart={{ openclaw_runtime_binary }} gateway run --allow-unconfigured
           Restart=on-failure
           RestartSec=5
 
@@ -149,42 +180,76 @@
       delegate_to: localhost
       become: no
 
-    - name: Generate gateway authentication token
-      ansible.builtin.command:
-        argv:
-          - "/home/{{ agent_name }}/.openclaw/bin/openclaw"
-          - doctor
-          - --generate-gateway-token
-      become_user: "{{ agent_name }}"
-      register: doctor_output
-      retries: 3
-      delay: 2
-      until: doctor_output.rc == 0
+    - name: Read gateway authentication token from config file
+      ansible.builtin.slurp:
+        src: "/home/{{ agent_name }}/.openclaw/openclaw.json"
+      register: openclaw_config_raw
       no_log: true
 
-    - name: Read gateway authentication token from config
-      ansible.builtin.command:
-        argv:
-          - "/home/{{ agent_name }}/.openclaw/bin/openclaw"
-          - config
-          - get
-          - gateway.auth.token
-      become_user: "{{ agent_name }}"
-      register: gateway_token_result
-      retries: 3
-      delay: 2
-      until: >
-        gateway_token_result.rc == 0 and
-        (gateway_token_result.stdout | trim) is regex('^[a-zA-Z0-9_-]{32,}$')
-      failed_when: >
-        gateway_token_result.rc != 0 or
-        not ((gateway_token_result.stdout | trim) is regex('^[a-zA-Z0-9_-]{32,}$'))
-      no_log: true
-
-    - name: Save token to fact for retrieval
+    - name: Parse gateway token from config
       ansible.builtin.set_fact:
-        openclaw_gateway_token: "{{ gateway_token_result.stdout | trim }}"
+        gateway_token_result_stdout: "{{ (openclaw_config_raw.content | b64decode | from_json).gateway.auth.token }}"
+      no_log: true
+
+    - name: Validate gateway token format
+      ansible.builtin.fail:
+        msg: "Gateway token not found or invalid format"
+      when: >
+        gateway_token_result_stdout is not defined or
+        gateway_token_result_stdout | length < 32 or
+        not (gateway_token_result_stdout is regex('^[a-zA-Z0-9_-]+$'))
+
+    - name: Copy device pairing script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/pair_device.mjs"
+        dest: "/home/{{ agent_name }}/pair_device.mjs"
+        owner: "{{ agent_name }}"
+        group: "{{ agent_name }}"
+        mode: "0700"
+
+    - name: Install ws package for pairing script
+      ansible.builtin.command:
+        cmd: npm install ws
+        chdir: "/home/{{ agent_name }}"
+      become_user: "{{ agent_name }}"
+      changed_when: true
+
+    - name: Run device pairing via localhost (auto-approved)
+      ansible.builtin.command:
+        cmd: "node pair_device.mjs ws://127.0.0.1:{{ openclaw_port }} {{ gateway_token_result_stdout }}"
+        chdir: "/home/{{ agent_name }}"
+      become_user: "{{ agent_name }}"
+      register: pairing_result
+      no_log: true
+
+    - name: Parse device credentials
+      ansible.builtin.set_fact:
+        device_credentials: "{{ pairing_result.stdout | from_json }}"
+      no_log: true
+
+    - name: Validate device credentials
+      ansible.builtin.fail:
+        msg: "Device pairing failed: {{ device_credentials.error | default('unknown error') }}"
+      when: device_credentials.deviceToken is not defined or device_credentials.deviceToken | length < 10
+
+    - name: Clean up pairing script
+      ansible.builtin.file:
+        path: "/home/{{ agent_name }}/pair_device.mjs"
+        state: absent
+
+    - name: Clean up node_modules from pairing
+      ansible.builtin.file:
+        path: "/home/{{ agent_name }}/node_modules"
+        state: absent
+
+    - name: Save all credentials to fact for retrieval
+      ansible.builtin.set_fact:
+        openclaw_gateway_token: "{{ gateway_token_result_stdout }}"
         openclaw_gateway_url: "ws://{{ ansible_host }}:{{ openclaw_port }}"
+        openclaw_device_id: "{{ device_credentials.deviceId }}"
+        openclaw_device_token: "{{ device_credentials.deviceToken }}"
+        openclaw_device_private_key: "{{ device_credentials.privateKeyPem }}"
+        cacheable: true
       no_log: true
 
   handlers:

@@ -233,7 +233,7 @@ class TestAgentConfigureSingleStage:
             )
 
             assert result.exit_code == 0
-            mock_run.assert_called_once_with("192.168.1.100", "openclaw", True)
+            mock_run.assert_called_once_with("192.168.1.100", "openclaw", True, "assistant")
 
     def test_single_stage_failure(self, isolated_config: Path):
         """Stage failure exits with code 1."""
@@ -736,14 +736,14 @@ class TestConfigurePreservesGatewayAuth:
         # Mock configure_agent to verify it receives preserved auth
         captured_config = []
 
-        def mock_configure(hostname, claw_name, config_data, on_event=None):
+        def mock_configure(hostname, claw_name, config_data, agent_name=None, on_event=None):
             captured_config.append(config_data.copy())
             return True, None
 
         with patch(
             "clawrium.core.lifecycle.configure_agent", side_effect=mock_configure
         ):
-            _sync_provider_config("work", "openclaw", provider)
+            _sync_provider_config("work", "openclaw", provider, installed_name="openclaw")
 
         # Verify gateway auth was preserved
         assert len(captured_config) > 0
@@ -796,14 +796,14 @@ class TestConfigurePreservesGatewayAuth:
 
         captured_config = []
 
-        def mock_configure(hostname, claw_name, config_data, on_event=None):
+        def mock_configure(hostname, claw_name, config_data, agent_name=None, on_event=None):
             captured_config.append(config_data.copy())
             return True, None
 
         with patch(
             "clawrium.core.lifecycle.configure_agent", side_effect=mock_configure
         ):
-            _sync_provider_config("work", "openclaw", provider)
+            _sync_provider_config("work", "openclaw", provider, installed_name="openclaw")
 
         # Verify URL was preserved
         gateway_config = captured_config[0]["gateway"]

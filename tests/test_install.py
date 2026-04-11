@@ -460,6 +460,9 @@ def test_install_updates_host_on_success(monkeypatch, tmp_path):
     """Test that install.py calls update_host with installed status on success."""
     from clawrium.core.install import run_installation
 
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
+
     # Isolate test from real filesystem
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
@@ -535,20 +538,20 @@ def test_install_updates_host_on_success(monkeypatch, tmp_path):
         nonlocal persistent_host
         # Capture before state
         before_status = None
-        if "agents" in persistent_host and "openclaw" in persistent_host.get(
+        if "agents" in persistent_host and test_agent_name in persistent_host.get(
             "agents", {}
         ):
-            before_status = persistent_host["agents"]["openclaw"].get("status")
+            before_status = persistent_host["agents"][test_agent_name].get("status")
 
         # Apply updater to persistent host state (simulates real update_host behavior)
         persistent_host = updater(persistent_host)
 
         # Capture after state
         after_status = None
-        if "agents" in persistent_host and "openclaw" in persistent_host.get(
+        if "agents" in persistent_host and test_agent_name in persistent_host.get(
             "agents", {}
         ):
-            after_status = persistent_host["agents"]["openclaw"].get("status")
+            after_status = persistent_host["agents"][test_agent_name].get("status")
 
         # Store the before/after snapshot
         update_calls.append(
@@ -563,8 +566,8 @@ def test_install_updates_host_on_success(monkeypatch, tmp_path):
         clawrium.core.install, "initialize_onboarding", lambda h, c: True
     )
 
-    # Run installation
-    run_installation("openclaw", "test-host")
+    # Run installation with known name
+    run_installation("openclaw", "test-host", name=test_agent_name)
 
     # Verify update_host was called with installing and installed status
     assert len(update_calls) >= 2
@@ -587,15 +590,18 @@ def test_install_updates_host_on_success(monkeypatch, tmp_path):
 
     assert last_hostname == "test-host"
     assert "agents" in last_updated
-    assert "openclaw" in last_updated["agents"]
-    assert last_updated["agents"]["openclaw"]["status"] == "installed"
-    assert last_updated["agents"]["openclaw"]["version"] == "0.1.0"
-    assert last_updated["agents"]["openclaw"]["installed_at"] is not None
+    assert test_agent_name in last_updated["agents"]
+    assert last_updated["agents"][test_agent_name]["status"] == "installed"
+    assert last_updated["agents"][test_agent_name]["version"] == "0.1.0"
+    assert last_updated["agents"][test_agent_name]["installed_at"] is not None
 
 
 def test_install_updates_host_on_failure(monkeypatch, tmp_path):
     """Test that install.py calls update_host with failed status on failure."""
     from clawrium.core.install import run_installation, InstallationError
+
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
 
     # Isolate test from real filesystem
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -681,7 +687,7 @@ def test_install_updates_host_on_failure(monkeypatch, tmp_path):
 
     # Run installation (should fail and update host with error)
     with pytest.raises(InstallationError):
-        run_installation("openclaw", "test-host")
+        run_installation("openclaw", "test-host", name=test_agent_name)
 
     # Verify update_host was called with failed status
     assert len(update_calls) >= 1
@@ -689,11 +695,11 @@ def test_install_updates_host_on_failure(monkeypatch, tmp_path):
     # Check if any call has failed status
     found_failed = False
     for hostname, updated in update_calls:
-        if "agents" in updated and "openclaw" in updated["agents"]:
-            if updated["agents"]["openclaw"]["status"] == "failed":
+        if "agents" in updated and test_agent_name in updated["agents"]:
+            if updated["agents"][test_agent_name]["status"] == "failed":
                 found_failed = True
-                assert updated["agents"]["openclaw"]["error"] is not None
-                assert "failed" in updated["agents"]["openclaw"]["error"].lower()
+                assert updated["agents"][test_agent_name]["error"] is not None
+                assert "failed" in updated["agents"][test_agent_name]["error"].lower()
                 break
 
     assert found_failed, "Expected update_host to be called with failed status"
@@ -702,6 +708,9 @@ def test_install_updates_host_on_failure(monkeypatch, tmp_path):
 def test_install_initializes_onboarding(monkeypatch, tmp_path):
     """Test that successful install initializes onboarding record after host update."""
     from clawrium.core.install import run_installation
+
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
 
     # Isolate test from real filesystem
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -777,22 +786,22 @@ def test_install_initializes_onboarding(monkeypatch, tmp_path):
     def mock_update_host(hostname, updater):
         nonlocal persistent_host
         persistent_host = updater(persistent_host)
-        status = persistent_host.get("agents", {}).get("openclaw", {}).get("status")
+        status = persistent_host.get("agents", {}).get(test_agent_name, {}).get("status")
         call_order.append(("update_host", status))
         return True
 
     monkeypatch.setattr(clawrium.core.install, "update_host", mock_update_host)
 
-    def mock_initialize_onboarding(host, claw_name):
-        call_order.append(("initialize_onboarding", claw_name))
+    def mock_initialize_onboarding(host, agent_name):
+        call_order.append(("initialize_onboarding", agent_name))
         return True
 
     monkeypatch.setattr(
         clawrium.core.install, "initialize_onboarding", mock_initialize_onboarding
     )
 
-    # Run installation
-    result = run_installation("openclaw", "test-host")
+    # Run installation with known name
+    result = run_installation("openclaw", "test-host", name=test_agent_name)
 
     # Verify installation succeeded
     assert result["success"] is True
@@ -810,8 +819,8 @@ def test_install_initializes_onboarding(monkeypatch, tmp_path):
     assert call_order[2][0] == "initialize_onboarding", (
         f"Third call should be initialize_onboarding, got {call_order[2]}"
     )
-    assert call_order[2][1] == "openclaw", (
-        "initialize_onboarding should be called with claw_name='openclaw'"
+    assert call_order[2][1] == test_agent_name, (
+        f"initialize_onboarding should be called with agent_name='{test_agent_name}'"
     )
 
 
@@ -924,6 +933,9 @@ def test_install_onboarding_raises_does_not_corrupt_state(monkeypatch, tmp_path)
     """
     from clawrium.core.install import run_installation
 
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
+
     # Isolate test from real filesystem
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
@@ -999,18 +1011,18 @@ def test_install_onboarding_raises_does_not_corrupt_state(monkeypatch, tmp_path)
         nonlocal persistent_host
         persistent_host = updater(persistent_host)
         status = None
-        if "agents" in persistent_host and "openclaw" in persistent_host.get(
+        if "agents" in persistent_host and test_agent_name in persistent_host.get(
             "agents", {}
         ):
-            status = persistent_host["agents"]["openclaw"].get("status")
+            status = persistent_host["agents"][test_agent_name].get("status")
         update_calls.append((hostname, status))
         return True
 
     monkeypatch.setattr(clawrium.core.install, "update_host", mock_update_host)
 
     # Mock initialize_onboarding to raise a generic exception (B4 - tests general catch)
-    def mock_initialize_onboarding_fails(host, claw_name):
-        raise Exception(f"Generic onboarding failure for {claw_name} on {host}")
+    def mock_initialize_onboarding_fails(host, agent_name):
+        raise Exception(f"Generic onboarding failure for {agent_name} on {host}")
 
     monkeypatch.setattr(
         clawrium.core.install, "initialize_onboarding", mock_initialize_onboarding_fails
@@ -1023,7 +1035,7 @@ def test_install_onboarding_raises_does_not_corrupt_state(monkeypatch, tmp_path)
         events.append((stage, message))
 
     # Run installation - should succeed despite onboarding failure
-    result = run_installation("openclaw", "test-host", on_event=on_event)
+    result = run_installation("openclaw", "test-host", name=test_agent_name, on_event=on_event)
 
     # Verify installation succeeded (onboarding failure should not corrupt state)
     assert result["success"] is True, (
@@ -1062,6 +1074,9 @@ def test_install_onboarding_record_structure(monkeypatch, tmp_path):
     import json
     from clawrium.core.install import run_installation
     from clawrium.core.hosts import get_host
+
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
 
     # Isolate test from real filesystem
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -1140,7 +1155,7 @@ def test_install_onboarding_record_structure(monkeypatch, tmp_path):
     monkeypatch.setattr(ansible_runner, "run", mock_run)
 
     # Run installation (uses real update_host and initialize_onboarding)
-    result = run_installation("openclaw", "test-host")
+    result = run_installation("openclaw", "test-host", name=test_agent_name)
 
     # Verify installation succeeded
     assert result["success"] is True
@@ -1151,9 +1166,9 @@ def test_install_onboarding_record_structure(monkeypatch, tmp_path):
 
     # Verify claw record exists
     assert "agents" in host
-    assert "openclaw" in host["agents"]
+    assert test_agent_name in host["agents"]
 
-    claw = host["agents"]["openclaw"]
+    claw = host["agents"][test_agent_name]
     assert claw["status"] == "installed"
     assert claw["installed_at"] is not None
 
@@ -1674,6 +1689,9 @@ def test_install_openclaw_captures_gateway_token(monkeypatch, tmp_path):
     import json
     from clawrium.core.install import run_installation
 
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
+
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
     mock_manifest = {
@@ -1756,17 +1774,16 @@ def test_install_openclaw_captures_gateway_token(monkeypatch, tmp_path):
 
         config = Config()
 
-    # Create fact cache with gateway token
+    # Create fact cache with gateway token (using __payload__ wrapper format)
     fact_cache_dir = tmp_path / "artifacts" / "fact_cache"
     fact_cache_dir.mkdir(parents=True)
     fact_file = fact_cache_dir / "test-host"
+    payload_data = {
+        "openclaw_gateway_token": "test-token-123",
+        "openclaw_gateway_url": "ws://test-host:40123",
+    }
     fact_file.write_text(
-        json.dumps(
-            {
-                "openclaw_gateway_token": "test-token-123",
-                "openclaw_gateway_url": "ws://test-host:40123",
-            }
-        )
+        json.dumps({"__payload__": json.dumps(payload_data)})
     )
 
     mock_run = Mock(return_value=SuccessfulResult())
@@ -1775,8 +1792,8 @@ def test_install_openclaw_captures_gateway_token(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ansible_runner, "run", mock_run)
 
-    # Run installation
-    result = run_installation("openclaw", "test-host")
+    # Run installation with known name
+    result = run_installation("openclaw", "test-host", name=test_agent_name)
 
     # Verify installation succeeded
     assert result["success"] is True
@@ -1786,11 +1803,11 @@ def test_install_openclaw_captures_gateway_token(monkeypatch, tmp_path):
     last_update = update_calls[-1][1]
 
     assert "agents" in last_update
-    assert "openclaw" in last_update["agents"]
-    assert "config" in last_update["agents"]["openclaw"]
-    assert "gateway" in last_update["agents"]["openclaw"]["config"]
+    assert test_agent_name in last_update["agents"]
+    assert "config" in last_update["agents"][test_agent_name]
+    assert "gateway" in last_update["agents"][test_agent_name]["config"]
 
-    gateway_config = last_update["agents"]["openclaw"]["config"]["gateway"]
+    gateway_config = last_update["agents"][test_agent_name]["config"]["gateway"]
     assert gateway_config["url"] == "ws://test-host:40123"
     assert gateway_config["auth"] == "test-token-123"
 
@@ -1799,6 +1816,9 @@ def test_install_openclaw_stores_gateway_url(monkeypatch, tmp_path):
     """Test that OpenClaw installation stores gateway URL correctly."""
     import json
     from clawrium.core.install import run_installation
+
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
@@ -1883,13 +1903,12 @@ def test_install_openclaw_stores_gateway_url(monkeypatch, tmp_path):
     fact_cache_dir = tmp_path / "artifacts" / "fact_cache"
     fact_cache_dir.mkdir(parents=True)
     fact_file = fact_cache_dir / "192.168.1.100"
+    payload_data = {
+        "openclaw_gateway_token": "token-abc",
+        "openclaw_gateway_url": "ws://192.168.1.100:40999",
+    }
     fact_file.write_text(
-        json.dumps(
-            {
-                "openclaw_gateway_token": "token-abc",
-                "openclaw_gateway_url": "ws://192.168.1.100:40999",
-            }
-        )
+        json.dumps({"__payload__": json.dumps(payload_data)})
     )
 
     mock_run = Mock(return_value=SuccessfulResult())
@@ -1898,12 +1917,12 @@ def test_install_openclaw_stores_gateway_url(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ansible_runner, "run", mock_run)
 
-    # Run installation
-    run_installation("openclaw", "192.168.1.100")
+    # Run installation with known name
+    run_installation("openclaw", "192.168.1.100", name=test_agent_name)
 
     # Verify URL construction and storage
     last_update = update_calls[-1][1]
-    gateway_url = last_update["agents"]["openclaw"]["config"]["gateway"]["url"]
+    gateway_url = last_update["agents"][test_agent_name]["config"]["gateway"]["url"]
 
     assert gateway_url == "ws://192.168.1.100:40999"
     assert gateway_url.startswith("ws://")

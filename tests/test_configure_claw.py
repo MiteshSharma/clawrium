@@ -147,11 +147,11 @@ class TestConfigureClaw:
         assert "SSH key not found" in error
 
     def test_returns_false_when_invalid_claw_user_format(self, tmp_path: Path):
-        """Test that invalid claw_user format is detected."""
+        """Test that invalid agent_name format is detected."""
         host = {
             "hostname": "192.168.1.100",
             "key_id": "test",
-            "agents": {"zeroclaw": {"agent_name": "Invalid User!"}},
+            "agents": {"Invalid User!": {"type": "zeroclaw"}},
         }
         config_data = {"gateway": {"host": "0.0.0.0", "port": 40000}}
 
@@ -172,7 +172,7 @@ class TestConfigureClaw:
                     return_value=key_path,
                 ):
                     success, error = configure_agent(
-                        "test-host", "zeroclaw", config_data
+                        "test-host", "zeroclaw", config_data, agent_name="Invalid User!"
                     )
 
         assert success is False
@@ -359,7 +359,7 @@ class TestOpenClawTemplate:
         assert result["agents"]["defaults"]["workspace"] == "~/.openclaw/workspace"
         assert result["agents"]["defaults"]["maxConcurrent"] == 4
         assert result["gateway"]["port"] == 18789
-        assert result["gateway"]["bind"] == "0.0.0.0"
+        assert result["gateway"]["bind"] == "lan"
 
     def test_template_renders_full_config(self):
         """Test template renders with all optional fields."""
@@ -405,7 +405,7 @@ class TestOpenClawTemplate:
         assert result["agents"]["defaults"]["heartbeat"]["every"] == "30m"
         assert result["agents"]["defaults"]["heartbeat"]["target"] == "last"
         assert result["gateway"]["port"] == 18789
-        assert result["gateway"]["bind"] == "0.0.0.0"
+        assert result["gateway"]["bind"] == "lan"
         assert result["gateway"]["reload"]["mode"] == "hybrid"
         assert result["gateway"]["reload"]["debounceMs"] == 300
         assert result["gateway"]["channelHealthCheckMinutes"] == 5
@@ -431,7 +431,7 @@ class TestOpenClawTemplate:
 
         # Should use gateway defaults
         assert result["gateway"]["port"] == 18789
-        assert result["gateway"]["bind"] == "0.0.0.0"
+        assert result["gateway"]["bind"] == "lan"
 
     def test_template_handles_empty_optional_fields(self):
         """Test template with empty lists/dicts."""
@@ -558,12 +558,9 @@ class TestOpenClawTemplate:
                                 )
                                 assert ansible_vars["agent_name"] == "ocl-test"
                                 assert ansible_vars["agent_type"] == "openclaw"
-                                # Verify envvars contains API key
-                                envvars = call_args.kwargs.get("envvars", {})
-                                assert "CLAWRIUM_PROVIDER_API_KEY" in envvars
-                                assert (
-                                    envvars["CLAWRIUM_PROVIDER_API_KEY"] == "sk-or-test"
-                                )
+                                # Verify API key is passed in inventory vars
+                                assert "provider_api_key" in ansible_vars
+                                assert ansible_vars["provider_api_key"] == "sk-or-test"
 
         assert success is True, f"Configuration failed: {error}"
         assert error is None
@@ -572,19 +569,15 @@ class TestOpenClawTemplate:
 class TestEnvTemplate:
     """Tests for OpenClaw .env.j2 template rendering."""
 
-    def _render_env_template(self, config, env_values=None):
+    def _render_env_template(self, config, provider_api_key=""):
         """Helper to render the .env.j2 template."""
         template_dir = (
             Path(__file__).parent.parent
             / "src/clawrium/platform/registry/openclaw/templates"
         )
-        env_values = env_values or {}
         env = Environment(loader=FileSystemLoader(str(template_dir)))
-        env.globals["lookup"] = lambda lookup_type, key: (
-            env_values.get(key, "") if lookup_type == "env" else ""
-        )
         template = env.get_template(".env.j2")
-        return template.render(config=config)
+        return template.render(config=config, provider_api_key=provider_api_key)
 
     @staticmethod
     def _parse_env(rendered):
@@ -606,10 +599,7 @@ class TestEnvTemplate:
                 "default_model": "anthropic/claude-opus-4-6",
             },
         }
-        rendered = self._render_env_template(
-            config,
-            {"CLAWRIUM_PROVIDER_API_KEY": "anthropic-key"},
-        )
+        rendered = self._render_env_template(config, provider_api_key="anthropic-key")
         env_map = self._parse_env(rendered)
 
         assert env_map["ANTHROPIC_API_KEY"] == "anthropic-key"
@@ -620,10 +610,7 @@ class TestEnvTemplate:
             "gateway": {"bind": "lan", "port": 40209},
             "provider": {"type": "openai", "default_model": "openai/gpt-5.4"},
         }
-        rendered = self._render_env_template(
-            config,
-            {"CLAWRIUM_PROVIDER_API_KEY": "openai-key"},
-        )
+        rendered = self._render_env_template(config, provider_api_key="openai-key")
         env_map = self._parse_env(rendered)
 
         assert env_map["OPENAI_API_KEY"] == "openai-key"
@@ -652,14 +639,12 @@ class TestEnvTemplate:
                 "default_model": "deepseek/deepseek-chat-v3",
             },
         }
-        rendered = self._render_env_template(
-            config,
-            {"CLAWRIUM_PROVIDER_API_KEY": "openrouter-key"},
-        )
+        rendered = self._render_env_template(config, provider_api_key="openrouter-key")
         env_map = self._parse_env(rendered)
 
         assert env_map["OPENROUTER_API_KEY"] == "openrouter-key"
-        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "deepseek/deepseek-chat-v3"
+        # OpenRouter models get prefixed with openrouter/
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "openrouter/deepseek/deepseek-chat-v3"
 
     def test_env_bedrock_provider(self):
         config = {
@@ -689,8 +674,7 @@ class TestEnvTemplate:
             },
         }
         rendered = self._render_env_template(
-            config,
-            {"CLAWRIUM_PROVIDER_API_KEY": "/etc/gcp/service-account.json"},
+            config, provider_api_key="/etc/gcp/service-account.json"
         )
         env_map = self._parse_env(rendered)
 
@@ -704,10 +688,7 @@ class TestEnvTemplate:
             "gateway": {"bind": "lan", "port": 40209},
             "provider": {"type": "zai", "default_model": "zai/glm-4.6"},
         }
-        rendered = self._render_env_template(
-            config,
-            {"CLAWRIUM_PROVIDER_API_KEY": "zai-key"},
-        )
+        rendered = self._render_env_template(config, provider_api_key="zai-key")
         env_map = self._parse_env(rendered)
 
         assert env_map["ZAI_API_KEY"] == "zai-key"
@@ -725,17 +706,15 @@ class TestEnvTemplate:
         env_map = self._parse_env(rendered)
 
         assert "OPENROUTER_API_KEY" not in env_map
-        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "deepseek/deepseek-chat-v3"
+        # OpenRouter models get prefixed with openrouter/ for OpenClaw
+        assert env_map["OPENCLAW_DEFAULT_MODEL"] == "openrouter/deepseek/deepseek-chat-v3"
 
     def test_env_missing_default_model(self):
         config = {
             "gateway": {"bind": "lan", "port": 40209},
             "provider": {"type": "openai"},
         }
-        rendered = self._render_env_template(
-            config,
-            {"CLAWRIUM_PROVIDER_API_KEY": "openai-key"},
-        )
+        rendered = self._render_env_template(config, provider_api_key="openai-key")
         env_map = self._parse_env(rendered)
 
         assert env_map["OPENAI_API_KEY"] == "openai-key"

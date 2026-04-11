@@ -65,6 +65,7 @@ def _setup_common(monkeypatch, tmp_path, host_record: dict) -> None:
 def test_detect_incomplete_installing(monkeypatch, tmp_path):
     from clawrium.core.install import IncompleteInstallationError, run_installation
 
+    # Agents are keyed by agent_name, with "type" field indicating claw type
     host = {
         "hostname": "test-host",
         "key_id": "test-host",
@@ -75,11 +76,11 @@ def test_detect_incomplete_installing(monkeypatch, tmp_path):
             "memtotal_mb": 4096,
         },
         "agents": {
-            "openclaw": {
+            "work-assistant": {
+                "type": "openclaw",
                 "status": "installing",
                 "installed_at": None,
                 "error": None,
-                "agent_name": "work-assistant",
                 "version": "0.1.0",
             }
         },
@@ -96,6 +97,7 @@ def test_detect_incomplete_installing(monkeypatch, tmp_path):
 def test_detect_incomplete_failed(monkeypatch, tmp_path):
     from clawrium.core.install import run_installation
 
+    # Agents are keyed by agent_name, with "type" field indicating claw type
     host = {
         "hostname": "test-host",
         "key_id": "test-host",
@@ -106,11 +108,11 @@ def test_detect_incomplete_failed(monkeypatch, tmp_path):
             "memtotal_mb": 4096,
         },
         "agents": {
-            "openclaw": {
+            "work-assistant": {
+                "type": "openclaw",
                 "status": "failed",
                 "installed_at": None,
                 "error": "base playbook failed",
-                "agent_name": "work-assistant",
                 "version": "0.1.0",
             }
         },
@@ -125,6 +127,7 @@ def test_detect_incomplete_failed(monkeypatch, tmp_path):
 def test_detect_incomplete_installed_without_timestamp(monkeypatch, tmp_path):
     from clawrium.core.install import run_installation
 
+    # Agents are keyed by agent_name, with "type" field indicating claw type
     host = {
         "hostname": "test-host",
         "key_id": "test-host",
@@ -135,11 +138,11 @@ def test_detect_incomplete_installed_without_timestamp(monkeypatch, tmp_path):
             "memtotal_mb": 4096,
         },
         "agents": {
-            "openclaw": {
+            "work-assistant": {
+                "type": "openclaw",
                 "status": "installed",
                 "installed_at": None,
                 "error": None,
-                "agent_name": "work-assistant",
                 "version": "0.1.0",
             }
         },
@@ -154,6 +157,7 @@ def test_detect_incomplete_installed_without_timestamp(monkeypatch, tmp_path):
 def test_no_detection_for_installed(monkeypatch, tmp_path):
     from clawrium.core.install import run_installation
 
+    # Agents are keyed by agent_name, with "type" field indicating claw type
     host = {
         "hostname": "test-host",
         "key_id": "test-host",
@@ -164,11 +168,11 @@ def test_no_detection_for_installed(monkeypatch, tmp_path):
             "memtotal_mb": 4096,
         },
         "agents": {
-            "openclaw": {
+            "existing-agent": {
+                "type": "openclaw",
                 "status": "installed",
                 "installed_at": "2026-04-10T00:00:00+00:00",
                 "error": None,
-                "agent_name": "existing-agent",
                 "version": "0.1.0",
             }
         },

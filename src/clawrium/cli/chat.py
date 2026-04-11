@@ -24,11 +24,13 @@ console = Console()
 __all__ = ["chat"]
 
 
-class GatewayConfig(TypedDict):
+class GatewayConfig(TypedDict, total=False):
     """Gateway connection settings from an installed agent record."""
 
     url: str
     auth: str
+    device_id: str
+    device_private_key: str
 
 
 _SESSION_PATTERN = re.compile(r"^[a-zA-Z0-9_:.-]{1,255}$")
@@ -102,11 +104,16 @@ def chat(
     )
     console.print("Type /exit or press Ctrl+D to end the chat session.")
 
+    device_id = gateway.get("device_id")
+    device_private_key = gateway.get("device_private_key")
+
     try:
         asyncio.run(
             _chat_loop(
                 gateway_url=str(gateway_url),
                 auth_token=auth_token,
+                device_id=device_id,
+                device_private_key=device_private_key,
                 session_key=session,
                 response_timeout_seconds=timeout,
                 idle_timeout_seconds=idle_timeout,
@@ -135,6 +142,8 @@ def chat(
 async def _chat_loop(
     gateway_url: str,
     auth_token: SecretStr,
+    device_id: str | None,
+    device_private_key: str | None,
     session_key: str,
     response_timeout_seconds: float,
     idle_timeout_seconds: float,
@@ -142,6 +151,8 @@ async def _chat_loop(
     client = OpenClawChatClient(
         gateway_url=gateway_url,
         auth_token=auth_token,
+        device_id=device_id,
+        device_private_key=device_private_key,
         timeout_seconds=response_timeout_seconds,
     )
     with console.status("Connecting to gateway...", spinner="dots"):
@@ -227,7 +238,19 @@ def _extract_gateway_config(agent_record: dict[str, Any]) -> GatewayConfig:
             "Gateway auth token is missing. Re-run install/configure to refresh pairing token."
         )
 
-    return {"url": gateway_url, "auth": auth_token}
+    result: GatewayConfig = {"url": gateway_url, "auth": auth_token}
+
+    # Extract device credentials for operator.write scope
+    device = gateway.get("device")
+    if isinstance(device, dict):
+        device_id = device.get("id")
+        device_private_key = device.get("privateKey")
+        if isinstance(device_id, str) and device_id.strip():
+            result["device_id"] = device_id
+        if isinstance(device_private_key, str) and device_private_key.strip():
+            result["device_private_key"] = device_private_key
+
+    return result
 
 
 def _validate_session_key(session_key: str) -> None:

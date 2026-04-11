@@ -21,18 +21,10 @@
         msg: "Agent user '{{ agent_name }}' not found. Run 'clm agent install' first."
       when: user_check.msg is defined
 
-    - name: Ensure openclaw directory exists
-      ansible.builtin.file:
-        path: "/home/{{ agent_name }}/openclaw"
-        state: directory
-        owner: "{{ agent_name }}"
-        group: "{{ agent_name }}"
-        mode: "0700"
-
     - name: Write openclaw .env from template
       ansible.builtin.template:
         src: "{{ template_path }}/.env.j2"
-        dest: "/home/{{ agent_name }}/openclaw/.env"
+        dest: "/home/{{ agent_name }}/.openclaw/env"
         owner: "{{ agent_name }}"
         group: "{{ agent_name }}"
         mode: "0600"

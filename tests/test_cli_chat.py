@@ -223,6 +223,8 @@ def test_chat_loop_handles_idle_timeout_and_closes_client(monkeypatch):
         chat_module._chat_loop(
             gateway_url="ws://test-host:40123",
             auth_token=SecretStr("token"),
+            device_id=None,
+            device_private_key=None,
             session_key="main",
             response_timeout_seconds=30.0,
             idle_timeout_seconds=10.0,
@@ -274,6 +276,8 @@ def test_chat_loop_sends_message_and_exits_on_command(monkeypatch):
         chat_module._chat_loop(
             gateway_url="ws://test-host:40123",
             auth_token=SecretStr("token"),
+            device_id=None,
+            device_private_key=None,
             session_key="main",
             response_timeout_seconds=30.0,
             idle_timeout_seconds=10.0,
@@ -303,6 +307,8 @@ def test_chat_loop_handles_eof_and_closes_client(monkeypatch):
         chat_module._chat_loop(
             gateway_url="ws://test-host:40123",
             auth_token=SecretStr("token"),
+            device_id=None,
+            device_private_key=None,
             session_key="main",
             response_timeout_seconds=30.0,
             idle_timeout_seconds=10.0,
@@ -330,6 +336,8 @@ def test_chat_loop_handles_keyboard_interrupt_and_closes_client(monkeypatch):
         chat_module._chat_loop(
             gateway_url="ws://test-host:40123",
             auth_token=SecretStr("token"),
+            device_id=None,
+            device_private_key=None,
             session_key="main",
             response_timeout_seconds=30.0,
             idle_timeout_seconds=10.0,
