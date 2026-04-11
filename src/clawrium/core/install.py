@@ -89,9 +89,7 @@ class InstallResult(TypedDict):
     skip_reason: NotRequired[str | None]
 
 
-def _get_incomplete_installation_details(
-    host: dict, claw_name: str
-) -> list[dict]:
+def _get_incomplete_installation_details(host: dict, claw_name: str) -> list[dict]:
     """Return ALL incomplete installation details for an agent type.
 
     Returns a list of incomplete installations (may be empty).
@@ -115,13 +113,15 @@ def _get_incomplete_installation_details(
         if status in {"installing", "failed"} or (
             status is not None and installed_at is None
         ):
-            incomplete.append({
-                "status": status,
-                "installed_at": installed_at,
-                "error": existing.get("error"),
-                "agent_name": agent_key,
-                "version": existing.get("version"),
-            })
+            incomplete.append(
+                {
+                    "status": status,
+                    "installed_at": installed_at,
+                    "error": existing.get("error"),
+                    "agent_name": agent_key,
+                    "version": existing.get("version"),
+                }
+            )
 
     return incomplete
 
@@ -168,14 +168,7 @@ def _openclaw_install_was_skipped(playbook_result: object) -> bool:
             return True
 
         ansible_facts = result.get("ansible_facts", {})
-        if ansible_facts.get("openclaw_already_installed_and_matching") is True:
-            return True
-
-        msg = result.get("msg", "")
-        if (
-            isinstance(msg, str)
-            and "already installed with matching version" in msg.lower()
-        ):
+        if ansible_facts.get("openclaw_already_installed") is True:
             return True
 
     return False
@@ -252,7 +245,9 @@ def run_installation(
 
     # Handle cleanup if requested - clean up ALL incomplete installations
     if cleanup_failed and incomplete_list:
-        emit("cleanup", f"Removing {len(incomplete_list)} incomplete installation(s)...")
+        emit(
+            "cleanup", f"Removing {len(incomplete_list)} incomplete installation(s)..."
+        )
 
         # Collect all agent keys to remove
         agent_keys_to_remove = [
@@ -555,10 +550,10 @@ def run_installation(
         if claw_name == "openclaw":
             install_skipped = _openclaw_install_was_skipped(result)
             if install_skipped:
-                skip_reason = "already_installed_version_match"
+                skip_reason = "already_installed"
                 emit(
                     "claw",
-                    "OpenClaw already installed with matching version; skipped install task",
+                    "OpenClaw already installed; skipped binary install task",
                 )
         if not install_skipped:
             emit("claw", f"{claw_name} installed successfully")
@@ -621,7 +616,9 @@ def run_installation(
 
                                 # Extract device credentials for operator scope auth
                                 device_id_raw = parsed_facts.get("openclaw_device_id")
-                                device_token_raw = parsed_facts.get("openclaw_device_token")
+                                device_token_raw = parsed_facts.get(
+                                    "openclaw_device_token"
+                                )
                                 device_private_key_raw = parsed_facts.get(
                                     "openclaw_device_private_key"
                                 )
@@ -642,7 +639,9 @@ def run_installation(
                                     device_token = None
 
                                 if isinstance(device_private_key_raw, dict):
-                                    device_private_key = device_private_key_raw.get("value")
+                                    device_private_key = device_private_key_raw.get(
+                                        "value"
+                                    )
                                 elif isinstance(device_private_key_raw, str):
                                     device_private_key = device_private_key_raw
                                 else:

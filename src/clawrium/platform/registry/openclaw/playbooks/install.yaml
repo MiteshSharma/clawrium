@@ -13,64 +13,30 @@
         create_home: yes
         shell: /bin/bash
 
-    - name: Check if per-agent OpenClaw binary exists
-      ansible.builtin.stat:
-        path: "/home/{{ agent_name }}/.openclaw/bin/openclaw"
-      register: openclaw_agent_binary_stat
-
-    - name: Check if global OpenClaw binary exists
-      ansible.builtin.stat:
-        path: /usr/local/bin/openclaw
-      register: openclaw_global_binary_stat
-
-    - name: Read per-agent OpenClaw version
-      ansible.builtin.command:
-        argv:
-          - /home/{{ agent_name }}/.openclaw/bin/openclaw
-          - --version
-      become_user: "{{ agent_name }}"
-      register: openclaw_agent_version_check
+    - name: Discover openclaw binary in PATH
+      ansible.builtin.command: which openclaw
+      register: openclaw_which_result
       changed_when: false
       failed_when: false
-      when: openclaw_agent_binary_stat.stat.exists and openclaw_agent_binary_stat.stat.executable
 
-    - name: Parse per-agent OpenClaw version
+    - name: Validate discovered binary path
+      ansible.builtin.fail:
+        msg: "Discovered openclaw binary at unsafe path: {{ openclaw_which_result.stdout }}. Expected under /usr/local/bin/, /usr/bin/, or /home/."
+      when: >
+        (openclaw_which_result.rc | default(1)) == 0 and
+        not (openclaw_which_result.stdout.startswith('/usr/local/bin/') or
+             openclaw_which_result.stdout.startswith('/usr/bin/') or
+             openclaw_which_result.stdout.startswith('/home/'))
+
+    - name: Set install skip condition
       ansible.builtin.set_fact:
-        openclaw_agent_installed_version: "{{ (openclaw_agent_version_check.stdout | default('') | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)', '\\1') | first | default('')) | regex_replace('^v', '') }}"
-      when: openclaw_agent_binary_stat.stat.exists and openclaw_agent_binary_stat.stat.executable
-
-    - name: Read global OpenClaw version
-      ansible.builtin.command:
-        argv:
-          - /usr/local/bin/openclaw
-          - --version
-      register: openclaw_global_version_check
-      changed_when: false
-      failed_when: false
-      when: openclaw_global_binary_stat.stat.exists and openclaw_global_binary_stat.stat.executable
-
-    - name: Parse global OpenClaw version
-      ansible.builtin.set_fact:
-        openclaw_global_installed_version: "{{ (openclaw_global_version_check.stdout | default('') | regex_search('([0-9]+\\.[0-9]+\\.[0-9]+)', '\\1') | first | default('')) | regex_replace('^v', '') }}"
-      when: openclaw_global_binary_stat.stat.exists and openclaw_global_binary_stat.stat.executable
-
-    - name: Compute OpenClaw install skip condition
-      ansible.builtin.set_fact:
-        openclaw_use_global_binary: "{{ (openclaw_global_binary_stat.stat.exists and openclaw_global_binary_stat.stat.executable and (openclaw_global_version_check.rc | default(1)) == 0 and (openclaw_global_installed_version | default('')) == openclaw_target_version) | bool }}"
-        openclaw_use_agent_binary: "{{ (openclaw_agent_binary_stat.stat.exists and openclaw_agent_binary_stat.stat.executable and (openclaw_agent_version_check.rc | default(1)) == 0 and (openclaw_agent_installed_version | default('')) == openclaw_target_version) | bool }}"
-
-    - name: Choose OpenClaw runtime binary path
-      ansible.builtin.set_fact:
-        openclaw_runtime_binary: "{{ '/usr/local/bin/openclaw' if openclaw_use_global_binary else '/home/' ~ agent_name ~ '/.openclaw/bin/openclaw' }}"
-
-    - name: Finalize OpenClaw install skip condition
-      ansible.builtin.set_fact:
-        openclaw_already_installed_and_matching: "{{ (openclaw_use_global_binary or openclaw_use_agent_binary) | bool }}"
+        openclaw_already_installed: "{{ (openclaw_which_result.rc | default(1)) == 0 }}"
+        openclaw_runtime_binary: "{{ openclaw_which_result.stdout if (openclaw_which_result.rc | default(1)) == 0 else '/home/' ~ agent_name ~ '/.openclaw/bin/openclaw' }}"
 
     - name: Mark install as skipped when already installed
       ansible.builtin.debug:
-        msg: "OpenClaw already installed with matching version {{ openclaw_target_version }}."
-      when: openclaw_already_installed_and_matching
+        msg: "OpenClaw already installed at {{ openclaw_which_result.stdout }}. Skipping binary install."
+      when: openclaw_already_installed
 
     - name: Download OpenClaw installer script
       ansible.builtin.get_url:
@@ -82,7 +48,7 @@
         force: yes
         timeout: 30
         checksum: "{{ installer_checksum | default(omit) }}"
-      when: not openclaw_already_installed_and_matching
+      when: not openclaw_already_installed
 
     - name: Install OpenClaw CLI runtime
       ansible.builtin.command:
@@ -98,13 +64,13 @@
           - --no-onboard
         creates: "/home/{{ agent_name }}/.openclaw/bin/openclaw"
       become_user: "{{ agent_name }}"
-      when: not openclaw_already_installed_and_matching
+      when: not openclaw_already_installed
 
     - name: Clean up installer script
       ansible.builtin.file:
         path: "/home/{{ agent_name }}/openclaw-install.sh"
         state: absent
-      when: not openclaw_already_installed_and_matching
+      when: not openclaw_already_installed
 
     - name: Create workspace directory
       ansible.builtin.file:
