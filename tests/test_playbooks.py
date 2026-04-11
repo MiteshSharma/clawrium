@@ -113,3 +113,71 @@ def test_openclaw_install_playbook_structure():
     data = yaml.safe_load(content)
     assert isinstance(data, list), "Playbook should be a list of plays"
     assert len(data) > 0, "Playbook should have at least one play"
+
+
+def test_openclaw_configure_playbook_exists():
+    """Test that openclaw configure playbook exists."""
+    from importlib.resources import files
+
+    openclaw_package = files("clawrium.platform.registry.openclaw")
+    playbook_dir = openclaw_package / "playbooks"
+    configure_playbook = playbook_dir / "configure.yaml"
+
+    assert configure_playbook.is_file(), "configure.yaml playbook should exist"
+
+
+def test_openclaw_configure_playbook_structure():
+    """Test that openclaw configure playbook is valid and has key tasks."""
+    from importlib.resources import files
+    import yaml
+
+    openclaw_package = files("clawrium.platform.registry.openclaw")
+    playbook_path = openclaw_package / "playbooks" / "configure.yaml"
+
+    content = playbook_path.read_text()
+
+    assert "- hosts:" in content, "Should have hosts directive"
+    assert "Verify openclaw.json configuration" in content, (
+        "Should include configuration validation task"
+    )
+    assert 'python3 - "$CONFIG_FILE"' in content, (
+        "Should verify fields with embedded Python"
+    )
+
+    data = yaml.safe_load(content)
+    assert isinstance(data, list), "Playbook should be a list of plays"
+    assert len(data) > 0, "Playbook should have at least one play"
+
+
+def test_openclaw_start_playbook_uses_openclaw_process_check():
+    """Start playbook should verify openclaw process, not node."""
+    from importlib.resources import files
+    import yaml
+
+    openclaw_package = files("clawrium.platform.registry.openclaw")
+    playbook_path = openclaw_package / "playbooks" / "start.yaml"
+
+    content = playbook_path.read_text()
+    data = yaml.safe_load(content)
+
+    assert isinstance(data, list), "Playbook should be a list of plays"
+    assert len(data) > 0, "Playbook should have at least one play"
+    assert "pgrep -u {{ agent_name }} openclaw" in content
+    assert "pgrep -u {{ agent_name }} node" not in content
+
+
+def test_openclaw_stop_playbook_uses_openclaw_process_check():
+    """Stop playbook should verify openclaw process, not node."""
+    from importlib.resources import files
+    import yaml
+
+    openclaw_package = files("clawrium.platform.registry.openclaw")
+    playbook_path = openclaw_package / "playbooks" / "stop.yaml"
+
+    content = playbook_path.read_text()
+    data = yaml.safe_load(content)
+
+    assert isinstance(data, list), "Playbook should be a list of plays"
+    assert len(data) > 0, "Playbook should have at least one play"
+    assert "pgrep -u {{ agent_name }} openclaw" in content
+    assert "pgrep -u {{ agent_name }} node" not in content

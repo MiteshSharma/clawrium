@@ -37,14 +37,14 @@
 
     - name: Verify process is running
       ansible.builtin.command:
-        cmd: pgrep -u {{ agent_name }} node
+        cmd: pgrep -u {{ agent_name }} openclaw
       register: process_check
       changed_when: false
       failed_when: process_check.rc != 0
 
     - name: Get process info
       ansible.builtin.command:
-        cmd: pgrep -u {{ agent_name }} node
+        cmd: pgrep -u {{ agent_name }} openclaw
       register: pid_result
       changed_when: false
 
