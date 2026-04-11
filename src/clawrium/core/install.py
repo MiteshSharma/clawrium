@@ -89,12 +89,19 @@ class InstallResult(TypedDict):
     skip_reason: NotRequired[str | None]
 
 
-def _get_incomplete_installation_details(host: dict, claw_name: str) -> dict | None:
-    """Return existing incomplete installation details for an agent type, if any."""
+def _get_incomplete_installation_details(
+    host: dict, claw_name: str
+) -> list[dict]:
+    """Return ALL incomplete installation details for an agent type.
+
+    Returns a list of incomplete installations (may be empty).
+    Each dict contains: status, installed_at, error, agent_name, version.
+    """
     agents = host.get("agents", {})
     if not isinstance(agents, dict):
-        return None
+        return []
 
+    incomplete: list[dict] = []
     for agent_key, existing in agents.items():
         if not isinstance(existing, dict):
             continue
@@ -108,15 +115,15 @@ def _get_incomplete_installation_details(host: dict, claw_name: str) -> dict | N
         if status in {"installing", "failed"} or (
             status is not None and installed_at is None
         ):
-            return {
+            incomplete.append({
                 "status": status,
                 "installed_at": installed_at,
                 "error": existing.get("error"),
                 "agent_name": agent_key,
                 "version": existing.get("version"),
-            }
+            })
 
-    return None
+    return incomplete
 
 
 def _get_base_playbook_path() -> Path:
@@ -239,56 +246,85 @@ def run_installation(
             raise InstallationError(f"Invalid name: {error_msg}")
         emit("validate", f"Validated custom name: {name}")
 
-    incomplete_details = _get_incomplete_installation_details(host, claw_name)
+    incomplete_list = _get_incomplete_installation_details(host, claw_name)
+    # Track first incomplete for result reporting (or None if cleaned/empty)
+    incomplete_details: dict | None = incomplete_list[0] if incomplete_list else None
 
-    # Handle cleanup if requested
-    if cleanup_failed and incomplete_details:
-        emit("cleanup", "Removing incomplete installation...")
+    # Handle cleanup if requested - clean up ALL incomplete installations
+    if cleanup_failed and incomplete_list:
+        emit("cleanup", f"Removing {len(incomplete_list)} incomplete installation(s)...")
 
-        # Get the actual agent key from incomplete_details
-        agent_key_to_remove = incomplete_details.get("agent_name")
+        # Collect all agent keys to remove
+        agent_keys_to_remove = [
+            item.get("agent_name") for item in incomplete_list if item.get("agent_name")
+        ]
 
-        def cleanup_agent(h: dict) -> dict:
-            # Remove agent entry by its actual key (agent_name, not claw_type)
-            if "agents" in h and agent_key_to_remove and agent_key_to_remove in h["agents"]:
-                del h["agents"][agent_key_to_remove]
+        def cleanup_agents(h: dict) -> dict:
+            # Remove all incomplete agent entries
+            if "agents" in h:
+                for agent_key in agent_keys_to_remove:
+                    if agent_key in h["agents"]:
+                        del h["agents"][agent_key]
             return h
 
-        update_host(host["hostname"], cleanup_agent)
+        update_host(host["hostname"], cleanup_agents)
 
-        # Remove secrets for this instance
-        if incomplete_details.get("agent_name"):
-            from clawrium.core.secrets import load_secrets, save_secrets
+        # Remove secrets for all incomplete instances
+        from clawrium.core.secrets import load_secrets, save_secrets
 
-            instance_key = get_instance_key(
-                host["hostname"], claw_name, incomplete_details["agent_name"]
+        try:
+            secrets = load_secrets()
+            secrets_modified = False
+            for item in incomplete_list:
+                agent_name = item.get("agent_name")
+                if agent_name:
+                    instance_key = get_instance_key(
+                        host["hostname"], claw_name, agent_name
+                    )
+                    if instance_key in secrets:
+                        del secrets[instance_key]
+                        secrets_modified = True
+            if secrets_modified:
+                save_secrets(secrets)
+                emit("cleanup", "Removed secrets for incomplete installation(s)")
+        except Exception as e:
+            logger.warning("Failed to remove secrets: %s", e)
+            emit(
+                "warn",
+                "Failed to remove some secrets. Manual cleanup may be required.",
             )
-            try:
-                secrets = load_secrets()
-                if instance_key in secrets:
-                    del secrets[instance_key]
-                    save_secrets(secrets)
-                    emit("cleanup", "Removed secrets for incomplete installation")
-            except Exception as e:
-                logger.warning("Failed to remove secrets: %s", e)
-                # Emit visible warning to user
-                emit(
-                    "warn",
-                    f"Failed to remove secrets for {instance_key}. "
-                    "Manual cleanup may be required.",
-                )
 
         emit("cleanup", "Cleanup complete. Starting fresh installation...")
+        incomplete_list = []
         incomplete_details = None
 
     # Handle resume if requested
-    if resume and incomplete_details:
-        # Only allow resume from 'installing' state - 'failed' requires cleanup
-        if incomplete_details.get("status") == "failed":
+    if resume and incomplete_list:
+        if len(incomplete_list) > 1:
+            names = ", ".join(item.get("agent_name", "?") for item in incomplete_list)
+            raise InstallationError(
+                f"Multiple incomplete installations found: {names}. "
+                "Use cleanup option first, then retry."
+            )
+        incomplete_details = incomplete_list[0]
+        status = incomplete_details.get("status")
+
+        # Validate state transition: only 'installing' state supports resume
+        # Other states require different handling:
+        # - 'failed': use cleanup option
+        # - 'installed' with no installed_at: corrupt state, use cleanup
+        # - None/unknown: invalid state, use cleanup
+        if status == "failed":
             raise InstallationError(
                 "Cannot resume from 'failed' state. "
                 "Use cleanup option for failed installations."
             )
+        if status != "installing":
+            raise InstallationError(
+                f"Cannot resume from '{status}' state. "
+                "Only 'installing' state supports resume. Use cleanup option instead."
+            )
+
         # Use existing agent name from incomplete installation
         name = incomplete_details.get("agent_name")
         if not name:
@@ -297,7 +333,7 @@ def run_installation(
                 "Use cleanup option instead."
             )
         emit("validate", f"Resuming installation with existing name: {name}")
-    elif incomplete_details:
+    elif incomplete_list:
         emit(
             "validate",
             "Found previous incomplete installation state; proceeding with retry.",
@@ -310,11 +346,13 @@ def run_installation(
     def set_installing(h: dict) -> dict:
         # Check for incomplete installation under lock (unless cleanup or resume)
         if not cleanup_failed and not resume:
-            locked_incomplete = _get_incomplete_installation_details(h, claw_name)
-            if locked_incomplete and locked_incomplete.get("status") == "installing":
-                raise IncompleteInstallationError(
-                    h["hostname"], claw_name, locked_incomplete
-                )
+            locked_incomplete_list = _get_incomplete_installation_details(h, claw_name)
+            # Check if any incomplete installation is in 'installing' state
+            for locked_item in locked_incomplete_list:
+                if locked_item.get("status") == "installing":
+                    raise IncompleteInstallationError(
+                        h["hostname"], claw_name, locked_item
+                    )
 
         if name is None:
             # Auto-generate name with retry loop for uniqueness

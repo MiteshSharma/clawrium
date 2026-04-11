@@ -35,7 +35,7 @@ class TestConfigureClaw:
         """Test that invalid Ollama model names are rejected."""
         host = {
             "hostname": "test-host",
-            "agents": {"zeroclaw": {"agent_name": "zer-test"}},
+            "agents": {"zer-test": {"type": "zeroclaw"}},
         }
         config_data = {
             "provider": {
@@ -57,7 +57,7 @@ class TestConfigureClaw:
             "key_id": "test",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"zeroclaw": {"agent_name": "zer-test"}},
+            "agents": {"zer-test": {"type": "zeroclaw"}},
         }
         config_data = {"gateway": {"host": "0.0.0.0", "port": 40000}}
 
@@ -99,7 +99,7 @@ class TestConfigureClaw:
         """Test that missing configure playbook is detected."""
         host = {
             "hostname": "test-host",
-            "agents": {"zeroclaw": {"agent_name": "zer-test"}},
+            "agents": {"zer-test": {"type": "zeroclaw"}},
         }
         config_data = {"gateway": {"host": "0.0.0.0", "port": 40000}}
 
@@ -122,7 +122,7 @@ class TestConfigureClaw:
         host = {
             "hostname": "test-host",
             "key_id": "test",
-            "agents": {"zeroclaw": {"agent_name": "zer-test"}},
+            "agents": {"zer-test": {"type": "zeroclaw"}},
         }
         config_data = {"gateway": {"host": "0.0.0.0", "port": 40000}}
 
@@ -185,7 +185,7 @@ class TestConfigureClaw:
             "key_id": "test",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"zeroclaw": {"agent_name": "zer-test"}},
+            "agents": {"zer-test": {"type": "zeroclaw"}},
         }
         config_data = {"gateway": {"host": "0.0.0.0", "port": 40000}}
 
@@ -226,7 +226,7 @@ class TestConfigureClaw:
             "key_id": "test",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"zeroclaw": {"agent_name": "zer-test"}},
+            "agents": {"zer-test": {"type": "zeroclaw"}},
         }
         config_data = {"gateway": {"host": "0.0.0.0", "port": 40000}}
 
@@ -279,7 +279,7 @@ class TestConfigureClaw:
             "key_id": "test",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"zeroclaw": {"agent_name": "zer-test"}},
+            "agents": {"zer-test": {"type": "zeroclaw"}},
         }
         config_data = {
             "gateway": {"host": "0.0.0.0", "port": 40000, "allow_public_bind": True},
@@ -487,7 +487,7 @@ class TestOpenClawTemplate:
             "key_id": "test",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"openclaw": {"agent_name": "ocl-test"}},
+            "agents": {"ocl-test": {"type": "openclaw"}},
         }
         config_data = {
             "gateway": {"port": 40000, "bind": "lan"},

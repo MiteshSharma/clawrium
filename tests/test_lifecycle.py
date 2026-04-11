@@ -104,8 +104,8 @@ class TestStartClaw:
             "hostname": "192.168.1.100",
             "key_id": "test",
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "onboarding": {"state": "pending"},
                 }
             },
@@ -124,8 +124,8 @@ class TestStartClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "onboarding": {"state": "ready"},
                 }
             },
@@ -196,8 +196,8 @@ class TestStopClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                 }
             },
         }
@@ -248,8 +248,8 @@ class TestRestartClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                 }
             },
         }
@@ -294,8 +294,8 @@ class TestRestartClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "onboarding": {"state": "ready"},
                 }
             },
@@ -367,8 +367,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "running"},
                 }
             },
@@ -421,8 +421,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "running"},
                 }
             },
@@ -483,8 +483,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "stopped"},
                 }
             },
@@ -534,8 +534,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "stopped"},
                 }
             },
@@ -574,7 +574,8 @@ class TestRemoveClaw:
                                 result = remove_agent("192.168.1.100", "openclaw")
 
         assert result["success"] is True
-        mock_remove.assert_called_once_with("192.168.1.100", "openclaw")
+        # Now removes by agent_name (opc-work), not claw_type (openclaw)
+        mock_remove.assert_called_once_with("192.168.1.100", "opc-work")
 
     def test_event_callbacks_invoked(self, tmp_path: Path):
         """Verify on_event callback is called with appropriate messages."""
@@ -584,8 +585,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "stopped"},
                 }
             },

@@ -94,27 +94,35 @@ def _resolve_agent_record(
     identifier: str,
     expected_type: str | None = None,
 ) -> tuple[str, str, dict] | None:
-    """Resolve an agent instance in host.agents."""
+    """Resolve an agent instance in host.agents.
+
+    Agents must have an explicit 'type' field. Records without 'type' are skipped.
+    Raises LifecycleError if multiple agents of the same type are found.
+    """
     agents = host.get("agents", {})
     if not isinstance(agents, dict):
         return None
 
+    # Direct key lookup
     direct = agents.get(identifier)
     if isinstance(direct, dict):
-        direct_type = direct.get("type") if isinstance(direct.get("type"), str) else ""
-        if not direct_type:
-            direct_type = identifier
+        direct_type = direct.get("type")
+        if not isinstance(direct_type, str) or not direct_type:
+            # Skip records without explicit type field
+            return None
         if expected_type and direct_type != expected_type:
             return None
         return identifier, direct_type, direct
 
+    # Search by type
     matches: list[tuple[str, str, dict]] = []
     for agent_key, record in agents.items():
         if not isinstance(record, dict):
             continue
-        agent_type = record.get("type") if isinstance(record.get("type"), str) else ""
-        if not agent_type:
-            agent_type = agent_key
+        agent_type = record.get("type")
+        # Skip records without explicit type field
+        if not isinstance(agent_type, str) or not agent_type:
+            continue
         if expected_type:
             if agent_type == expected_type:
                 matches.append((agent_key, agent_type, record))
@@ -123,6 +131,12 @@ def _resolve_agent_record(
 
     if len(matches) == 1:
         return matches[0]
+    if len(matches) > 1:
+        instance_names = ", ".join(m[0] for m in matches)
+        raise LifecycleError(
+            f"Multiple {expected_type or identifier} agents found. "
+            f"Specify instance name: {instance_names}"
+        )
     return None
 
 
