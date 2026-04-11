@@ -48,11 +48,11 @@ def create_host_with_claw(
                 "tags": [],
             },
             "agents": {
-                claw_type: {
+                "assistant": {
+                    "type": claw_type,
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "assistant",
-                    "agent_name": "assistant",
                     "onboarding": {
                         "state": onboarding_state,
                         "started_at": "2026-04-06T00:00:00+00:00",
@@ -335,11 +335,11 @@ def test_start_missing_onboarding_initializes(isolated_config: Path):
                 "tags": [],
             },
             "agents": {
-                "openclaw": {
+                "assistant": {
+                    "type": "openclaw",
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "assistant",
-                    "agent_name": "assistant",
                 }
             },
         }
@@ -397,11 +397,11 @@ def test_start_claw_not_found_during_initialization(isolated_config: Path):
                 "tags": [],
             },
             "agents": {
-                "openclaw": {
+                "assistant": {
+                    "type": "openclaw",
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "assistant",
-                    "agent_name": "assistant",
                 }
             },
         }

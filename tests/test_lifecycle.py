@@ -13,6 +13,7 @@ from clawrium.core.lifecycle import (
     LifecycleError,
     _get_lifecycle_playbook_path,
     _run_lifecycle_playbook,
+    _resolve_agent_record,
 )
 
 
@@ -39,13 +40,13 @@ class TestRunLifecyclePlaybook:
             "key_id": "test",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"openclaw": {"agent_name": "opc-work"}},
+            "agents": {"opc-work": {"type": "openclaw"}},
         }
 
         with patch("clawrium.core.lifecycle._get_lifecycle_playbook_path") as mock_path:
             mock_path.return_value = tmp_path / "nonexistent.yaml"
             success, error = _run_lifecycle_playbook(
-                "openclaw", "192.168.1.100", "start", host
+                "openclaw", "opc-work", "192.168.1.100", "start", host
             )
 
         assert success is False
@@ -57,7 +58,7 @@ class TestRunLifecyclePlaybook:
             "key_id": "missing-key",
             "agent_name": "xclm",
             "port": 22,
-            "agents": {"openclaw": {"agent_name": "opc-work"}},
+            "agents": {"opc-work": {"type": "openclaw"}},
         }
 
         playbook_path = tmp_path / "start.yaml"
@@ -69,7 +70,7 @@ class TestRunLifecyclePlaybook:
                 "clawrium.core.lifecycle.get_host_private_key", return_value=None
             ):
                 success, error = _run_lifecycle_playbook(
-                    "openclaw", "192.168.1.100", "start", host
+                    "openclaw", "opc-work", "192.168.1.100", "start", host
                 )
 
         assert success is False
@@ -104,8 +105,8 @@ class TestStartClaw:
             "hostname": "192.168.1.100",
             "key_id": "test",
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "onboarding": {"state": "pending"},
                 }
             },
@@ -124,8 +125,8 @@ class TestStartClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "onboarding": {"state": "ready"},
                 }
             },
@@ -196,8 +197,8 @@ class TestStopClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                 }
             },
         }
@@ -248,8 +249,8 @@ class TestRestartClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                 }
             },
         }
@@ -294,8 +295,8 @@ class TestRestartClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "onboarding": {"state": "ready"},
                 }
             },
@@ -367,8 +368,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "running"},
                 }
             },
@@ -421,8 +422,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "running"},
                 }
             },
@@ -483,8 +484,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "stopped"},
                 }
             },
@@ -534,8 +535,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "stopped"},
                 }
             },
@@ -574,7 +575,8 @@ class TestRemoveClaw:
                                 result = remove_agent("192.168.1.100", "openclaw")
 
         assert result["success"] is True
-        mock_remove.assert_called_once_with("192.168.1.100", "openclaw")
+        # Now removes by agent_name (opc-work), not claw_type (openclaw)
+        mock_remove.assert_called_once_with("192.168.1.100", "opc-work")
 
     def test_event_callbacks_invoked(self, tmp_path: Path):
         """Verify on_event callback is called with appropriate messages."""
@@ -584,8 +586,8 @@ class TestRemoveClaw:
             "agent_name": "xclm",
             "port": 22,
             "agents": {
-                "openclaw": {
-                    "agent_name": "opc-work",
+                "opc-work": {
+                    "type": "openclaw",
                     "runtime": {"status": "stopped"},
                 }
             },
@@ -634,3 +636,83 @@ class TestRemoveClaw:
         # Should have validate and remove events
         assert any(stage == "validate" for stage, _ in events)
         assert any(stage == "remove" for stage, _ in events)
+
+class TestResolveAgentRecord:
+    """Tests for _resolve_agent_record function."""
+
+    def test_multiple_agents_same_type_raises_error(self):
+        """B7: Multiple agents of same type should raise LifecycleError."""
+        host = {
+            "hostname": "test-host",
+            "agents": {
+                "assistant-1": {"type": "openclaw", "status": "installed"},
+                "assistant-2": {"type": "openclaw", "status": "installed"},
+            },
+        }
+
+        with pytest.raises(LifecycleError) as exc_info:
+            _resolve_agent_record(host, "openclaw", expected_type="openclaw")
+
+        assert "Multiple" in str(exc_info.value)
+        assert "assistant-1" in str(exc_info.value)
+        assert "assistant-2" in str(exc_info.value)
+
+    def test_agent_without_type_field_skipped(self):
+        """B8: Agents without explicit 'type' field should be skipped."""
+        host = {
+            "hostname": "test-host",
+            "agents": {
+                "old-agent": {
+                    "status": "installed",
+                    # Missing "type" field - should be skipped
+                },
+            },
+        }
+
+        result = _resolve_agent_record(host, "openclaw", expected_type="openclaw")
+        assert result is None
+
+    def test_direct_key_lookup_without_type_returns_none(self):
+        """Direct lookup by agent_name also requires type field."""
+        host = {
+            "hostname": "test-host",
+            "agents": {
+                "my-assistant": {
+                    "status": "installed",
+                    # Missing "type" field
+                },
+            },
+        }
+
+        result = _resolve_agent_record(host, "my-assistant")
+        assert result is None
+
+    def test_matches_single_agent_by_type(self):
+        """Single agent of expected type should be found."""
+        host = {
+            "hostname": "test-host",
+            "agents": {
+                "work-bot": {"type": "openclaw", "status": "installed"},
+            },
+        }
+
+        result = _resolve_agent_record(host, "openclaw", expected_type="openclaw")
+        assert result is not None
+        agent_name, agent_type, record = result
+        assert agent_name == "work-bot"
+        assert agent_type == "openclaw"
+
+    def test_matches_by_direct_key(self):
+        """Direct lookup by agent_name works when type is present."""
+        host = {
+            "hostname": "test-host",
+            "agents": {
+                "work-bot": {"type": "openclaw", "status": "installed"},
+            },
+        }
+
+        result = _resolve_agent_record(host, "work-bot")
+        assert result is not None
+        agent_name, agent_type, record = result
+        assert agent_name == "work-bot"
+        assert agent_type == "openclaw"

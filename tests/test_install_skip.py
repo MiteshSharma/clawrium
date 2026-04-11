@@ -227,6 +227,9 @@ def test_install_failure_sets_failed_status_without_installed_timestamp(
 ):
     from clawrium.core.install import InstallationError, run_installation
 
+    # Use a fixed name to make assertions deterministic
+    test_agent_name = "test-agent"
+
     host = {
         "hostname": "test-host",
         "key_id": "test-host",
@@ -248,7 +251,7 @@ def test_install_failure_sets_failed_status_without_installed_timestamp(
     )
 
     with pytest.raises(InstallationError, match="Base playbook not found"):
-        run_installation("openclaw", "test-host")
+        run_installation("openclaw", "test-host", name=test_agent_name)
 
-    assert host_state[0]["agents"]["openclaw"]["status"] == "failed"
-    assert host_state[0]["agents"]["openclaw"]["installed_at"] is None
+    assert host_state[0]["agents"][test_agent_name]["status"] == "failed"
+    assert host_state[0]["agents"][test_agent_name]["installed_at"] is None

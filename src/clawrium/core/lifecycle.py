@@ -89,12 +89,63 @@ def _get_logs_dir() -> Path:
     return logs_dir
 
 
-def _update_agent_runtime(hostname: str, claw_name: str, runtime_data: dict) -> bool:
+def _resolve_agent_record(
+    host: dict,
+    identifier: str,
+    expected_type: str | None = None,
+) -> tuple[str, str, dict] | None:
+    """Resolve an agent instance in host.agents.
+
+    Agents must have an explicit 'type' field. Records without 'type' are skipped.
+    Raises LifecycleError if multiple agents of the same type are found.
+    """
+    agents = host.get("agents", {})
+    if not isinstance(agents, dict):
+        return None
+
+    # Direct key lookup
+    direct = agents.get(identifier)
+    if isinstance(direct, dict):
+        direct_type = direct.get("type")
+        if not isinstance(direct_type, str) or not direct_type:
+            # Skip records without explicit type field
+            return None
+        if expected_type and direct_type != expected_type:
+            return None
+        return identifier, direct_type, direct
+
+    # Search by type
+    matches: list[tuple[str, str, dict]] = []
+    for agent_key, record in agents.items():
+        if not isinstance(record, dict):
+            continue
+        agent_type = record.get("type")
+        # Skip records without explicit type field
+        if not isinstance(agent_type, str) or not agent_type:
+            continue
+        if expected_type:
+            if agent_type == expected_type:
+                matches.append((agent_key, agent_type, record))
+        elif agent_type == identifier:
+            matches.append((agent_key, agent_type, record))
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        instance_names = ", ".join(m[0] for m in matches)
+        raise LifecycleError(
+            f"Multiple {expected_type or identifier} agents found. "
+            f"Specify instance name: {instance_names}"
+        )
+    return None
+
+
+def _update_agent_runtime(hostname: str, agent_key: str, runtime_data: dict) -> bool:
     """Update agent runtime information in hosts.json.
 
     Args:
         hostname: The hostname of the host
-        claw_name: Name of the agent
+        agent_key: Instance key for the agent
         runtime_data: Runtime data to store (pid, started_at, status, etc.)
 
     Returns:
@@ -104,16 +155,17 @@ def _update_agent_runtime(hostname: str, claw_name: str, runtime_data: dict) -> 
     def updater(h: dict) -> dict:
         if "agents" not in h:
             h["agents"] = {}
-        if claw_name not in h["agents"]:
-            h["agents"][claw_name] = {}
-        h["agents"][claw_name]["runtime"] = runtime_data
+        if agent_key not in h["agents"]:
+            h["agents"][agent_key] = {}
+        h["agents"][agent_key]["runtime"] = runtime_data
         return h
 
     return update_host(hostname, updater)
 
 
 def _run_lifecycle_playbook(
-    claw_name: str,
+    agent_type: str,
+    agent_name: str,
     hostname: str,
     operation: str,
     host: dict,
@@ -122,7 +174,8 @@ def _run_lifecycle_playbook(
     """Run a lifecycle playbook on a host.
 
     Args:
-        claw_name: Type of agent
+        agent_type: Type of agent
+        agent_name: Instance name
         hostname: Target hostname
         operation: Operation to perform ("start" or "stop")
         host: Host record dict
@@ -131,7 +184,7 @@ def _run_lifecycle_playbook(
     Returns:
         Tuple of (success, error_message)
     """
-    playbook_path = _get_lifecycle_playbook_path(claw_name, operation)
+    playbook_path = _get_lifecycle_playbook_path(agent_type, operation)
 
     if not playbook_path.exists():
         return False, f"Playbook not found: {playbook_path}"
@@ -140,11 +193,6 @@ def _run_lifecycle_playbook(
     ssh_key = get_host_private_key(key_id)
     if not ssh_key:
         return False, "SSH key not found"
-
-    claw_record = host.get("agents", {}).get(claw_name, {})
-    agent_name = claw_record.get("agent_name") or claw_record.get("name")
-    if not agent_name:
-        return False, f"No agent name recorded for '{claw_name}' on '{hostname}'"
 
     # Validate agent_name to prevent path traversal/injection in Ansible playbooks
     # Use the same validation as agent name validation
@@ -157,7 +205,7 @@ def _run_lifecycle_playbook(
     instance_key = None
     secret_vars = {}
     try:
-        instance_key = get_instance_key(hostname, claw_name, agent_name)
+        instance_key = get_instance_key(hostname, agent_type, agent_name)
         instance_secrets = get_instance_secrets(instance_key)
         for key, entry in instance_secrets.items():
             secret_vars[key.lower()] = entry.get("value", "")
@@ -175,7 +223,7 @@ def _run_lifecycle_playbook(
             },
             "vars": {
                 "agent_name": agent_name,
-                "agent_type": claw_name,
+                "agent_type": agent_type,
                 **secret_vars,
             },
         }
@@ -184,7 +232,9 @@ def _run_lifecycle_playbook(
     logs_dir = _get_logs_dir()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     host_display = host.get("alias") or host.get("key_id") or hostname
-    operation_log_dir = logs_dir / f"{operation}-{claw_name}-{host_display}-{timestamp}"
+    operation_log_dir = (
+        logs_dir / f"{operation}-{agent_type}-{host_display}-{timestamp}"
+    )
     operation_log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(operation_log_dir, 0o700)
 
@@ -223,6 +273,7 @@ def _run_lifecycle_playbook(
 def start_agent(
     hostname: str,
     claw_name: str,
+    agent_name: str | None = None,
     force: bool = False,
     on_event: Callable[[str, str], None] | None = None,
 ) -> LifecycleResult:
@@ -243,15 +294,17 @@ def start_agent(
             on_event(stage, message)
         logger.info("[%s] %s", stage, message)
 
-    emit("validate", f"Checking {claw_name} on {hostname}...")
+    target = agent_name or claw_name
+    emit("validate", f"Checking {target} on {hostname}...")
 
     host = get_host(hostname)
     if not host:
         raise LifecycleError(f"Host '{hostname}' not found")
 
-    claw_record = host.get("agents", {}).get(claw_name)
-    if not claw_record:
-        raise LifecycleError(f"Agent '{claw_name}' not installed on '{hostname}'")
+    resolved = _resolve_agent_record(host, target, expected_type=claw_name)
+    if not resolved:
+        raise LifecycleError(f"Agent '{target}' not installed on '{hostname}'")
+    agent_key, agent_type, claw_record = resolved
 
     onboarding = claw_record.get("onboarding", {})
     state_value = onboarding.get("state", "pending")
@@ -262,22 +315,22 @@ def start_agent(
         state = OnboardingState.PENDING
 
     if state != OnboardingState.READY and not force:
-        agent_display_name = (
-            claw_record.get("agent_name") or claw_record.get("name") or claw_name
-        )
+        agent_display_name = agent_key
         raise LifecycleError(
-            f"Cannot start {claw_name}: onboarding incomplete (state={state_value}). "
+            f"Cannot start {agent_key}: onboarding incomplete (state={state_value}). "
             f"Run 'clm agent configure {agent_display_name}' first."
         )
 
-    emit("start", f"Starting {claw_name} on {hostname}...")
+    emit("start", f"Starting {agent_key} on {hostname}...")
 
-    success, error = _run_lifecycle_playbook(claw_name, host["hostname"], "start", host)
+    success, error = _run_lifecycle_playbook(
+        agent_type, agent_key, host["hostname"], "start", host
+    )
 
     if not success:
         return {
             "success": False,
-            "agent": claw_name,
+            "agent": agent_key,
             "host": hostname,
             "operation": "start",
             "pid": None,
@@ -288,7 +341,7 @@ def start_agent(
     now = datetime.now(timezone.utc).isoformat()
     _update_agent_runtime(
         host["hostname"],
-        claw_name,
+        agent_key,
         {
             "status": "running",
             "started_at": now,
@@ -296,11 +349,11 @@ def start_agent(
         },
     )
 
-    emit("start", f"Started {claw_name} successfully")
+    emit("start", f"Started {agent_key} successfully")
 
     return {
         "success": True,
-        "agent": claw_name,
+        "agent": agent_key,
         "host": hostname,
         "operation": "start",
         "pid": None,
@@ -312,6 +365,7 @@ def start_agent(
 def stop_agent(
     hostname: str,
     claw_name: str,
+    agent_name: str | None = None,
     timeout: int = 30,
     on_event: Callable[[str, str], None] | None = None,
 ) -> LifecycleResult:
@@ -332,26 +386,28 @@ def stop_agent(
             on_event(stage, message)
         logger.info("[%s] %s", stage, message)
 
-    emit("validate", f"Checking {claw_name} on {hostname}...")
+    target = agent_name or claw_name
+    emit("validate", f"Checking {target} on {hostname}...")
 
     host = get_host(hostname)
     if not host:
         raise LifecycleError(f"Host '{hostname}' not found")
 
-    claw_record = host.get("agents", {}).get(claw_name)
-    if not claw_record:
-        raise LifecycleError(f"Agent '{claw_name}' not installed on '{hostname}'")
+    resolved = _resolve_agent_record(host, target, expected_type=claw_name)
+    if not resolved:
+        raise LifecycleError(f"Agent '{target}' not installed on '{hostname}'")
+    agent_key, agent_type, _ = resolved
 
-    emit("stop", f"Stopping {claw_name} on {hostname}...")
+    emit("stop", f"Stopping {agent_key} on {hostname}...")
 
     success, error = _run_lifecycle_playbook(
-        claw_name, host["hostname"], "stop", host, timeout=timeout + 30
+        agent_type, agent_key, host["hostname"], "stop", host, timeout=timeout + 30
     )
 
     if not success:
         return {
             "success": False,
-            "agent": claw_name,
+            "agent": agent_key,
             "host": hostname,
             "operation": "stop",
             "pid": None,
@@ -362,7 +418,7 @@ def stop_agent(
     now = datetime.now(timezone.utc).isoformat()
     _update_agent_runtime(
         host["hostname"],
-        claw_name,
+        agent_key,
         {
             "status": "stopped",
             "started_at": None,
@@ -371,11 +427,11 @@ def stop_agent(
         },
     )
 
-    emit("stop", f"Stopped {claw_name} successfully")
+    emit("stop", f"Stopped {agent_key} successfully")
 
     return {
         "success": True,
-        "agent": claw_name,
+        "agent": agent_key,
         "host": hostname,
         "operation": "stop",
         "pid": None,
@@ -387,6 +443,7 @@ def stop_agent(
 def restart_agent(
     hostname: str,
     claw_name: str,
+    agent_name: str | None = None,
     on_event: Callable[[str, str], None] | None = None,
 ) -> LifecycleResult:
     """Restart an agent instance on a remote host.
@@ -405,13 +462,16 @@ def restart_agent(
             on_event(stage, message)
         logger.info("[%s] %s", stage, message)
 
-    emit("restart", f"Restarting {claw_name} on {hostname}...")
+    target = agent_name or claw_name
+    emit("restart", f"Restarting {target} on {hostname}...")
 
-    stop_result = stop_agent(hostname, claw_name, on_event=on_event)
+    stop_result = stop_agent(
+        hostname, claw_name, agent_name=agent_name, on_event=on_event
+    )
     if not stop_result["success"]:
         return {
             "success": False,
-            "agent": claw_name,
+            "agent": target,
             "host": hostname,
             "operation": "restart",
             "pid": None,
@@ -419,7 +479,9 @@ def restart_agent(
             "error": f"Stop failed: {stop_result['error']}",
         }
 
-    start_result = start_agent(hostname, claw_name, on_event=on_event)
+    start_result = start_agent(
+        hostname, claw_name, agent_name=agent_name, on_event=on_event
+    )
     start_result["operation"] = "restart"
 
     return start_result
@@ -429,6 +491,7 @@ def configure_agent(
     hostname: str,
     claw_name: str,
     config_data: dict,
+    agent_name: str | None = None,
     on_event: Callable[[str, str], None] | None = None,
 ) -> tuple[bool, str | None]:
     """Configure an agent instance on a remote host.
@@ -456,15 +519,19 @@ def configure_agent(
             on_event(stage, message)
         logger.info("[%s] %s", stage, message)
 
-    emit("configure", f"Configuring {claw_name} on {hostname}...")
+    target = agent_name or claw_name
+    emit("configure", f"Configuring {target} on {hostname}...")
 
     host = get_host(hostname)
     if not host:
         raise LifecycleError(f"Host '{hostname}' not found")
 
-    claw_record = host.get("agents", {}).get(claw_name)
-    if not claw_record:
-        raise LifecycleError(f"Agent '{claw_name}' not installed on '{hostname}'")
+    resolved = _resolve_agent_record(host, target, expected_type=claw_name)
+    if not resolved:
+        raise LifecycleError(f"Agent '{target}' not installed on '{hostname}'")
+    agent_key, resolved_type, agent_record = resolved
+    # Use inner agent_name (Unix username) if available, otherwise fall back to dict key
+    unix_agent_name = agent_record.get("agent_name") or agent_key
 
     # Validate config data before running Ansible
     # B7: Validate Ollama model names to prevent template injection
@@ -512,7 +579,7 @@ def configure_agent(
             emit("configure", "Loaded provider API key from secrets")
 
     # Get template path for this agent type
-    canonical_name = _resolve_agent_type(claw_name)
+    canonical_name = _resolve_agent_type(resolved_type)
     template_path = (
         Path(__file__).parent.parent
         / "platform"
@@ -525,7 +592,7 @@ def configure_agent(
         return False, f"Template directory not found: {template_path}"
 
     # Get playbook path
-    playbook_path = _get_lifecycle_playbook_path(claw_name, "configure")
+    playbook_path = _get_lifecycle_playbook_path(resolved_type, "configure")
     if not playbook_path.exists():
         return False, f"Configure playbook not found: {playbook_path}"
 
@@ -535,19 +602,17 @@ def configure_agent(
     if not ssh_key:
         return False, "SSH key not found"
 
-    agent_name = claw_record.get("agent_name") or claw_record.get("name")
-    if not agent_name:
+    if not unix_agent_name:
         return False, f"No agent name recorded for '{claw_name}' on '{hostname}'"
 
     # Validate agent_name to prevent path traversal/injection in Ansible playbooks
-    if not re.match(r"^[a-z][a-z0-9_-]{0,31}$", agent_name):
+    if not re.match(r"^[a-z][a-z0-9_-]{0,31}$", unix_agent_name):
         return (
             False,
-            f"Invalid agent_name format: '{agent_name}'. Must start with lowercase letter and contain only lowercase letters, digits, hyphens, underscores (max 32 chars)",
+            f"Invalid agent_name format: '{unix_agent_name}'. Must start with lowercase letter and contain only lowercase letters, digits, hyphens, underscores (max 32 chars)",
         )
 
-    # B4: Pass API key via environment variable instead of inventory to prevent plaintext logging
-    # Build Ansible inventory without API key
+    # Build Ansible inventory with API key passed directly
     inventory = {
         "all": {
             "hosts": {
@@ -558,10 +623,11 @@ def configure_agent(
                 }
             },
             "vars": {
-                "agent_name": agent_name,
-                "agent_type": claw_name,
+                "agent_name": unix_agent_name,
+                "agent_type": resolved_type,
                 "config": config_data,
                 "template_path": str(template_path),
+                "provider_api_key": provider_api_key,
             },
         }
     }
@@ -570,16 +636,13 @@ def configure_agent(
     logs_dir = _get_logs_dir()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     host_display = host.get("alias") or host.get("key_id") or hostname
-    operation_log_dir = logs_dir / f"configure-{claw_name}-{host_display}-{timestamp}"
+    operation_log_dir = (
+        logs_dir / f"configure-{resolved_type}-{host_display}-{timestamp}"
+    )
     operation_log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(operation_log_dir, 0o700)
 
     emit("configure", "Running Ansible playbook...")
-
-    # B4: Set API key in environment variable for Ansible to access
-    env_vars = os.environ.copy()
-    if provider_api_key:
-        env_vars["CLAWRIUM_PROVIDER_API_KEY"] = provider_api_key
 
     try:
         result = ansible_runner.run(
@@ -588,7 +651,6 @@ def configure_agent(
             playbook=str(playbook_path),
             quiet=True,
             timeout=60,
-            envvars=env_vars,
         )
 
         if result.status == "timeout":
@@ -614,9 +676,23 @@ def configure_agent(
         def updater(h: dict) -> dict:
             if "agents" not in h:
                 h["agents"] = {}
-            if claw_name not in h["agents"]:
-                h["agents"][claw_name] = {}
-            h["agents"][claw_name]["config"] = config_data
+            if agent_key not in h["agents"]:
+                h["agents"][agent_key] = {}
+            h["agents"][agent_key]["type"] = resolved_type
+
+            # Preserve device credentials when updating config
+            existing_config = h["agents"][agent_key].get("config", {})
+            existing_gateway = existing_config.get("gateway", {})
+            device_creds = existing_gateway.get("device")
+
+            h["agents"][agent_key]["config"] = config_data
+
+            # Restore device credentials if they existed
+            if device_creds:
+                if "gateway" not in h["agents"][agent_key]["config"]:
+                    h["agents"][agent_key]["config"]["gateway"] = {}
+                h["agents"][agent_key]["config"]["gateway"]["device"] = device_creds
+
             return h
 
         if not update_host(host["hostname"], updater):
@@ -627,10 +703,10 @@ def configure_agent(
             )
             return (
                 False,
-                f"Configuration applied but failed to update local state for {claw_name} on {hostname}",
+                f"Configuration applied but failed to update local state for {agent_key} on {hostname}",
             )
 
-        emit("configure", f"Successfully configured {claw_name}")
+        emit("configure", f"Successfully configured {agent_key}")
         return True, None
 
     except Exception as e:
@@ -640,6 +716,7 @@ def configure_agent(
 def remove_agent(
     hostname: str,
     claw_name: str,
+    agent_name: str | None = None,
     force: bool = False,
     on_event: Callable[[str, str], None] | None = None,
 ) -> LifecycleResult:
@@ -663,46 +740,50 @@ def remove_agent(
             on_event(stage, message)
         logger.info("[%s] %s", stage, message)
 
-    emit("validate", f"Checking {claw_name} on {hostname}...")
+    target = agent_name or claw_name
+    emit("validate", f"Checking {target} on {hostname}...")
 
     host = get_host(hostname)
     if not host:
         raise LifecycleError(f"Host '{hostname}' not found")
 
-    claw_record = host.get("agents", {}).get(claw_name)
-    if not claw_record:
-        raise LifecycleError(f"Agent '{claw_name}' not installed on '{hostname}'")
+    resolved = _resolve_agent_record(host, target, expected_type=claw_name)
+    if not resolved:
+        raise LifecycleError(f"Agent '{target}' not installed on '{hostname}'")
+    agent_key, agent_type, claw_record = resolved
 
     # Check if agent is running and stop it first
     runtime = claw_record.get("runtime", {})
     status = runtime.get("status", "stopped")
 
     if status == "running":
-        emit("remove", f"Stopping {claw_name} before removal...")
+        emit("remove", f"Stopping {agent_key} before removal...")
         try:
-            stop_result = stop_agent(hostname, claw_name, on_event=on_event)
+            stop_result = stop_agent(
+                hostname, claw_name, agent_name=agent_key, on_event=on_event
+            )
             if not stop_result["success"]:
                 logger.warning(
-                    "Failed to stop %s cleanly: %s", claw_name, stop_result["error"]
+                    "Failed to stop %s cleanly: %s", agent_key, stop_result["error"]
                 )
                 emit(
                     "remove",
                     "Warning: Failed to stop cleanly, continuing with removal...",
                 )
         except Exception as e:
-            logger.warning("Error stopping %s: %s", claw_name, e)
+            logger.warning("Error stopping %s: %s", agent_key, e)
             emit("remove", "Warning: Error stopping, continuing with removal...")
 
-    emit("remove", f"Removing {claw_name} from {hostname}...")
+    emit("remove", f"Removing {agent_key} from {hostname}...")
 
     success, error = _run_lifecycle_playbook(
-        claw_name, host["hostname"], "remove", host, timeout=120
+        agent_type, agent_key, host["hostname"], "remove", host, timeout=120
     )
 
     if not success:
         return {
             "success": False,
-            "agent": claw_name,
+            "agent": agent_key,
             "host": hostname,
             "operation": "remove",
             "pid": None,
@@ -716,7 +797,7 @@ def remove_agent(
     # NOTE: remove_agent_from_host returns True if host was found (not if agent was found)
     # An exception here means the local config could not be updated after remote cleanup
     try:
-        removed = remove_agent_from_host(host["hostname"], claw_name)
+        removed = remove_agent_from_host(host["hostname"], agent_key)
         if not removed:
             # Host not found - this shouldn't happen since we validated it earlier
             logger.error(
@@ -724,7 +805,7 @@ def remove_agent(
             )
             return {
                 "success": False,
-                "agent": claw_name,
+                "agent": agent_key,
                 "host": hostname,
                 "operation": "remove",
                 "pid": None,
@@ -735,7 +816,7 @@ def remove_agent(
         logger.error("Failed to update local configuration after remote cleanup: %s", e)
         return {
             "success": False,
-            "agent": claw_name,
+            "agent": agent_key,
             "host": hostname,
             "operation": "remove",
             "pid": None,
@@ -743,11 +824,11 @@ def remove_agent(
             "error": f"Remote removal succeeded but local config update failed: {e}. Run 'clm host ps {hostname}' to verify or manually edit hosts.json.",
         }
 
-    emit("remove", f"Removed {claw_name} successfully")
+    emit("remove", f"Removed {agent_key} successfully")
 
     return {
         "success": True,
-        "agent": claw_name,
+        "agent": agent_key,
         "host": hostname,
         "operation": "remove",
         "pid": None,

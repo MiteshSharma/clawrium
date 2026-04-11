@@ -89,28 +89,41 @@ class InstallResult(TypedDict):
     skip_reason: NotRequired[str | None]
 
 
-def _get_incomplete_installation_details(host: dict, claw_name: str) -> dict | None:
-    """Return existing incomplete installation details for an agent type, if any."""
-    existing = host.get("agents", {}).get(claw_name)
-    if not existing:
-        return None
+def _get_incomplete_installation_details(
+    host: dict, claw_name: str
+) -> list[dict]:
+    """Return ALL incomplete installation details for an agent type.
 
-    status = existing.get("status")
-    installed_at = existing.get("installed_at")
-    # Detect explicit incomplete states from prior attempts.
-    # Also treat a status-bearing record with no installed_at timestamp as incomplete.
-    if status in {"installing", "failed"} or (
-        status is not None and installed_at is None
-    ):
-        return {
-            "status": status,
-            "installed_at": installed_at,
-            "error": existing.get("error"),
-            "agent_name": existing.get("agent_name"),
-            "version": existing.get("version"),
-        }
+    Returns a list of incomplete installations (may be empty).
+    Each dict contains: status, installed_at, error, agent_name, version.
+    """
+    agents = host.get("agents", {})
+    if not isinstance(agents, dict):
+        return []
 
-    return None
+    incomplete: list[dict] = []
+    for agent_key, existing in agents.items():
+        if not isinstance(existing, dict):
+            continue
+        if existing.get("type") != claw_name:
+            continue
+
+        status = existing.get("status")
+        installed_at = existing.get("installed_at")
+        # Detect explicit incomplete states from prior attempts.
+        # Also treat a status-bearing record with no installed_at timestamp as incomplete.
+        if status in {"installing", "failed"} or (
+            status is not None and installed_at is None
+        ):
+            incomplete.append({
+                "status": status,
+                "installed_at": installed_at,
+                "error": existing.get("error"),
+                "agent_name": agent_key,
+                "version": existing.get("version"),
+            })
+
+    return incomplete
 
 
 def _get_base_playbook_path() -> Path:
@@ -233,53 +246,85 @@ def run_installation(
             raise InstallationError(f"Invalid name: {error_msg}")
         emit("validate", f"Validated custom name: {name}")
 
-    incomplete_details = _get_incomplete_installation_details(host, claw_name)
+    incomplete_list = _get_incomplete_installation_details(host, claw_name)
+    # Track first incomplete for result reporting (or None if cleaned/empty)
+    incomplete_details: dict | None = incomplete_list[0] if incomplete_list else None
 
-    # Handle cleanup if requested
-    if cleanup_failed and incomplete_details:
-        emit("cleanup", "Removing incomplete installation...")
+    # Handle cleanup if requested - clean up ALL incomplete installations
+    if cleanup_failed and incomplete_list:
+        emit("cleanup", f"Removing {len(incomplete_list)} incomplete installation(s)...")
 
-        def cleanup_agent(h: dict) -> dict:
-            # Remove agent entry (including onboarding state)
-            if "agents" in h and claw_name in h["agents"]:
-                del h["agents"][claw_name]
+        # Collect all agent keys to remove
+        agent_keys_to_remove = [
+            item.get("agent_name") for item in incomplete_list if item.get("agent_name")
+        ]
+
+        def cleanup_agents(h: dict) -> dict:
+            # Remove all incomplete agent entries
+            if "agents" in h:
+                for agent_key in agent_keys_to_remove:
+                    if agent_key in h["agents"]:
+                        del h["agents"][agent_key]
             return h
 
-        update_host(host["hostname"], cleanup_agent)
+        update_host(host["hostname"], cleanup_agents)
 
-        # Remove secrets for this instance
-        if incomplete_details.get("agent_name"):
-            from clawrium.core.secrets import load_secrets, save_secrets
+        # Remove secrets for all incomplete instances
+        from clawrium.core.secrets import load_secrets, save_secrets
 
-            instance_key = get_instance_key(
-                host["hostname"], claw_name, incomplete_details["agent_name"]
+        try:
+            secrets = load_secrets()
+            secrets_modified = False
+            for item in incomplete_list:
+                agent_name = item.get("agent_name")
+                if agent_name:
+                    instance_key = get_instance_key(
+                        host["hostname"], claw_name, agent_name
+                    )
+                    if instance_key in secrets:
+                        del secrets[instance_key]
+                        secrets_modified = True
+            if secrets_modified:
+                save_secrets(secrets)
+                emit("cleanup", "Removed secrets for incomplete installation(s)")
+        except Exception as e:
+            logger.warning("Failed to remove secrets: %s", e)
+            emit(
+                "warn",
+                "Failed to remove some secrets. Manual cleanup may be required.",
             )
-            try:
-                secrets = load_secrets()
-                if instance_key in secrets:
-                    del secrets[instance_key]
-                    save_secrets(secrets)
-                    emit("cleanup", "Removed secrets for incomplete installation")
-            except Exception as e:
-                logger.warning("Failed to remove secrets: %s", e)
-                # Emit visible warning to user
-                emit(
-                    "warn",
-                    f"Failed to remove secrets for {instance_key}. "
-                    "Manual cleanup may be required.",
-                )
 
         emit("cleanup", "Cleanup complete. Starting fresh installation...")
+        incomplete_list = []
         incomplete_details = None
 
     # Handle resume if requested
-    if resume and incomplete_details:
-        # Only allow resume from 'installing' state - 'failed' requires cleanup
-        if incomplete_details.get("status") == "failed":
+    if resume and incomplete_list:
+        if len(incomplete_list) > 1:
+            names = ", ".join(item.get("agent_name", "?") for item in incomplete_list)
+            raise InstallationError(
+                f"Multiple incomplete installations found: {names}. "
+                "Use cleanup option first, then retry."
+            )
+        incomplete_details = incomplete_list[0]
+        status = incomplete_details.get("status")
+
+        # Validate state transition: only 'installing' state supports resume
+        # Other states require different handling:
+        # - 'failed': use cleanup option
+        # - 'installed' with no installed_at: corrupt state, use cleanup
+        # - None/unknown: invalid state, use cleanup
+        if status == "failed":
             raise InstallationError(
                 "Cannot resume from 'failed' state. "
                 "Use cleanup option for failed installations."
             )
+        if status != "installing":
+            raise InstallationError(
+                f"Cannot resume from '{status}' state. "
+                "Only 'installing' state supports resume. Use cleanup option instead."
+            )
+
         # Use existing agent name from incomplete installation
         name = incomplete_details.get("agent_name")
         if not name:
@@ -288,7 +333,7 @@ def run_installation(
                 "Use cleanup option instead."
             )
         emit("validate", f"Resuming installation with existing name: {name}")
-    elif incomplete_details:
+    elif incomplete_list:
         emit(
             "validate",
             "Found previous incomplete installation state; proceeding with retry.",
@@ -297,57 +342,34 @@ def run_installation(
     # Step 5: Set installing state with uniqueness check under lock
     # Use a list to capture the chosen name from inside the updater
     chosen_name = [None]
-    reusing_existing_installed = [False]
 
     def set_installing(h: dict) -> dict:
         # Check for incomplete installation under lock (unless cleanup or resume)
         if not cleanup_failed and not resume:
-            locked_incomplete = _get_incomplete_installation_details(h, claw_name)
-            if locked_incomplete and locked_incomplete.get("status") == "installing":
-                raise IncompleteInstallationError(
-                    h["hostname"], claw_name, locked_incomplete
-                )
+            locked_incomplete_list = _get_incomplete_installation_details(h, claw_name)
+            # Check if any incomplete installation is in 'installing' state
+            for locked_item in locked_incomplete_list:
+                if locked_item.get("status") == "installing":
+                    raise IncompleteInstallationError(
+                        h["hostname"], claw_name, locked_item
+                    )
 
         if name is None:
-            existing_installed = h.get("agents", {}).get(claw_name, {})
-            if (
-                not resume
-                and not cleanup_failed
-                and existing_installed.get("status") == "installed"
-                and existing_installed.get("agent_name")
-            ):
-                chosen_name[0] = existing_installed["agent_name"]
-                reusing_existing_installed[0] = True
-                return_name = chosen_name[0]
-                if return_name:
-                    logger.info(
-                        "Reusing existing installed agent name under lock: %s",
-                        return_name,
-                    )
+            # Auto-generate name with retry loop for uniqueness
+            max_attempts = 10
+            for _ in range(max_attempts):
+                candidate = generate_random_name()
+                if is_name_available_on_host(candidate, h):
+                    chosen_name[0] = candidate
+                    break
             else:
-                # Auto-generate name with retry loop for uniqueness
-                max_attempts = 10
-                for attempt in range(max_attempts):
-                    candidate = generate_random_name()
-                    if is_name_available_on_host(candidate, h):
-                        chosen_name[0] = candidate
-                        break
-                else:
-                    raise InstallationError(
-                        f"Could not generate a unique name after {max_attempts} attempts. "
-                        "Use --name to specify one."
-                    )
+                raise InstallationError(
+                    f"Could not generate a unique name after {max_attempts} attempts. "
+                    "Use --name to specify one."
+                )
         else:
-            # Use custom name, check uniqueness under lock (unless resuming)
-            same_as_existing = (
-                claw_name in h.get("agents", {})
-                and h["agents"][claw_name].get("agent_name") == name
-            )
-            if (
-                not resume
-                and not (reusing_existing_installed[0] and same_as_existing)
-                and not is_name_available_on_host(name, h)
-            ):
+            # Use custom/resume name, check uniqueness under lock (unless resuming)
+            if not resume and not is_name_available_on_host(name, h):
                 raise InstallationError(
                     f"Name '{name}' already in use on this host. "
                     "Names must be unique across all agents on a host."
@@ -357,20 +379,21 @@ def run_installation(
         if "agents" not in h:
             h["agents"] = {}
 
-        # Update status to installing (preserving existing data if resuming/reusing)
-        if resume or reusing_existing_installed[0]:
-            if claw_name not in h["agents"]:
+        # Update status to installing (preserving existing data if resuming)
+        if resume:
+            if chosen_name[0] not in h["agents"]:
                 raise InstallationError("Cannot resume: agent was removed")
-            h["agents"][claw_name]["status"] = "installing"
-            h["agents"][claw_name]["error"] = None
-            h["agents"][claw_name]["version"] = matched_version  # Update version
+            h["agents"][chosen_name[0]]["status"] = "installing"
+            h["agents"][chosen_name[0]]["error"] = None
+            h["agents"][chosen_name[0]]["version"] = matched_version  # Update version
+            h["agents"][chosen_name[0]]["type"] = claw_name
         else:
-            h["agents"][claw_name] = {
+            h["agents"][chosen_name[0]] = {
+                "type": claw_name,
                 "version": matched_version,
                 "status": "installing",
                 "installed_at": None,
                 "error": None,
-                "agent_name": chosen_name[0],
             }
         return h
 
@@ -382,8 +405,6 @@ def run_installation(
     # Emit message after lock is released and agent_name is set
     if resume:
         emit("validate", f"Resuming with existing name: {agent_name}")
-    elif reusing_existing_installed[0]:
-        emit("validate", f"Using existing installed name: {agent_name}")
     elif name is None:
         emit("validate", f"Generated unique name: {agent_name}")
     else:
@@ -427,12 +448,23 @@ def run_installation(
     port_hash = int(hashlib.md5(agent_name.encode()).hexdigest(), 16)
     openclaw_port = 40000 + (port_hash % 2000)
 
+    # Generate auth token for gateway access
+    import secrets
+
+    gateway_auth_token = secrets.token_hex(24)  # 48-character hex token
+
     # Build minimal config for templates
+    # gateway.auth.mode must be explicitly "token" for full operator scopes
+    # See: https://docs.openclaw.ai/gateway/security
     config = {
         "gateway": {
             "mode": "local",
             "port": openclaw_port,
-            "bind": "0.0.0.0",
+            "bind": "lan",
+            "auth": {
+                "mode": "token",
+                "token": gateway_auth_token,
+            },
         }
     }
 
@@ -531,9 +563,12 @@ def run_installation(
         if not install_skipped:
             emit("claw", f"{claw_name} installed successfully")
 
-        # Step 9.5: Extract gateway token from Ansible facts (OpenClaw only)
+        # Step 9.5: Extract gateway token and device credentials from Ansible facts (OpenClaw only)
         gateway_token = None
         gateway_url = None
+        device_id = None
+        device_token = None
+        device_private_key = None
         if claw_name == "openclaw" and result.status == "successful":
             # Get host facts from Ansible result
             try:
@@ -549,12 +584,76 @@ def run_installation(
                         try:
                             with open(fact_file) as f:
                                 facts = json.load(f)
-                                gateway_token = facts.get("openclaw_gateway_token")
-                                gateway_url = facts.get("openclaw_gateway_url")
+                                payload = facts.get("__payload__")
+                                if not isinstance(payload, str) or not payload:
+                                    continue
+
+                                parsed_facts = json.loads(payload)
+                                if not isinstance(parsed_facts, dict):
+                                    continue
+
+                                gateway_token_raw = parsed_facts.get(
+                                    "openclaw_gateway_token"
+                                )
+                                gateway_url_raw = parsed_facts.get(
+                                    "openclaw_gateway_url"
+                                )
+
+                                # Handle both plain string and wrapped {"value": ...} format
+                                if isinstance(gateway_token_raw, dict):
+                                    gateway_token = gateway_token_raw.get("value")
+                                elif isinstance(gateway_token_raw, str):
+                                    gateway_token = gateway_token_raw
+                                else:
+                                    gateway_token = None
+
+                                if isinstance(gateway_url_raw, dict):
+                                    gateway_url = gateway_url_raw.get("value")
+                                elif isinstance(gateway_url_raw, str):
+                                    gateway_url = gateway_url_raw
+                                else:
+                                    gateway_url = None
+
+                                if isinstance(gateway_token, str):
+                                    gateway_token = gateway_token.strip()
+                                if isinstance(gateway_url, str):
+                                    gateway_url = gateway_url.strip()
+
+                                # Extract device credentials for operator scope auth
+                                device_id_raw = parsed_facts.get("openclaw_device_id")
+                                device_token_raw = parsed_facts.get("openclaw_device_token")
+                                device_private_key_raw = parsed_facts.get(
+                                    "openclaw_device_private_key"
+                                )
+
+                                # Handle wrapped format
+                                if isinstance(device_id_raw, dict):
+                                    device_id = device_id_raw.get("value")
+                                elif isinstance(device_id_raw, str):
+                                    device_id = device_id_raw
+                                else:
+                                    device_id = None
+
+                                if isinstance(device_token_raw, dict):
+                                    device_token = device_token_raw.get("value")
+                                elif isinstance(device_token_raw, str):
+                                    device_token = device_token_raw
+                                else:
+                                    device_token = None
+
+                                if isinstance(device_private_key_raw, dict):
+                                    device_private_key = device_private_key_raw.get("value")
+                                elif isinstance(device_private_key_raw, str):
+                                    device_private_key = device_private_key_raw
+                                else:
+                                    device_private_key = None
+
                                 if gateway_token and gateway_url:
                                     emit(
                                         "claw", "Gateway authentication token captured"
                                     )
+                                    if device_id and device_token:
+                                        emit("claw", "Device credentials captured")
                                     break
                         except (json.JSONDecodeError, IOError) as file_err:
                             logger.debug(
@@ -568,34 +667,55 @@ def run_installation(
                     "Gateway token capture failed - manual pairing may be needed",
                 )
 
-        # Step 10: Update host with success status and gateway auth (if available)
+        if claw_name == "openclaw":
+            if not gateway_token:
+                emit(
+                    "warn",
+                    "Gateway token not captured - manual configuration may be needed",
+                )
+            if not gateway_url or not gateway_url.startswith(("ws://", "wss://")):
+                emit(
+                    "warn",
+                    "Gateway URL not captured - manual configuration may be needed",
+                )
+
+        # Step 10: Update host with success status and gateway auth
         def set_installed(h: dict) -> dict:
-            if "agents" in h and claw_name in h["agents"]:
-                h["agents"][claw_name]["status"] = "installed"
-                h["agents"][claw_name]["installed_at"] = datetime.now(
+            if "agents" in h and agent_name in h["agents"]:
+                h["agents"][agent_name]["status"] = "installed"
+                h["agents"][agent_name]["installed_at"] = datetime.now(
                     timezone.utc
                 ).isoformat()
+                h["agents"][agent_name]["type"] = claw_name
 
                 # Store gateway authentication (OpenClaw only)
                 if gateway_token and gateway_url:
-                    if "config" not in h["agents"][claw_name]:
-                        h["agents"][claw_name]["config"] = {}
-                    if "gateway" not in h["agents"][claw_name]["config"]:
-                        h["agents"][claw_name]["config"]["gateway"] = {}
+                    if "config" not in h["agents"][agent_name]:
+                        h["agents"][agent_name]["config"] = {}
+                    if "gateway" not in h["agents"][agent_name]["config"]:
+                        h["agents"][agent_name]["config"]["gateway"] = {}
 
-                    h["agents"][claw_name]["config"]["gateway"]["url"] = gateway_url
-                    h["agents"][claw_name]["config"]["gateway"]["auth"] = gateway_token
+                    h["agents"][agent_name]["config"]["gateway"]["url"] = gateway_url
+                    h["agents"][agent_name]["config"]["gateway"]["auth"] = gateway_token
+
+                    # Store device credentials for operator scope auth
+                    if device_id and device_token and device_private_key:
+                        h["agents"][agent_name]["config"]["gateway"]["device"] = {
+                            "id": device_id,
+                            "token": device_token,
+                            "privateKey": device_private_key,
+                        }
             return h
 
         update_host(host["hostname"], set_installed)
 
         # Step 11: Initialize onboarding record (non-fatal if it fails)
         try:
-            if not initialize_onboarding(host["hostname"], claw_name):
+            if not initialize_onboarding(host["hostname"], agent_name):
                 try:
                     emit(
                         "warn",
-                        f"Onboarding setup incomplete — run `clm onboard init {host['hostname']} {claw_name}` to retry",
+                        f"Onboarding setup incomplete — run `clm onboard init {host['hostname']} {agent_name}` to retry",
                     )
                 except Exception:
                     logger.warning(
@@ -606,7 +726,7 @@ def run_installation(
             try:
                 emit(
                     "warn",
-                    f"Onboarding setup failed — run `clm onboard init {host['hostname']} {claw_name}` to retry",
+                    f"Onboarding setup failed — run `clm onboard init {host['hostname']} {agent_name}` to retry",
                 )
             except Exception:
                 logger.warning("Failed to emit onboarding warning event", exc_info=True)
@@ -636,14 +756,15 @@ def run_installation(
         def set_failed(h: dict) -> dict:
             if "agents" not in h:
                 h["agents"] = {}
-            if claw_name not in h["agents"]:
-                h["agents"][claw_name] = {
+            if agent_name not in h["agents"]:
+                h["agents"][agent_name] = {
+                    "type": claw_name,
                     "version": matched_version,
-                    "agent_name": agent_name,
                 }
-            h["agents"][claw_name]["status"] = "failed"
-            h["agents"][claw_name]["error"] = error_msg
-            h["agents"][claw_name]["installed_at"] = None
+            h["agents"][agent_name]["type"] = claw_name
+            h["agents"][agent_name]["status"] = "failed"
+            h["agents"][agent_name]["error"] = error_msg
+            h["agents"][agent_name]["installed_at"] = None
             return h
 
         update_host(host["hostname"], set_failed)

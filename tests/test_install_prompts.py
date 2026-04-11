@@ -62,6 +62,7 @@ def test_prompt_resume_incomplete(monkeypatch, tmp_path):
     """Test that user can resume installation with existing agent name."""
     from clawrium.core.install import run_installation
 
+    # Agents are keyed by agent_name, with "type" field indicating claw type
     host = {
         "hostname": "test-host",
         "key_id": "test-host",
@@ -72,11 +73,11 @@ def test_prompt_resume_incomplete(monkeypatch, tmp_path):
             "memtotal_mb": 4096,
         },
         "agents": {
-            "openclaw": {
+            "work-assistant": {
+                "type": "openclaw",
                 "status": "installing",
                 "installed_at": None,
                 "error": None,
-                "agent_name": "work-assistant",
                 "version": "0.1.0",
             }
         },
@@ -95,15 +96,16 @@ def test_prompt_resume_incomplete(monkeypatch, tmp_path):
     result = run_installation("openclaw", "test-host", resume=True)
 
     assert result["success"] is True
-    # Verify that installation used existing agent name
-    assert updated_host[0]["agents"]["openclaw"]["agent_name"] == "work-assistant"
-    assert updated_host[0]["agents"]["openclaw"]["status"] == "installed"
+    # Verify that installation used existing agent name (keyed by agent name)
+    assert "work-assistant" in updated_host[0]["agents"]
+    assert updated_host[0]["agents"]["work-assistant"]["status"] == "installed"
 
 
 def test_prompt_cleanup_retry(monkeypatch, tmp_path):
     """Test that user can clean up and start fresh installation."""
     from clawrium.core.install import run_installation
 
+    # Agents are keyed by agent_name, with "type" field indicating claw type
     host = {
         "hostname": "test-host",
         "key_id": "test-host",
@@ -114,11 +116,11 @@ def test_prompt_cleanup_retry(monkeypatch, tmp_path):
             "memtotal_mb": 4096,
         },
         "agents": {
-            "openclaw": {
+            "work-assistant": {
+                "type": "openclaw",
                 "status": "failed",
                 "installed_at": None,
                 "error": "base playbook failed",
-                "agent_name": "work-assistant",
                 "version": "0.1.0",
             }
         },
@@ -143,10 +145,17 @@ def test_prompt_cleanup_retry(monkeypatch, tmp_path):
     result = run_installation("openclaw", "test-host", cleanup_failed=True)
 
     assert result["success"] is True
-    # Verify that installation started fresh with new agent name
-    new_agent_name = updated_host[0]["agents"]["openclaw"]["agent_name"]
+    # Verify that old agent was cleaned up and new one created with different name
+    assert "work-assistant" not in updated_host[0]["agents"]  # Old agent removed
+    # Find the new agent (should be the only openclaw type agent)
+    new_agent_names = [
+        name for name, data in updated_host[0]["agents"].items()
+        if data.get("type") == "openclaw"
+    ]
+    assert len(new_agent_names) == 1
+    new_agent_name = new_agent_names[0]
     assert new_agent_name != "work-assistant"  # Should be different name
-    assert updated_host[0]["agents"]["openclaw"]["status"] == "installed"
+    assert updated_host[0]["agents"][new_agent_name]["status"] == "installed"
 
 
 def test_prompt_abort(monkeypatch):

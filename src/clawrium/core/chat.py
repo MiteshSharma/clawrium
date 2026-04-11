@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import time
 import uuid
 from collections import deque
 from typing import Any, Callable
@@ -66,6 +68,8 @@ class OpenClawChatClient:
         self,
         gateway_url: str,
         auth_token: SecretStr | str,
+        device_id: str | None = None,
+        device_private_key: str | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
         self.gateway_url = gateway_url
@@ -73,10 +77,68 @@ class OpenClawChatClient:
             self._auth_token = auth_token
         else:
             self._auth_token = SecretStr(auth_token)
+        self._device_id = device_id
+        self._device_private_key = device_private_key
         self.timeout_seconds = timeout_seconds
         self._ws: Any | None = None
         self._request_id = 0
         self._event_buffer: deque[dict[str, Any]] = deque(maxlen=100)
+
+    def _sign_challenge(
+        self,
+        nonce: str,
+        client_id: str,
+        client_mode: str,
+        role: str,
+        scopes: list[str],
+    ) -> dict[str, Any] | None:
+        """Sign challenge nonce with device private key for operator scope auth.
+
+        Returns device params dict for connect request, or None if no device credentials.
+        """
+        if not self._device_id or not self._device_private_key:
+            return None
+
+        try:
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+            # Load private key from PEM
+            private_key = serialization.load_pem_private_key(
+                self._device_private_key.encode(), password=None
+            )
+            if not isinstance(private_key, Ed25519PrivateKey):
+                return None
+
+            # Build v2 payload: v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce
+            timestamp_ms = int(time.time() * 1000)
+            scopes_str = ",".join(scopes)
+            payload = (
+                f"v2|{self._device_id}|{client_id}|{client_mode}|{role}|"
+                f"{scopes_str}|{timestamp_ms}|{self._auth_token.get_secret_value()}|{nonce}"
+            )
+
+            # Sign and encode
+            signature = private_key.sign(payload.encode())
+            signature_b64 = base64.b64encode(signature).decode()
+
+            # Get raw public key for device params
+            public_key = private_key.public_key()
+            public_key_raw = public_key.public_bytes(
+                encoding=serialization.Encoding.Raw,
+                format=serialization.PublicFormat.Raw
+            )
+            public_key_b64 = base64.b64encode(public_key_raw).decode()
+
+            return {
+                "id": self._device_id,
+                "publicKey": public_key_b64,
+                "signature": signature_b64,
+                "signedAt": timestamp_ms,
+                "nonce": nonce,
+            }
+        except Exception:
+            return None
 
     async def connect(self) -> None:
         """Connect and authenticate with the gateway."""
@@ -107,25 +169,33 @@ class OpenClawChatClient:
                     nonce = payload.get("nonce")
 
             req_id = self._next_id()
+            client_id = "cli"
+            client_mode = "cli"
+            role = "operator"
+            scopes = ["operator.read", "operator.write"]
+
             connect_params: dict[str, Any] = {
                 "minProtocol": 3,
                 "maxProtocol": 3,
                 "client": {
-                    "id": "clawrium-cli",
+                    "id": client_id,
                     "version": __version__,
-                    "platform": "python",
-                    "mode": "operator",
+                    "platform": "linux",
+                    "mode": client_mode,
                 },
-                "role": "operator",
-                "scopes": ["operator.read", "operator.write"],
-                "caps": [],
-                "commands": [],
-                "permissions": {},
+                "role": role,
+                "scopes": scopes,
                 "auth": {"token": self._auth_token.get_secret_value()},
                 "userAgent": f"clawrium/{__version__}",
             }
-            if isinstance(nonce, str) and nonce:
-                connect_params["nonce"] = nonce
+
+            # Add device auth for operator.write scope (requires nonce from challenge)
+            if nonce:
+                device_params = self._sign_challenge(
+                    nonce, client_id, client_mode, role, scopes
+                )
+                if device_params:
+                    connect_params["device"] = device_params
 
             await self._send_json(
                 {

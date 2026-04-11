@@ -90,7 +90,61 @@ def _get_claw_record(host: str, claw_name: str) -> dict | None:
     if not host_data:
         return None
     agents = host_data.get("agents", {})
-    return agents.get(claw_name)
+    if not isinstance(agents, dict):
+        return None
+
+    # Preferred: instance-keyed lookup
+    if claw_name in agents and isinstance(agents[claw_name], dict):
+        return agents[claw_name]
+
+    # Backward-compatible fallback: match by stored instance name fields
+    name_matches = [
+        record
+        for record in agents.values()
+        if isinstance(record, dict)
+        and (record.get("agent_name") == claw_name or record.get("name") == claw_name)
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0]
+
+    # Backward-compatible fallback: unique type match
+    matches = [
+        record
+        for record in agents.values()
+        if isinstance(record, dict) and record.get("type") == claw_name
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _resolve_agent_key(host_data: dict, claw_name: str) -> str | None:
+    """Resolve agent identifier to the canonical instance key in host.agents."""
+    agents = host_data.get("agents", {})
+    if not isinstance(agents, dict):
+        return None
+
+    if claw_name in agents and isinstance(agents[claw_name], dict):
+        return claw_name
+
+    # Legacy fallback: identify by stored instance name fields
+    name_matches = [
+        key
+        for key, record in agents.items()
+        if isinstance(record, dict)
+        and (record.get("agent_name") == claw_name or record.get("name") == claw_name)
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0]
+
+    matches = [
+        key
+        for key, record in agents.items()
+        if isinstance(record, dict) and record.get("type") == claw_name
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
 
 
 def get_onboarding_state(host: str, claw_name: str) -> OnboardingState:
@@ -160,13 +214,14 @@ def transition_state(host: str, claw_name: str, to_state: OnboardingState) -> bo
     hostname = host_data["hostname"]
 
     def updater(h: dict) -> dict:
-        if "agents" not in h or claw_name not in h["agents"]:
+        agent_key = _resolve_agent_key(h, claw_name)
+        if not agent_key:
             raise AgentNotFoundError(f"Agent '{claw_name}' not found on host '{host}'")
-        if "onboarding" not in h["agents"][claw_name]:
+        if "onboarding" not in h["agents"][agent_key]:
             raise OnboardingNotFoundError(
                 f"Onboarding not initialized for '{claw_name}' on '{host}'"
             )
-        h["agents"][claw_name]["onboarding"]["state"] = to_state.value
+        h["agents"][agent_key]["onboarding"]["state"] = to_state.value
         return h
 
     return update_host(hostname, updater)
@@ -249,21 +304,22 @@ def complete_stage(
     now = datetime.now(timezone.utc).isoformat()
 
     def updater(h: dict) -> dict:
-        if "agents" not in h or claw_name not in h["agents"]:
+        agent_key = _resolve_agent_key(h, claw_name)
+        if not agent_key:
             raise AgentNotFoundError(f"Agent '{claw_name}' not found on host '{host}'")
-        if "onboarding" not in h["agents"][claw_name]:
+        if "onboarding" not in h["agents"][agent_key]:
             raise OnboardingNotFoundError(
                 f"Onboarding not initialized for '{claw_name}' on '{host}'"
             )
-        if "stages" not in h["agents"][claw_name]["onboarding"]:
+        if "stages" not in h["agents"][agent_key]["onboarding"]:
             raise OnboardingNotFoundError(
                 f"Onboarding stages not initialized for '{claw_name}' on '{host}'"
             )
-        if stage not in h["agents"][claw_name]["onboarding"]["stages"]:
+        if stage not in h["agents"][agent_key]["onboarding"]["stages"]:
             raise OnboardingNotFoundError(
                 f"Stage '{stage}' not found for '{claw_name}' on '{host}'"
             )
-        stage_data = h["agents"][claw_name]["onboarding"]["stages"][stage]
+        stage_data = h["agents"][agent_key]["onboarding"]["stages"][stage]
         stage_data["status"] = status.value
         stage_data["completed_at"] = now
         if metadata:
@@ -302,7 +358,10 @@ def initialize_onboarding(host: str, claw_name: str) -> bool:
     now = datetime.now(timezone.utc).isoformat()
 
     def updater(h: dict) -> dict:
-        h["agents"][claw_name]["onboarding"] = {
+        agent_key = _resolve_agent_key(h, claw_name)
+        if not agent_key:
+            raise AgentNotFoundError(f"Agent '{claw_name}' not found on host '{host}'")
+        h["agents"][agent_key]["onboarding"] = {
             "state": OnboardingState.PENDING.value,
             "started_at": now,
             "stages": {

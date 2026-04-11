@@ -8,7 +8,11 @@
       "repoRoot": {{ agents_defaults.repoRoot | tojson }},
 {% endif %}
 {% if config.provider is defined and config.provider.default_model is defined %}
+{% if config.provider.type == "openrouter" and not config.provider.default_model.startswith("openrouter/") %}
+      "model": {{ ("openrouter/" ~ config.provider.default_model) | tojson }},
+{% else %}
       "model": {{ config.provider.default_model | tojson }},
+{% endif %}
 {% elif agents_defaults.model is defined %}
       "model": {{ agents_defaults.model | tojson }},
 {% endif %}
@@ -48,12 +52,16 @@
   "gateway": {
     "mode": {{ gateway.mode | default('local') | tojson }},
     "port": {{ gateway.port | default(18789) | int }},
-    "bind": {{ gateway.bind | default('0.0.0.0') | tojson }},
+    "bind": {{ gateway.bind | default('lan') | tojson }},
 {% if gateway.controlUi is defined %}
     "controlUi": {{ gateway.controlUi | tojson }},
 {% endif %}
 {% if gateway.auth is defined and gateway.auth %}
+{% if gateway.auth is string %}
+    "auth": {"mode": "token", "token": {{ gateway.auth | tojson }}},
+{% else %}
     "auth": {{ gateway.auth | tojson }},
+{% endif %}
 {% endif %}
 {% if gateway.tailscale is defined %}
     "tailscale": {{ gateway.tailscale | tojson }},

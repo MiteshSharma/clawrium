@@ -45,10 +45,10 @@ def create_host_with_ready_claw(
                 "tags": [],
             },
             "agents": {
-                claw_type: {
+                "assistant": {
+                    "type": claw_type,
                     "version": "2026.4.2",
                     "status": "installed",
-                    "agent_name": "assistant",
                     "onboarding": {
                         "state": "ready",
                         "started_at": "2026-04-07T00:00:00Z",
@@ -113,8 +113,8 @@ class TestAgentStart:
                 "alias": "work",
                 "key_id": "work",
                 "agents": {
-                    "openclaw": {
-                        "agent_name": "assistant",
+                    "assistant": {
+                        "type": "openclaw",
                         "onboarding": {"state": "pending"},
                     }
                 },
@@ -167,8 +167,8 @@ class TestAgentStart:
                 "agent_name": "xclm",
                 "port": 22,
                 "agents": {
-                    "openclaw": {
-                        "agent_name": "assistant",
+                    "assistant": {
+                        "type": "openclaw",
                         "onboarding": {"state": "pending"},
                     }
                 },

@@ -646,13 +646,18 @@ def validate_agent_installation(host: str, claw_name: str) -> ValidationResult:
     - User/group ownership is correct
 
     Args:
-        host: Host alias or hostname.
+        host: Host alias, hostname, or key_id.
         claw_name: Name of the claw instance.
 
     Returns:
         ValidationResult with installation status.
     """
+    from clawrium.core.hosts import get_host_by_key_id
+
     host_data = get_host(host)
+    # Fallback to key_id lookup if hostname/alias lookup failed
+    if not host_data:
+        host_data = get_host_by_key_id(host)
     if not host_data:
         return ValidationResult(
             passed=False,
