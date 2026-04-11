@@ -113,12 +113,31 @@ def test_install_reuses_existing_installed_name_and_reports_skip(monkeypatch, tm
                 {
                     "event": "runner_on_ok",
                     "event_data": {
-                        "task": "Mark install as skipped when already installed",
+                        "task": "Discover openclaw binary in PATH",
+                        "res": {"stdout": "/usr/local/bin/openclaw", "rc": 0},
+                    },
+                },
+                {
+                    "event": "runner_on_ok",
+                    "event_data": {
+                        "task": "Set install skip condition",
                         "res": {
-                            "msg": "OpenClaw already installed with matching version 2026.4.2."
+                            "ansible_facts": {
+                                "openclaw_already_installed": True,
+                                "openclaw_runtime_binary": "/usr/local/bin/openclaw",
+                            }
                         },
                     },
-                }
+                },
+                {
+                    "event": "runner_on_ok",
+                    "event_data": {
+                        "task": "Mark install as skipped when already installed",
+                        "res": {
+                            "msg": "OpenClaw already installed at /usr/local/bin/openclaw. Skipping binary install."
+                        },
+                    },
+                },
             ],
         ),
     ]
@@ -129,7 +148,7 @@ def test_install_reuses_existing_installed_name_and_reports_skip(monkeypatch, tm
 
     assert result["success"] is True
     assert result["skipped"] is True
-    assert result["skip_reason"] == "already_installed_version_match"
+    assert result["skip_reason"] == "already_installed"
     assert host_state[0]["agents"]["openclaw"]["agent_name"] == "existing-agent"
     assert (
         host_state[0]["agents"]["openclaw"]["config"]["gateway"]["url"]
@@ -138,9 +157,7 @@ def test_install_reuses_existing_installed_name_and_reports_skip(monkeypatch, tm
     assert mock_run.call_count == 2
 
 
-def test_install_existing_agent_with_mismatch_version_does_not_report_skip(
-    monkeypatch, tmp_path
-):
+def test_install_existing_agent_any_version_reports_skip(monkeypatch, tmp_path):
     from clawrium.core.install import run_installation
 
     host = {
@@ -167,19 +184,50 @@ def test_install_existing_agent_with_mismatch_version_does_not_report_skip(
 
     import ansible_runner
 
-    mock_run = Mock(
-        side_effect=[
-            _result_with_events(tmp_path, []),
-            _result_with_events(tmp_path, []),
-        ]
-    )
+    run_side_effect = [
+        _result_with_events(tmp_path, []),
+        _result_with_events(
+            tmp_path,
+            [
+                {
+                    "event": "runner_on_ok",
+                    "event_data": {
+                        "task": "Discover openclaw binary in PATH",
+                        "res": {"stdout": "/usr/local/bin/openclaw", "rc": 0},
+                    },
+                },
+                {
+                    "event": "runner_on_ok",
+                    "event_data": {
+                        "task": "Set install skip condition",
+                        "res": {
+                            "ansible_facts": {
+                                "openclaw_already_installed": True,
+                                "openclaw_runtime_binary": "/usr/local/bin/openclaw",
+                            }
+                        },
+                    },
+                },
+                {
+                    "event": "runner_on_ok",
+                    "event_data": {
+                        "task": "Mark install as skipped when already installed",
+                        "res": {
+                            "msg": "OpenClaw already installed at /usr/local/bin/openclaw. Skipping binary install."
+                        },
+                    },
+                },
+            ],
+        ),
+    ]
+    mock_run = Mock(side_effect=run_side_effect)
     monkeypatch.setattr(ansible_runner, "run", mock_run)
 
     result = run_installation("openclaw", "test-host")
 
     assert result["success"] is True
-    assert result["skipped"] is False
-    assert result["skip_reason"] is None
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "already_installed"
     assert mock_run.call_count == 2
 
 
@@ -191,12 +239,8 @@ def test_openclaw_skip_detection_matches_fact_and_marker():
             {
                 "event": "runner_on_ok",
                 "event_data": {
-                    "task": "Compute OpenClaw install skip condition",
-                    "res": {
-                        "ansible_facts": {
-                            "openclaw_already_installed_and_matching": True
-                        }
-                    },
+                    "task": "Set install skip condition",
+                    "res": {"ansible_facts": {"openclaw_already_installed": True}},
                 },
             }
         ]
@@ -209,7 +253,7 @@ def test_openclaw_skip_detection_matches_fact_and_marker():
                 "event": "runner_on_ok",
                 "event_data": {
                     "task": "Mark install as skipped when already installed",
-                    "res": {"msg": "already installed with matching version"},
+                    "res": {"msg": "already installed at /usr/local/bin/openclaw"},
                 },
             }
         ]
@@ -220,6 +264,21 @@ def test_openclaw_skip_detection_matches_fact_and_marker():
         events = []
 
     assert _openclaw_install_was_skipped(ResultNoSkip()) is False
+
+    class ResultFalsePositive:
+        events = [
+            {
+                "event": "runner_on_ok",
+                "event_data": {
+                    "task": "Download OpenClaw installer script",
+                    "res": {
+                        "msg": "Package already installed by another process, skipping"
+                    },
+                },
+            }
+        ]
+
+    assert _openclaw_install_was_skipped(ResultFalsePositive()) is False
 
 
 def test_install_failure_sets_failed_status_without_installed_timestamp(
