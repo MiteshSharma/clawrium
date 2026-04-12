@@ -105,6 +105,20 @@ def snapshot() -> None:
     raise typer.Exit(code=0)
 
 
+@app.command()
+def tui() -> None:
+    """Launch the interactive TUI dashboard."""
+    try:
+        from clawrium.cli.tui import launch_tui
+
+        launch_tui()
+    except ImportError:
+        console.print(
+            "[red]Error:[/red] TUI requires textual. Install with: pip install clawrium"
+        )
+        raise typer.Exit(code=1)
+
+
 # Register agent subcommands (primary interface)
 app.add_typer(agent_app, name="agent")
 
