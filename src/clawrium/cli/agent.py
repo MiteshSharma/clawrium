@@ -309,6 +309,10 @@ def _sync_provider_config(
     # Build complete config data
     config_data = {"gateway": gateway_config, "provider": provider_config}
 
+    # Preserve existing channels config (Discord pairing, etc.)
+    if existing_config.get("channels"):
+        config_data["channels"] = existing_config["channels"]
+
     # Call configure_agent to apply configuration via Ansible
     success, error = configure_agent(
         host,

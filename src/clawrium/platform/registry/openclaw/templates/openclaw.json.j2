@@ -9,9 +9,11 @@
 {% endif %}
 {% if config.provider is defined and config.provider.default_model is defined %}
 {% if config.provider.type == "openrouter" and not config.provider.default_model.startswith("openrouter/") %}
-      "model": {{ ("openrouter/" ~ config.provider.default_model) | tojson }},
+      "model": { "primary": {{ ("openrouter/" ~ config.provider.default_model) | tojson }} },
+{% elif config.provider.type == "ollama" and not config.provider.default_model.startswith("ollama/") %}
+      "model": { "primary": {{ ("ollama/" ~ config.provider.default_model) | tojson }} },
 {% else %}
-      "model": {{ config.provider.default_model | tojson }},
+      "model": { "primary": {{ config.provider.default_model | tojson }} },
 {% endif %}
 {% elif agents_defaults.model is defined %}
       "model": {{ agents_defaults.model | tojson }},
@@ -104,7 +106,28 @@
 {% if config.identity is defined %}
   "identity": {{ config.identity | tojson }},
 {% endif %}
-{% if config.models is defined %}
+{% if config.provider is defined and config.provider.type == "ollama" and config.provider.endpoint %}
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": {{ config.provider.endpoint | tojson }},
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          {
+            "id": {{ config.provider.default_model | tojson }},
+            "name": {{ config.provider.default_model | tojson }},
+            "reasoning": false,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 131072,
+            "maxTokens": 16384
+          }
+        ]
+      }
+    }
+  },
+{% elif config.models is defined %}
   "models": {{ config.models | tojson }},
 {% endif %}
 {% if config.tools is defined %}

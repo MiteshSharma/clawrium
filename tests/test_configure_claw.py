@@ -355,7 +355,7 @@ class TestOpenClawTemplate:
         }
         result = self._render_template(config)
 
-        assert result["agents"]["defaults"]["model"] == "anthropic/claude-sonnet-4-6"
+        assert result["agents"]["defaults"]["model"] == {"primary": "anthropic/claude-sonnet-4-6"}
         assert result["agents"]["defaults"]["workspace"] == "~/.openclaw/workspace"
         assert result["agents"]["defaults"]["maxConcurrent"] == 4
         assert result["gateway"]["port"] == 18789
@@ -381,7 +381,7 @@ class TestOpenClawTemplate:
         }
         result = self._render_template(config)
 
-        assert result["agents"]["defaults"]["model"] == "openai/gpt-5.4"
+        assert result["agents"]["defaults"]["model"] == {"primary": "openai/gpt-5.4"}
         assert result["agents"]["defaults"]["maxConcurrent"] == 8
         assert result["agents"]["defaults"]["skills"] == ["researcher", "coder"]
         assert result["gateway"]["port"] == 40123
@@ -457,7 +457,7 @@ class TestOpenClawTemplate:
         result = self._render_template(config)
 
         # Should parse as valid JSON (proves escaping worked)
-        assert result["agents"]["defaults"]["model"] == 'model"with"quotes'
+        assert result["agents"]["defaults"]["model"] == {"primary": 'model"with"quotes'}
         assert result["gateway"]["bind"] == "bind\nwith\nnewlines"
 
     def test_template_renders_agent_list(self):
