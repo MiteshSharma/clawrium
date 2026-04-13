@@ -131,9 +131,18 @@
 {% elif config.models is defined %}
   "models": {{ config.models | tojson }},
 {% endif %}
-{% if config.tools is defined %}
-  "tools": {{ config.tools | tojson }},
+{% set tools = config.tools | default({}) %}
+{% set tools_exec = tools.exec | default({}) %}
+  "tools": {
+    "exec": {
+      "host": {{ tools_exec.host | default('gateway') | tojson }}
+    }
+{% if tools | length > 0 %}
+    {% for key, value in tools.items() if key != 'exec' %}
+    ,"{{ key }}": {{ value | tojson }}
+    {% endfor %}
 {% endif %}
+  },
 {% if config.bindings is defined %}
   "bindings": {{ config.bindings | tojson }},
 {% endif %}
