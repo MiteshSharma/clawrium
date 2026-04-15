@@ -1,0 +1,38 @@
+# Agent Identity
+
+Metadata and context for this agent instance.
+
+## Instance Information
+
+**Agent Name**: {{ agent_name }}
+**Agent Type**: {{ agent_type }}
+**Created**: {{ ansible_date_time.iso8601 | default('unknown') }}
+
+## Configuration
+
+**Model**: {{ (config.provider | default({})).default_model | default('not configured') }}
+**Provider**: {{ (config.provider | default({})).type | default('not configured') }}
+**Gateway Port**: {{ (config.gateway | default({})).port | default('not configured') }}
+
+## Workspace
+
+**Location**: /home/{{ agent_name }}/.openclaw/workspace/
+**Files**:
+- SOUL.md - Agent personality and behavior
+- AGENTS.md - Sub-agent definitions
+- TOOLS.md - Tool usage guidance
+- IDENTITY.md - This file
+
+## Management
+
+This agent is managed by Clawrium.
+
+**Commands**:
+- `clm agent ps` - Check agent status
+- `clm agent sync {{ agent_name }}` - Sync configuration
+- `clm agent restart {{ agent_name }}` - Restart agent
+- `clm agent stop {{ agent_name }}` - Stop agent
+
+## Notes
+
+Add any instance-specific notes or context here.

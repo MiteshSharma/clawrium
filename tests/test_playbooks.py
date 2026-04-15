@@ -139,8 +139,9 @@ def test_openclaw_configure_playbook_structure():
     assert "Verify openclaw.json configuration" in content, (
         "Should include configuration validation task"
     )
-    assert 'python3 - "$CONFIG_FILE"' in content, (
-        "Should verify fields with embedded Python"
+    # B2 fix: Now uses external script instead of embedded Python
+    assert "verify_config.py" in content, (
+        "Should use external verify_config.py script"
     )
 
     data = yaml.safe_load(content)
@@ -180,3 +181,69 @@ def test_openclaw_stop_playbook_uses_openclaw_process_check():
     assert len(data) > 0, "Playbook should have at least one play"
     assert "pgrep -u {{ agent_name }} openclaw" in content
     assert "pgrep -u {{ agent_name }} node" not in content
+
+
+def test_openclaw_configure_playbook_has_workspace_tasks():
+    """Configure playbook should have workspace sync tasks."""
+    from importlib.resources import files
+    import yaml
+
+    openclaw_package = files("clawrium.platform.registry.openclaw")
+    playbook_path = openclaw_package / "playbooks" / "configure.yaml"
+
+    content = playbook_path.read_text()
+    data = yaml.safe_load(content)
+
+    assert isinstance(data, list), "Playbook should be a list of plays"
+    assert len(data) > 0, "Playbook should have at least one play"
+
+    # Get all task names
+    tasks = data[0].get("tasks", [])
+    task_names = [t.get("name", "") for t in tasks]
+
+    # Verify workspace tasks exist
+    assert any("workspace directory" in name.lower() for name in task_names), (
+        "Should have workspace directory creation task"
+    )
+    assert any("soul.md" in name.lower() for name in task_names), (
+        "Should have SOUL.md copy task"
+    )
+    assert any("agents.md" in name.lower() for name in task_names), (
+        "Should have AGENTS.md render task"
+    )
+    assert any("tools.md" in name.lower() for name in task_names), (
+        "Should have TOOLS.md render task"
+    )
+    assert any("identity.md" in name.lower() for name in task_names), (
+        "Should have IDENTITY.md render task"
+    )
+
+
+def test_identity_templates_exist():
+    """Identity templates should exist for workspace sync."""
+    from importlib.resources import files
+
+    openclaw_package = files("clawrium.platform.registry.openclaw")
+    template_dir = openclaw_package / "templates"
+
+    # Verify templates exist
+    assert (template_dir / "AGENTS.md.j2").is_file(), "AGENTS.md.j2 template should exist"
+    assert (template_dir / "TOOLS.md.j2").is_file(), "TOOLS.md.j2 template should exist"
+    assert (template_dir / "IDENTITY.md.j2").is_file(), "IDENTITY.md.j2 template should exist"
+
+
+def test_verify_config_script_exists():
+    """B2 fix: verify_config.py script should exist for config validation."""
+    from importlib.resources import files
+
+    openclaw_package = files("clawrium.platform.registry.openclaw")
+    template_dir = openclaw_package / "templates"
+
+    verify_script = template_dir / "verify_config.py"
+    assert verify_script.is_file(), "verify_config.py should exist"
+
+    # Verify it's a valid Python script
+    content = verify_script.read_text()
+    assert "#!/usr/bin/env python3" in content, "Should have Python shebang"
+    assert "def main():" in content, "Should have main function"
+    assert "sys.exit" in content, "Should use sys.exit for return codes"

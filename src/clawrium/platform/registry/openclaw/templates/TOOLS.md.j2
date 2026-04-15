@@ -1,0 +1,53 @@
+# Tools
+
+This file provides guidance on tool usage for the agent.
+
+## Available Tools
+
+The agent has access to the following tool categories:
+
+### File Operations
+- Read files from the workspace
+- Write and edit files
+- Search file contents
+
+### Shell Commands
+- Execute shell commands (with user approval)
+- Run scripts and build tools
+- Manage processes
+
+### Web Access
+- Fetch web pages
+- Search the web
+- Access APIs
+
+## Tool Usage Guidelines
+
+### Safety First
+- Always confirm destructive operations with the user
+- Never execute commands that could compromise security
+- Validate inputs before passing to tools
+
+### Efficiency
+- Batch related operations when possible
+- Use appropriate tools for the task
+- Avoid unnecessary network calls
+
+### Transparency
+- Explain what tools will be used and why
+- Report tool results clearly
+- Handle errors gracefully
+
+## Tool Restrictions
+
+The following operations require explicit user confirmation:
+- File deletion
+- System configuration changes
+- Network operations to unknown hosts
+- Installation of packages or dependencies
+
+## Custom Tool Configuration
+
+Agent-specific tool settings:
+- Workspace: {{ config.workspace | default('~/.openclaw/workspace') }}
+- Sandbox mode: {{ config.sandbox_mode | default('off') }}

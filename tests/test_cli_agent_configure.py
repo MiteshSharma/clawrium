@@ -237,9 +237,15 @@ class TestAgentConfigureSingleStage:
             )
 
             assert result.exit_code == 0
-            mock_run.assert_called_once_with(
-                "192.168.1.100", "openclaw", True, "assistant"
-            )
+            # Identity stage has extra identity_files parameter (None when not provided)
+            if stage_name == "identity":
+                mock_run.assert_called_once_with(
+                    "192.168.1.100", "openclaw", True, "assistant", None
+                )
+            else:
+                mock_run.assert_called_once_with(
+                    "192.168.1.100", "openclaw", True, "assistant"
+                )
 
     def test_single_stage_failure(self, isolated_config: Path):
         """Stage failure exits with code 1."""
@@ -441,15 +447,42 @@ class TestRunIdentityStage:
         assert result is False
 
     def test_creates_soul_md_file(self, isolated_config: Path):
-        """Creates SOUL.md in config directory."""
+        """Creates SOUL.md in agent-specific identity directory and syncs to remote."""
         from clawrium.cli.agent import _run_identity_stage
+        from unittest.mock import MagicMock
+
+        mock_host = {
+            "hostname": "192.168.1.100",
+            "agents": {
+                "openclaw": {
+                    "type": "openclaw",
+                    "config": {},
+                    "onboarding": {"state": "identity"},
+                }
+            },
+        }
+
+        mock_configure = MagicMock(return_value=(True, None))
 
         with patch("clawrium.cli.agent.complete_stage"):
-            result = _run_identity_stage("work", "openclaw", True)
+            with patch("clawrium.cli.agent.get_host", return_value=mock_host):
+                with patch(
+                    "clawrium.core.lifecycle.configure_agent", mock_configure
+                ):
+                    result = _run_identity_stage("work", "openclaw", True)
 
         assert result is True
-        soul_path = isolated_config / "agents" / "openclaw" / "SOUL.md"
+        # New path: agents/<type>/<agent-name>/identity/SOUL.md
+        soul_path = isolated_config / "agents" / "openclaw" / "openclaw" / "identity" / "SOUL.md"
         assert soul_path.exists()
+
+        # Verify configure_agent was called with identity_files in extra_vars
+        mock_configure.assert_called_once()
+        call_kwargs = mock_configure.call_args.kwargs
+        assert "extra_vars" in call_kwargs
+        assert "identity_files" in call_kwargs["extra_vars"]
+        assert call_kwargs["extra_vars"]["identity_files"]["sync_workspace"] is True
+        assert "soul_path" in call_kwargs["extra_vars"]["identity_files"]
 
 
 class TestRunChannelsStage:

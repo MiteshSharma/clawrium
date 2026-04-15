@@ -356,7 +356,7 @@ class TestAgentSync:
 
         result = runner.invoke(app, ["agent", "sync", "assistant"])
         assert result.exit_code == 1
-        assert "onboarding incomplete" in result.output
+        assert "onboarding not started" in result.output
 
     def test_sync_agent_no_config_fails(self, isolated_config: Path):
         """Sync when agent has no config fails."""
@@ -532,3 +532,116 @@ class TestAgentSync:
         assert result.exit_code == 1
         assert "Failed to sync" in result.output
         assert "Restart failed" in result.output
+
+    def test_sync_with_workspace_flag_skips_restart(
+        self, isolated_config: Path, tmp_path: Path
+    ):
+        """Sync with --workspace flag skips restart and shows correct message."""
+        hosts_file = isolated_config / "hosts.json"
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        hosts_data = [
+            {
+                "hostname": "192.168.1.100",
+                "key_id": "work",
+                "port": 22,
+                "agent_name": "xclm",
+                "alias": "work",
+                "agents": {
+                    "assistant": {
+                        "type": "openclaw",
+                        "config": {
+                            "gateway": {"port": 40000},
+                            "provider": {
+                                "name": "test",
+                                "type": "ollama",
+                                "endpoint": "http://localhost:11434",
+                                "default_model": "llama3",
+                            },
+                        },
+                        "onboarding": {"state": "ready"},
+                    }
+                },
+            }
+        ]
+        hosts_file.write_text(json.dumps(hosts_data, indent=2))
+
+        with patch(
+            "clawrium.core.lifecycle.configure_agent",
+            return_value=(True, None),
+        ) as mock_configure:
+            with patch(
+                "clawrium.core.lifecycle.restart_agent",
+            ) as mock_restart:
+                result = runner.invoke(
+                    app, ["agent", "sync", "assistant", "--workspace"]
+                )
+
+        assert result.exit_code == 0
+        assert "Syncing workspace for" in result.output
+        assert "Workspace synced (no restart)" in result.output
+        # Configure should be called
+        mock_configure.assert_called_once()
+        # Restart should NOT be called
+        mock_restart.assert_not_called()
+
+    def test_sync_without_workspace_flag_calls_restart(
+        self, isolated_config: Path, tmp_path: Path
+    ):
+        """B4/B6 fix: Sync without --workspace flag calls restart_agent with correct args."""
+        hosts_file = isolated_config / "hosts.json"
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        hosts_data = [
+            {
+                "hostname": "192.168.1.100",
+                "key_id": "work",
+                "port": 22,
+                "agent_name": "xclm",
+                "alias": "work",
+                "agents": {
+                    "assistant": {
+                        "type": "openclaw",
+                        "config": {
+                            "gateway": {"port": 40000},
+                            "provider": {
+                                "name": "test",
+                                "type": "ollama",
+                                "endpoint": "http://localhost:11434",
+                                "default_model": "llama3",
+                            },
+                        },
+                        "onboarding": {"state": "ready"},
+                    }
+                },
+            }
+        ]
+        hosts_file.write_text(json.dumps(hosts_data, indent=2))
+
+        with patch(
+            "clawrium.core.lifecycle.configure_agent",
+            return_value=(True, None),
+        ) as mock_configure:
+            with patch(
+                "clawrium.core.lifecycle.restart_agent",
+                return_value={
+                    "success": True,
+                    "agent": "assistant",
+                    "host": "192.168.1.100",
+                    "operation": "restart",
+                    "pid": None,
+                    "started_at": "2026-04-14T12:00:00Z",
+                    "error": None,
+                },
+            ) as mock_restart:
+                result = runner.invoke(app, ["agent", "sync", "assistant"])
+
+        assert result.exit_code == 0
+        # Configure should be called
+        mock_configure.assert_called_once()
+        # B6 fix: Verify restart_agent called with correct arguments
+        mock_restart.assert_called_once()
+        call_args = mock_restart.call_args
+        assert call_args.args[0] == "192.168.1.100"  # hostname
+        assert call_args.args[1] == "openclaw"  # agent_type
+        assert call_args.kwargs.get("agent_name") == "assistant"
