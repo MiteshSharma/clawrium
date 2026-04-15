@@ -15,6 +15,7 @@ from clawrium.core.lifecycle import (
     _get_lifecycle_playbook_path,
     _run_lifecycle_playbook,
     _resolve_agent_record,
+    _cleanup_ansible_artifacts,
 )
 
 
@@ -771,7 +772,7 @@ class TestSyncAgent:
             with pytest.raises(LifecycleError) as exc_info:
                 sync_agent("192.168.1.100", "openclaw")
 
-        assert "onboarding incomplete" in str(exc_info.value)
+        assert "onboarding not started" in str(exc_info.value)
 
     def test_raises_error_when_no_config(self):
         """Sync when no config exists fails."""
@@ -1078,3 +1079,162 @@ class TestSyncAgent:
         assert "Syncing" in sync_events[0][1]
         # Last should be "Sync complete"
         assert "complete" in sync_events[-1][1].lower()
+
+    def test_workspace_only_skips_restart(self):
+        """workspace_only=True skips restart step."""
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "opc-work": {
+                    "type": "openclaw",
+                    "onboarding": {"state": "ready"},
+                    "config": {
+                        "gateway": {"port": 40000},
+                        "provider": {
+                            "name": "test",
+                            "type": "ollama",
+                            "endpoint": "http://localhost:11434",
+                            "default_model": "llama3",
+                        },
+                    },
+                }
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.configure_agent",
+                return_value=(True, None),
+            ) as mock_configure:
+                with patch(
+                    "clawrium.core.lifecycle.restart_agent"
+                ) as mock_restart:
+                    result = sync_agent(
+                        "192.168.1.100", "openclaw", workspace_only=True
+                    )
+
+        assert result["success"] is True
+        assert result["operation"] == "sync"
+        # Configure should be called
+        mock_configure.assert_called_once()
+        # Restart should NOT be called
+        mock_restart.assert_not_called()
+
+    def test_allows_intermediate_onboarding_states(self):
+        """Sync allows onboarding states after PENDING (providers, identity, etc.)."""
+        # Test with PROVIDERS state (intermediate)
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "opc-work": {
+                    "type": "openclaw",
+                    "onboarding": {"state": "providers"},  # Intermediate state
+                    "config": {
+                        "gateway": {"port": 40000},
+                        "provider": {
+                            "name": "test",
+                            "type": "ollama",
+                            "endpoint": "http://localhost:11434",
+                            "default_model": "llama3",
+                        },
+                    },
+                }
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.configure_agent",
+                return_value=(True, None),
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.restart_agent",
+                ) as mock_restart:
+                    # Should NOT raise - intermediate states allowed
+                    result = sync_agent("192.168.1.100", "openclaw")
+
+        assert result["success"] is True
+        # W3 fix: Verify restart_agent NOT called for intermediate states
+        # (workspace_only auto-coerced to True)
+        mock_restart.assert_not_called()
+
+
+class TestCleanupAnsibleArtifacts:
+    """B5 fix: Tests for _cleanup_ansible_artifacts()."""
+
+    def test_cleans_artifacts_dir(self, tmp_path: Path):
+        """Removes artifacts directory."""
+        artifacts_dir = tmp_path / "artifacts"
+        artifacts_dir.mkdir()
+        (artifacts_dir / "job_events").mkdir()
+        (artifacts_dir / "job_events" / "event.json").write_text("{}")
+
+        _cleanup_ansible_artifacts(tmp_path)
+
+        assert not artifacts_dir.exists()
+
+    def test_cleans_env_dir(self, tmp_path: Path):
+        """Removes env directory."""
+        env_dir = tmp_path / "env"
+        env_dir.mkdir()
+        (env_dir / "inventory.json").write_text('{"secrets": "here"}')
+
+        _cleanup_ansible_artifacts(tmp_path)
+
+        assert not env_dir.exists()
+
+    def test_cleans_both_dirs(self, tmp_path: Path):
+        """Removes both artifacts and env directories."""
+        artifacts_dir = tmp_path / "artifacts"
+        artifacts_dir.mkdir()
+        env_dir = tmp_path / "env"
+        env_dir.mkdir()
+
+        _cleanup_ansible_artifacts(tmp_path)
+
+        assert not artifacts_dir.exists()
+        assert not env_dir.exists()
+
+    def test_skips_nonexistent_dirs(self, tmp_path: Path):
+        """Does not error when directories don't exist."""
+        # No artifacts or env dir created
+        _cleanup_ansible_artifacts(tmp_path)  # Should not raise
+
+    def test_handles_permission_errors(self, tmp_path: Path):
+        """Logs warning on permission errors."""
+        import stat
+
+        artifacts_dir = tmp_path / "artifacts"
+        artifacts_dir.mkdir()
+        # Make parent read-only to prevent deletion
+        tmp_path.chmod(stat.S_IRUSR | stat.S_IXUSR)
+
+        try:
+            _cleanup_ansible_artifacts(tmp_path)  # Should not raise
+            # Artifacts still exist due to permission error
+            assert artifacts_dir.exists()
+        finally:
+            # Restore permissions for cleanup
+            tmp_path.chmod(stat.S_IRWXU)
+
+    def test_partial_failure_continues(self, tmp_path: Path):
+        """Continues to env cleanup even if artifacts cleanup fails."""
+        with patch("clawrium.core.lifecycle.shutil.rmtree") as mock_rmtree:
+            # First call (artifacts) fails, second (env) succeeds
+            mock_rmtree.side_effect = [PermissionError("denied"), None]
+
+            artifacts_dir = tmp_path / "artifacts"
+            artifacts_dir.mkdir()
+            env_dir = tmp_path / "env"
+            env_dir.mkdir()
+
+            _cleanup_ansible_artifacts(tmp_path)
+
+            # Both attempts should be made
+            assert mock_rmtree.call_count == 2

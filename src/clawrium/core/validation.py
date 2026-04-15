@@ -101,17 +101,31 @@ WARNING_MESSAGES = {
 }
 
 
-def validate_soul_md(claw_type: str) -> ValidationResult:
+def validate_soul_md(claw_type: str, agent_name: str | None = None) -> ValidationResult:
     """Validate SOUL.md personality file exists and is readable.
 
     Args:
         claw_type: Type of claw (e.g., "openclaw", "zeroclaw").
+        agent_name: Optional agent instance name. If provided, checks
+            the new agent-specific identity path first.
 
     Returns:
         ValidationResult with pass/fail status and any errors/warnings.
     """
     config_dir = get_config_dir()
-    soul_path = config_dir / "agents" / claw_type / "SOUL.md"
+
+    # Check new agent-specific path first (if agent_name provided)
+    # New path: agents/<type>/<agent-name>/identity/SOUL.md
+    if agent_name:
+        new_path = config_dir / "agents" / claw_type / agent_name / "identity" / "SOUL.md"
+        if new_path.exists():
+            soul_path = new_path
+        else:
+            # Fall back to legacy path
+            soul_path = config_dir / "agents" / claw_type / "SOUL.md"
+    else:
+        # Legacy path: agents/<type>/SOUL.md
+        soul_path = config_dir / "agents" / claw_type / "SOUL.md"
 
     if not soul_path.exists():
         return ValidationResult(

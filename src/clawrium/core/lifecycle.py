@@ -7,6 +7,7 @@ running on remote hosts via systemd service management.
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TypedDict
@@ -92,6 +93,30 @@ def _get_logs_dir() -> Path:
     logs_dir = get_config_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir
+
+
+def _cleanup_ansible_artifacts(operation_log_dir: Path) -> None:
+    """Clean up ansible-runner artifacts that may contain secrets.
+
+    B3 fix: ansible-runner stores inventory and vars in artifacts/,
+    which can contain API keys and tokens. Remove after all runs.
+    """
+    artifacts_dir = operation_log_dir / "artifacts"
+    if artifacts_dir.exists():
+        try:
+            shutil.rmtree(artifacts_dir)
+            logger.debug("Cleaned up ansible artifacts at %s", artifacts_dir)
+        except Exception as e:
+            logger.warning("Failed to clean up ansible artifacts: %s", e)
+
+    # Also clean up env/ directory which may contain inventory with secrets
+    env_dir = operation_log_dir / "env"
+    if env_dir.exists():
+        try:
+            shutil.rmtree(env_dir)
+            logger.debug("Cleaned up ansible env at %s", env_dir)
+        except Exception as e:
+            logger.warning("Failed to clean up ansible env: %s", e)
 
 
 def _resolve_agent_record(
@@ -273,6 +298,9 @@ def _run_lifecycle_playbook(
 
     except Exception as e:
         return False, str(e)
+    finally:
+        # W4 fix: Always clean up artifacts containing secrets (success, failure, or exception)
+        _cleanup_ansible_artifacts(operation_log_dir)
 
 
 def start_agent(
@@ -496,17 +524,19 @@ def sync_agent(
     hostname: str,
     claw_name: str,
     agent_name: str | None = None,
+    workspace_only: bool = False,
     on_event: Callable[[str, str], None] | None = None,
 ) -> LifecycleResult:
-    """Sync configuration and restart an agent instance.
+    """Sync configuration and optionally restart an agent instance.
 
-    Orchestrates: configure_agent -> restart_agent.
+    Orchestrates: configure_agent -> restart_agent (unless workspace_only).
     This is a single command to ensure an agent is running the latest configuration.
 
     Args:
         hostname: Hostname or alias of target host
         claw_name: Type of agent to sync (e.g., "openclaw")
         agent_name: Optional specific instance name
+        workspace_only: If True, only sync workspace files without restarting
         on_event: Optional callback for progress events
 
     Returns:
@@ -531,7 +561,8 @@ def sync_agent(
         raise LifecycleError(f"Agent '{target}' not installed on '{hostname}'")
     agent_key, agent_type, claw_record = resolved
 
-    # B1: Check onboarding state - agent must be READY to sync
+    # Check onboarding state - agent must be past PENDING to sync
+    # This allows syncing during onboarding (e.g., after identity stage)
     onboarding = claw_record.get("onboarding", {})
     state_value = onboarding.get("state", "pending")
 
@@ -540,11 +571,17 @@ def sync_agent(
     except ValueError:
         state = OnboardingState.PENDING
 
-    if state != OnboardingState.READY:
+    if state == OnboardingState.PENDING:
         raise LifecycleError(
-            f"Cannot sync {agent_key}: onboarding incomplete (state={state_value}). "
+            f"Cannot sync {agent_key}: onboarding not started (state={state_value}). "
             f"Run 'clm agent configure {agent_key}' first."
         )
+
+    # Auto-coerce workspace_only=True for non-READY states
+    # start_agent() enforces state==READY, so restart would fail
+    if state != OnboardingState.READY and not workspace_only:
+        workspace_only = True
+        emit("sync", f"Note: Agent not fully onboarded (state={state_value}), syncing workspace only")
 
     # Get existing config to re-apply
     existing_config = claw_record.get("config", {})
@@ -575,8 +612,20 @@ def sync_agent(
             "error": f"Configure failed: {config_error}",
         }
 
-    # Step 2: Restart agent
-    # B2: Wrap in try/except to maintain LifecycleResult return contract
+    # Step 2: Restart agent (unless workspace_only)
+    if workspace_only:
+        emit("sync", f"Workspace sync complete for {agent_key} (no restart)")
+        return {
+            "success": True,
+            "agent": agent_key,
+            "host": hostname,
+            "operation": "sync",
+            "pid": None,
+            "started_at": None,
+            "error": None,
+        }
+
+    # Wrap in try/except to maintain LifecycleResult return contract
     emit("sync", f"Restarting {agent_key}...")
     try:
         restart_result = restart_agent(
@@ -625,6 +674,7 @@ def configure_agent(
     claw_name: str,
     config_data: dict,
     agent_name: str | None = None,
+    extra_vars: dict | None = None,
     on_event: Callable[[str, str], None] | None = None,
 ) -> tuple[bool, str | None]:
     """Configure an agent instance on a remote host.
@@ -637,6 +687,8 @@ def configure_agent(
         hostname: Hostname or alias of target host
         claw_name: Type of agent to configure (e.g., "zeroclaw", "openclaw")
         config_data: Configuration dictionary containing gateway and provider settings
+        agent_name: Optional specific instance name
+        extra_vars: Optional extra Ansible vars (not persisted to hosts.json)
         on_event: Optional callback for progress events
 
     Returns:
@@ -722,7 +774,7 @@ def configure_agent(
             discord_bot_token = instance_secrets["DISCORD_BOT_TOKEN"]["value"]
             emit("configure", "Loaded Discord bot token from secrets")
     except Exception as e:
-        logger.warning("Failed to load Discord bot token for %s: %s", agent_name, e)
+        logger.warning("Failed to load Discord bot token for %s: %s", agent_key, e)
 
     # Get template path for this agent type
     canonical_name = _resolve_agent_type(resolved_type)
@@ -759,6 +811,19 @@ def configure_agent(
         )
 
     # Build Ansible inventory with API key passed directly
+    ansible_vars = {
+        "agent_name": unix_agent_name,
+        "agent_type": resolved_type,
+        "config": config_data,
+        "template_path": str(template_path),
+        "provider_api_key": provider_api_key,
+        "discord_bot_token": discord_bot_token,
+    }
+
+    # Merge extra_vars (not persisted to hosts.json)
+    if extra_vars:
+        ansible_vars.update(extra_vars)
+
     inventory = {
         "all": {
             "hosts": {
@@ -768,14 +833,7 @@ def configure_agent(
                     "ansible_ssh_private_key_file": str(ssh_key),
                 }
             },
-            "vars": {
-                "agent_name": unix_agent_name,
-                "agent_type": resolved_type,
-                "config": config_data,
-                "template_path": str(template_path),
-                "provider_api_key": provider_api_key,
-                "discord_bot_token": discord_bot_token,
-            },
+            "vars": ansible_vars,
         }
     }
 
@@ -858,6 +916,9 @@ def configure_agent(
 
     except Exception as e:
         return False, str(e)
+    finally:
+        # W4 fix: Always clean up artifacts containing secrets (success, failure, or exception)
+        _cleanup_ansible_artifacts(operation_log_dir)
 
 
 def remove_agent(

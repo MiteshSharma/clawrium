@@ -1,0 +1,41 @@
+# Sub-Agents
+
+This file defines sub-agents that can be delegated tasks by the primary agent.
+
+## Available Sub-Agents
+
+Define specialized sub-agents for different task domains.
+
+### Default Sub-Agent
+
+```yaml
+name: assistant
+description: General-purpose assistant for common tasks
+capabilities:
+  - Answer questions
+  - Provide explanations
+  - Help with basic tasks
+```
+
+## Sub-Agent Configuration
+
+Sub-agents inherit the primary agent's model configuration unless overridden.
+
+### Example Custom Sub-Agent
+
+```yaml
+name: code-reviewer
+description: Specialized agent for code review tasks
+model: {{ (config.provider | default({})).default_model | default('default') }}
+capabilities:
+  - Static code analysis
+  - Best practices review
+  - Security vulnerability detection
+  - Performance suggestions
+```
+
+## Delegation Rules
+
+- Delegate specialized tasks to appropriate sub-agents
+- Primary agent handles general queries and coordination
+- Sub-agents report results back to primary agent

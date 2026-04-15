@@ -427,15 +427,22 @@ def _run_identity_stage(
 ) -> bool:
     """Run the IDENTITY onboarding stage.
 
+    Creates local identity files and syncs them to the remote workspace.
+
     Args:
         host: Host alias
         claw_type: Claw type
         yes: Skip confirmation prompts
+        installed_name: Agent instance name
 
     Returns:
         True if stage completed successfully
     """
-    console.print("[1/2] Create personality file (SOUL.md)")
+    from clawrium.core.lifecycle import configure_agent
+
+    agent_name = installed_name or claw_type
+
+    console.print("[1/3] Create personality file (SOUL.md)")
 
     if yes:
         personality = "You are a helpful coding assistant focused on reliability and code quality."
@@ -454,15 +461,16 @@ def _run_identity_stage(
         )
         return False
 
+    # Write SOUL.md to agent-specific directory
     config_dir = get_config_dir()
-    soul_dir = config_dir / "agents" / claw_type
-    soul_dir.mkdir(parents=True, exist_ok=True)
-    soul_path = soul_dir / "SOUL.md"
+    identity_dir = config_dir / "agents" / claw_type / agent_name / "identity"
+    identity_dir.mkdir(parents=True, exist_ok=True)
+    soul_path = identity_dir / "SOUL.md"
 
     try:
         _atomic_write_file(
             str(soul_path),
-            f"# {claw_type.upper()} Personality\n\n{personality}\n",
+            f"# {agent_name.upper()} Personality\n\n{personality}\n",
         )
         console.print(f"  [green]✓[/green] Created {soul_path}")
     except Exception as e:
@@ -471,19 +479,79 @@ def _run_identity_stage(
         )
         return False
 
-    console.print("\n[2/2] Create identity file")
+    console.print("\n[2/3] Create identity files")
     console.print("  [green]✓[/green] Using default identity configuration")
 
-    try:
-        complete_stage(
-            host, installed_name or claw_type, "identity", StageStatus.COMPLETE
-        )
-        return True
-    except Exception as e:
-        console.print(
-            f"[red]Error:[/red] Failed to save identity stage: {rich_escape(str(e))}"
-        )
+    # Sync identity files to remote workspace
+    console.print("\n[3/3] Sync identity files to remote workspace")
+
+    # Get existing config to pass to configure_agent
+    host_data = get_host(host)
+    if not host_data:
+        console.print(f"[red]Error:[/red] Host '{host}' not found")
         return False
+
+    claw_record = host_data.get("agents", {}).get(agent_name, {})
+    existing_config = claw_record.get("config", {})
+
+    # If no config exists yet (before providers stage), use minimal config
+    if not existing_config:
+        existing_config = {"gateway": {}, "provider": {}}
+
+    # Validate soul_path is within config directory (prevent path traversal)
+    try:
+        if not soul_path.resolve().is_relative_to(config_dir):
+            console.print(f"[red]Error:[/red] Invalid soul_path: {soul_path}")
+            return False
+    except ValueError:
+        console.print(f"[red]Error:[/red] Invalid soul_path: {soul_path}")
+        return False
+
+    # Trigger workspace sync with identity files
+    identity_files = {
+        "soul_path": str(soul_path),
+        "sync_workspace": True,
+    }
+
+    console.print("  Syncing to remote... ", end="")
+    try:
+        success, error = configure_agent(
+            host,
+            claw_type,
+            existing_config,
+            agent_name=agent_name,
+            extra_vars={"identity_files": identity_files},
+        )
+        if success:
+            console.print("[green]✓[/green]")
+        else:
+            console.print("[red]✗[/red]")
+            console.print(f"  [yellow]Warning:[/yellow] Workspace sync failed: {error}")
+            console.print("  [dim]Identity files saved locally. Sync later with 'clm agent sync'[/dim]")
+            # Don't fail the stage - local files are saved
+    except Exception as e:
+        console.print("[red]✗[/red]")
+        console.print(f"  [yellow]Warning:[/yellow] Workspace sync failed: {rich_escape(str(e))}")
+        console.print("  [dim]Identity files saved locally. Sync later with 'clm agent sync'[/dim]")
+        # Don't fail the stage - local files are saved
+
+    # Only call complete_stage if we're actually in the identity state
+    # Re-runs from other states should not attempt to complete the stage
+    onboarding = claw_record.get("onboarding", {})
+    current_state = onboarding.get("state", "pending")
+
+    if current_state == "identity":
+        try:
+            complete_stage(
+                host, agent_name, "identity", StageStatus.COMPLETE
+            )
+        except Exception as e:
+            console.print(
+                f"[red]Error:[/red] Failed to save identity stage: {rich_escape(str(e))}"
+            )
+            return False
+
+    return True
 
 
 def _sync_channel_config(
@@ -1360,15 +1428,22 @@ def sync(
     claw_name: str = typer.Argument(
         ..., help="Agent instance name to sync (use 'clm agent ps' to list agents)"
     ),
+    workspace: bool = typer.Option(
+        False,
+        "--workspace",
+        "-w",
+        help="Sync workspace files only (no restart)",
+    ),
 ) -> None:
-    """Sync configuration and restart an agent.
+    """Sync configuration and optionally restart an agent.
 
-    Pushes latest configuration to the agent host and restarts the agent
-    to apply changes.
+    Pushes latest configuration to the agent host. By default, restarts
+    the agent to apply changes. Use --workspace for workspace-only sync
+    without restart.
 
     Examples:
         clm agent sync wise-hypatia
-        clm agent sync work-assistant
+        clm agent sync work-assistant --workspace
     """
     from clawrium.core.lifecycle import sync_agent, LifecycleError
 
@@ -1380,23 +1455,24 @@ def sync(
         if not display_host:
             display_host = hostname
 
+        action = "Syncing workspace for" if workspace else "Syncing agent:"
         console.print(
-            f"[green]Syncing agent:[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
+            f"[green]{action}[/green] {rich_escape(installed_name)} on {rich_escape(display_host)}"
         )
 
         def on_event(stage: str, message: str) -> None:
-            # W2: Fixed - configure stage gets dim, sync stage gets normal
+            # configure stage gets dim, sync stage gets normal
             if stage == "configure":
                 console.print(f"  [dim]{message}[/dim]")
             else:
                 console.print(f"  {message}")
 
-        # W3: Fixed - always pass agent_name since _resolve_agent_instance resolved it
         try:
             result = sync_agent(
                 hostname,
                 claw_type,
                 agent_name=installed_name,
+                workspace_only=workspace,
                 on_event=on_event,
             )
         except LifecycleError as e:
@@ -1404,10 +1480,13 @@ def sync(
             raise typer.Exit(code=1)
 
         if result["success"]:
-            console.print(
-                "[green]✓[/green] Configuration synced and agent restarted"
-            )
-            console.print("  Run 'clm agent ps' to check status")
+            if workspace:
+                console.print("[green]✓[/green] Workspace synced (no restart)")
+            else:
+                console.print(
+                    "[green]✓[/green] Configuration synced and agent restarted"
+                )
+                console.print("  Run 'clm agent ps' to check status")
         else:
             console.print(f"[red]✗[/red] Failed to sync agent: {result['error']}")
             raise typer.Exit(code=1)
