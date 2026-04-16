@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://ric03uec.github.io/clawrium/">Documentation</a> · <a href="https://github.com/ric03uec/clawrium/issues">Issues</a> · <a href="https://github.com/users/ric03uec/projects/1">Roadmap</a>
+  <a href="https://ric03uec.github.io/clawrium/">Documentation</a> · <a href="https://github.com/ric03uec/clawrium/issues">Issues</a> · <a href="https://github.com/users/ric03uec/projects/1">Roadmap</a> · <a href="https://discord.gg/KzPuSxgQ98">Discord</a>
 </p>
 
 ---
