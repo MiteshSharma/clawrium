@@ -12,6 +12,10 @@ secrets:
   optional:
     - key: DISCORD_BOT_TOKEN
       description: "Discord bot token for Discord channel"
+    - key: SLACK_BOT_TOKEN
+      description: "Slack bot token for Slack channel"
+    - key: SLACK_APP_TOKEN
+      description: "Slack app-level token for Socket Mode"
 
 # Onboarding workflow configuration
 onboarding:

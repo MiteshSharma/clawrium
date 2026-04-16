@@ -581,7 +581,10 @@ def sync_agent(
     # start_agent() enforces state==READY, so restart would fail
     if state != OnboardingState.READY and not workspace_only:
         workspace_only = True
-        emit("sync", f"Note: Agent not fully onboarded (state={state_value}), syncing workspace only")
+        emit(
+            "sync",
+            f"Note: Agent not fully onboarded (state={state_value}), syncing workspace only",
+        )
 
     # Get existing config to re-apply
     existing_config = claw_record.get("config", {})
@@ -781,6 +784,23 @@ def configure_agent(
     except Exception as e:
         logger.warning("Failed to load Discord bot token for %s: %s", agent_key, e)
 
+    # Load channel secrets (Slack bot token)
+    slack_bot_token = ""
+    slack_app_token = ""
+    try:
+        instance_key = get_instance_key(
+            host["hostname"], resolved_type, unix_agent_name
+        )
+        instance_secrets = get_instance_secrets(instance_key)
+        if "SLACK_BOT_TOKEN" in instance_secrets:
+            slack_bot_token = instance_secrets["SLACK_BOT_TOKEN"]["value"]
+            emit("configure", "Loaded Slack bot token from secrets")
+        if "SLACK_APP_TOKEN" in instance_secrets:
+            slack_app_token = instance_secrets["SLACK_APP_TOKEN"]["value"]
+            emit("configure", "Loaded Slack app token from secrets")
+    except Exception as e:
+        logger.warning("Failed to load Slack tokens for %s: %s", agent_key, e)
+
     # Load integrations assigned to this agent
     # Key by integration_name to avoid collisions when multiple integrations
     # of the same type are assigned (e.g., work-github and personal-github)
@@ -804,7 +824,10 @@ def configure_agent(
                 "type": integration_type,
                 **credentials,
             }
-            emit("configure", f"Loaded {integration_name} ({integration_type}) credentials")
+            emit(
+                "configure",
+                f"Loaded {integration_name} ({integration_type}) credentials",
+            )
         else:
             logger.warning(
                 "No credentials found for integration '%s', skipping",
@@ -853,6 +876,8 @@ def configure_agent(
         "template_path": str(template_path),
         "provider_api_key": provider_api_key,
         "discord_bot_token": discord_bot_token,
+        "slack_bot_token": slack_bot_token,
+        "slack_app_token": slack_app_token,
         "integrations": integrations_data,
     }
 
