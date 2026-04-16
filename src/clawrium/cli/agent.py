@@ -967,6 +967,41 @@ def _run_validate_stage(
         return False
 
 
+def _run_edit_config(
+    hostname: str,
+    host_data: dict,
+    claw_type: str,
+    installed_name: str,
+    display_host: str,
+    editor: Optional[str] = None,
+) -> None:
+    """Run the edit-config workflow for direct config file editing.
+
+    Opens the agent's config file in an editor, validates changes,
+    syncs to the remote host, and optionally restarts the agent.
+
+    Args:
+        hostname: Remote host hostname
+        host_data: Host configuration data
+        claw_type: Type of agent (e.g., "openclaw")
+        installed_name: Agent instance name
+        display_host: Display name for the host
+        editor: Optional editor override (else uses VISUAL/EDITOR/vi)
+    """
+    # Edit-config workflow is not yet implemented
+    # This will be implemented in a follow-up subtask of #167
+    console.print(
+        f"[red]Error:[/red] Edit-config workflow for '{rich_escape(installed_name)}' "
+        f"on '{rich_escape(display_host)}' is not yet implemented."
+    )
+    console.print(
+        "\nThis feature will be available in a future release. "
+        "Use the onboarding wizard instead:"
+    )
+    console.print(f"  clm agent configure {rich_escape(installed_name)}")
+    raise typer.Exit(code=1)
+
+
 # Allowed identity file names for --file option
 IDENTITY_FILE_ALLOWLIST = {"SOUL.md", "AGENTS.md", "TOOLS.md", "IDENTITY.md"}
 
@@ -996,18 +1031,59 @@ def configure(
         exists=True,
         readable=True,
     ),
+    edit_config: bool = typer.Option(
+        False,
+        "--edit-config",
+        help="Open agent config file in editor for direct editing. Cannot be combined with --stage, --file, or --skip-health.",
+    ),
+    editor: Optional[str] = typer.Option(
+        None,
+        "--editor",
+        help="Editor command for --edit-config (e.g., vim, nano). If not specified, uses VISUAL, then EDITOR, then vi.",
+    ),
 ) -> None:
     """Configure agent settings through an interactive wizard.
 
     Runs through onboarding stages: providers, identity, channels, validate.
     Use --stage to run a specific stage only.
+    Use --edit-config to directly edit the agent's config file.
 
     Examples:
         clm agent configure wise-hypatia
         clm agent configure clever-einstein --stage providers
         clm agent configure work-assistant --yes
         clm agent configure wolf-i --stage identity --file ~/SOUL.md
+        clm agent configure wolf-i --edit-config
+        clm agent configure wolf-i --edit-config --editor nano
     """
+    # Validate --edit-config incompatible options
+    if edit_config:
+        if stage:
+            console.print(
+                "[red]Error:[/red] --edit-config cannot be used with --stage. "
+                "Use --edit-config alone to edit the config file."
+            )
+            raise typer.Exit(code=1)
+        if file:
+            console.print(
+                "[red]Error:[/red] --edit-config cannot be used with --file. "
+                "Use --edit-config alone to edit the config file."
+            )
+            raise typer.Exit(code=1)
+        if skip_health:
+            console.print(
+                "[red]Error:[/red] --edit-config cannot be used with --skip-health. "
+                "Use --edit-config alone to edit the config file."
+            )
+            raise typer.Exit(code=1)
+
+    # Validate --editor requires --edit-config
+    if editor and not edit_config:
+        console.print(
+            "[red]Error:[/red] --editor can only be used with --edit-config"
+        )
+        raise typer.Exit(code=1)
+
     # Validate --file is only used with --stage identity
     if file and stage != "identity":
         console.print("[red]Error:[/red] --file can only be used with --stage identity")
@@ -1049,6 +1125,18 @@ def configure(
         raise typer.Exit(code=1)
 
     display_host = host_data.get("alias") or host_data["hostname"]
+
+    # Route to edit-config flow if requested
+    if edit_config:
+        _run_edit_config(
+            hostname=hostname,
+            host_data=host_data,
+            claw_type=claw_type,
+            installed_name=installed_name,
+            display_host=display_host,
+            editor=editor,
+        )
+        raise typer.Exit(code=0)
 
     try:
         current_state = get_onboarding_state(hostname, installed_name)

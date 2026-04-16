@@ -439,7 +439,7 @@ def test_check_claw_health_uses_type_not_key_for_secrets():
         with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
             with patch(
                 "clawrium.core.health.get_instance_secrets", return_value={}
-            ) as mock_secrets:
+            ):
                 with patch(
                     "clawrium.core.health.get_required_secrets", return_value=[]
                 ) as mock_required:
