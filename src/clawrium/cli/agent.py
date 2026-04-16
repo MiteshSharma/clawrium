@@ -797,9 +797,9 @@ def _run_channels_stage(
         console.print("[green]✓[/green] Discord bot token stored securely")
 
     elif selected_channel == "slack":
-        console.print("\n[bold]Slack Configuration[/bold]")
+        console.print("\n[bold]Slack Configuration (Socket Mode)[/bold]")
 
-        bot_token = typer.prompt("Slack bot token", hide_input=True)
+        bot_token = typer.prompt("Slack bot token (xoxb-)", hide_input=True)
 
         if not bot_token or not bot_token.strip():
             console.print("[red]Error:[/red] Bot token cannot be empty")
@@ -811,21 +811,19 @@ def _run_channels_stage(
             )
             return False
 
-        workspace_id = typer.prompt("Slack workspace ID")
-        if not re.match(r"^T[A-Z0-9]{8,}$", workspace_id):
+        app_token = typer.prompt("Slack app token (xapp-)", hide_input=True)
+
+        if not app_token or not app_token.strip():
+            console.print("[red]Error:[/red] App token cannot be empty")
+            return False
+
+        if not re.match(r"^xapp-", app_token):
             console.print(
-                "[red]Error:[/red] Invalid workspace ID format (must start with T, e.g., T01ABC2DEF)"
+                "[red]Error:[/red] Invalid app token format (must start with xapp-)"
             )
             return False
 
-        channel_id = typer.prompt("Slack channel ID")
-        if not re.match(r"^C[A-Z0-9]{8,}$", channel_id):
-            console.print(
-                "[red]Error:[/red] Invalid channel ID format (must start with C, e.g., C01ABC2DEF)"
-            )
-            return False
-
-        user_id = typer.prompt("Your Slack user ID (for auto-approve)")
+        user_id = typer.prompt("Your Slack user ID (for allowFrom)")
         if not re.match(r"^U[A-Z0-9]{8,}$", user_id):
             console.print(
                 "[red]Error:[/red] Invalid user ID format (must start with U, e.g., U01ABC2DEF)"
@@ -835,18 +833,20 @@ def _run_channels_stage(
         channels_config = {
             "slack": {
                 "enabled": True,
-                "token": {
+                "mode": "socket",
+                "appToken": {
+                    "source": "env",
+                    "provider": "default",
+                    "id": "SLACK_APP_TOKEN",
+                },
+                "botToken": {
                     "source": "env",
                     "provider": "default",
                     "id": "SLACK_BOT_TOKEN",
                 },
                 "allowFrom": [user_id],
-                "workspaces": {
-                    workspace_id: {
-                        "users": [user_id],
-                        "channels": {channel_id: {"allow": True}},
-                    }
-                },
+                "groupPolicy": "allowlist",
+                "dmPolicy": "pairing",
             }
         }
 
@@ -873,7 +873,10 @@ def _run_channels_stage(
         set_instance_secret(
             instance_key, "SLACK_BOT_TOKEN", bot_token, "Slack bot token"
         )
-        console.print("[green]✓[/green] Slack bot token stored securely")
+        set_instance_secret(
+            instance_key, "SLACK_APP_TOKEN", app_token, "Slack app token"
+        )
+        console.print("[green]✓[/green] Slack tokens stored securely")
 
     # Check if channels stage is already complete - if so, skip complete_stage()
     # This allows re-running the stage to update config without state machine errors

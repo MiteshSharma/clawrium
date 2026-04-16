@@ -786,6 +786,7 @@ def configure_agent(
 
     # Load channel secrets (Slack bot token)
     slack_bot_token = ""
+    slack_app_token = ""
     try:
         instance_key = get_instance_key(
             host["hostname"], resolved_type, unix_agent_name
@@ -794,8 +795,11 @@ def configure_agent(
         if "SLACK_BOT_TOKEN" in instance_secrets:
             slack_bot_token = instance_secrets["SLACK_BOT_TOKEN"]["value"]
             emit("configure", "Loaded Slack bot token from secrets")
+        if "SLACK_APP_TOKEN" in instance_secrets:
+            slack_app_token = instance_secrets["SLACK_APP_TOKEN"]["value"]
+            emit("configure", "Loaded Slack app token from secrets")
     except Exception as e:
-        logger.warning("Failed to load Slack bot token for %s: %s", agent_key, e)
+        logger.warning("Failed to load Slack tokens for %s: %s", agent_key, e)
 
     # Load integrations assigned to this agent
     # Key by integration_name to avoid collisions when multiple integrations
@@ -873,6 +877,7 @@ def configure_agent(
         "provider_api_key": provider_api_key,
         "discord_bot_token": discord_bot_token,
         "slack_bot_token": slack_bot_token,
+        "slack_app_token": slack_app_token,
         "integrations": integrations_data,
     }
 
