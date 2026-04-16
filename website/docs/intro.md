@@ -9,6 +9,8 @@ keywords: [clawrium, AI assistant, fleet management, CLI tool, multi-host, agent
 
 **Clawrium is a CLI to manage all your AI assistants.** Point it at any machine on your network and deploy agents like [OpenClaw](https://github.com/openclaw/openclaw) with a single command.
 
+[Documentation](https://ric03uec.github.io/clawrium/) · [Issues](https://github.com/ric03uec/clawrium/issues) · [Roadmap](https://github.com/users/ric03uec/projects/1) · [Discord](https://discord.gg/KzPuSxgQ98)
+
 ## What is a Claw?
 
 A **claw** is a general-purpose AI assistant that runs on a machine in your network. Unlike coding-specific tools, claws are versatile assistants that can:
