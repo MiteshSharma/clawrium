@@ -1547,3 +1547,140 @@ class TestConfigurePreservesGatewayAuth:
 
         # Verify channels key was not added
         assert "channels" not in captured_config[0]
+
+
+class TestEditConfigOptions:
+    """Tests for --edit-config and --editor CLI options."""
+
+    def test_edit_config_routes_to_edit_flow(self, isolated_config: Path):
+        """--edit-config flag routes to _run_edit_config with correct parameters."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        with patch("clawrium.cli.agent._run_edit_config") as mock_edit:
+            result = runner.invoke(
+                app, ["agent", "configure", "assistant", "--edit-config"]
+            )
+
+        # Verify _run_edit_config was called
+        mock_edit.assert_called_once()
+        call_kwargs = mock_edit.call_args.kwargs
+        assert call_kwargs["hostname"] == "192.168.1.100"
+        assert call_kwargs["installed_name"] == "assistant"
+        assert call_kwargs["claw_type"] == "openclaw"
+        assert call_kwargs["editor"] is None
+        assert result.exit_code == 0
+
+    def test_edit_config_passes_editor_option(self, isolated_config: Path):
+        """--editor option is passed to _run_edit_config."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        with patch("clawrium.cli.agent._run_edit_config") as mock_edit:
+            result = runner.invoke(
+                app,
+                ["agent", "configure", "assistant", "--edit-config", "--editor", "nano"],
+            )
+
+        mock_edit.assert_called_once()
+        assert mock_edit.call_args.kwargs["editor"] == "nano"
+        assert result.exit_code == 0
+
+    def test_edit_config_not_yet_implemented(self, isolated_config: Path):
+        """--edit-config shows not implemented error and exits with code 1."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        result = runner.invoke(app, ["agent", "configure", "assistant", "--edit-config"])
+
+        assert result.exit_code == 1
+        assert "not yet implemented" in result.output
+        assert "clm agent configure assistant" in result.output
+
+    def test_edit_config_with_stage_fails(self, isolated_config: Path):
+        """--edit-config with --stage fails with actionable error."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        result = runner.invoke(
+            app,
+            ["agent", "configure", "assistant", "--edit-config", "--stage", "providers"],
+        )
+
+        assert result.exit_code == 1
+        assert "--edit-config cannot be used with --stage" in result.output
+
+    def test_edit_config_with_file_fails(self, isolated_config: Path):
+        """--edit-config with --file fails with actionable error."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        # Create a dummy file
+        dummy_file = isolated_config / "SOUL.md"
+        dummy_file.write_text("# Test Soul")
+
+        result = runner.invoke(
+            app,
+            [
+                "agent",
+                "configure",
+                "assistant",
+                "--edit-config",
+                "--file",
+                str(dummy_file),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "--edit-config cannot be used with --file" in result.output
+
+    def test_edit_config_with_skip_health_fails(self, isolated_config: Path):
+        """--edit-config with --skip-health fails with actionable error."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        result = runner.invoke(
+            app,
+            ["agent", "configure", "assistant", "--edit-config", "--skip-health"],
+        )
+
+        assert result.exit_code == 1
+        assert "--edit-config cannot be used with --skip-health" in result.output
+
+    def test_editor_without_edit_config_fails(self, isolated_config: Path):
+        """--editor without --edit-config fails with actionable error."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        result = runner.invoke(
+            app, ["agent", "configure", "assistant", "--editor", "vim"]
+        )
+
+        assert result.exit_code == 1
+        assert "--editor can only be used with --edit-config" in result.output
+
+    def test_edit_config_does_not_run_onboarding(self, isolated_config: Path):
+        """--edit-config routes to edit flow, not onboarding wizard."""
+        create_host_with_claw(isolated_config, onboarding_state="pending")
+        create_test_keypair(isolated_config, "work")
+
+        with patch("clawrium.cli.agent._run_edit_config"):
+            result = runner.invoke(
+                app, ["agent", "configure", "assistant", "--edit-config"]
+            )
+
+        # Should NOT show onboarding flow
+        assert "Starting onboarding" not in result.output
+        assert "Stage 1" not in result.output
+
+    def test_edit_config_agent_not_found(self, isolated_config: Path):
+        """--edit-config with non-existent agent fails with error."""
+        create_host_with_claw(isolated_config, onboarding_state="ready")
+        create_test_keypair(isolated_config, "work")
+
+        result = runner.invoke(
+            app, ["agent", "configure", "nonexistent", "--edit-config"]
+        )
+
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
