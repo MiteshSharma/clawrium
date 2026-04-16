@@ -47,10 +47,9 @@ def test_registry_show_openclaw():
     assert result.exit_code == 0
     assert "openclaw" in result.output.lower()
     assert "Supported Platforms" in result.output
-    assert "Required Secrets" in result.output
-    assert "OPENAI_API_KEY" in result.output
+    # openclaw has no required secrets (provider credentials managed separately)
     assert "Optional Secrets" in result.output
-    assert "ANTHROPIC_API_KEY" in result.output
+    assert "DISCORD_BOT_TOKEN" in result.output
     assert "ubuntu" in result.output.lower()
 
 

@@ -193,6 +193,7 @@ def hosts_with_installed_claw(isolated_config):
             "agent_name": "xclm",
             "agents": {
                 "openclaw": {
+                    "type": "openclaw",
                     "version": "0.1.0",
                     "status": "installed",
                     "name": "work",

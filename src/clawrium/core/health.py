@@ -141,6 +141,10 @@ def get_missing_secrets(claw_type: str, host: dict, claw_record: dict) -> list[s
     Returns:
         List of missing required secret keys
     """
+    # Cannot check secrets without a valid claw type
+    if not claw_type:
+        return []
+
     # Use canonical instance name.
     # For current installs this is stored in `user`; `name` is supported as fallback.
     claw_name = claw_record.get("agent_name") or claw_record.get("name", "")
@@ -360,7 +364,8 @@ def check_claw_health(
 
         if process_running:
             try:
-                missing = get_missing_secrets(claw_name, host, claw_record)
+                claw_type = claw_record.get("type", "")
+                missing = get_missing_secrets(claw_type, host, claw_record)
             except SecretsFileCorruptedError as e:
                 return {
                     "agent": claw_name,

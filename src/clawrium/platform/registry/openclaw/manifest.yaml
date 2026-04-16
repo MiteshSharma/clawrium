@@ -2,16 +2,14 @@ agent:
   type: openclaw
   description: "Open-source AI assistant framework"
 
-# Secrets required for this agent (installation fails when missing)
+# Secrets configuration
+# Note: Provider-specific API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+# are managed through provider configuration, not as standalone secrets.
 secrets:
-  required:
-    - key: OPENAI_API_KEY
-      description: "OpenAI API key for LLM requests"
+  required: []
 
   # Optional secrets (agent still runs without them)
   optional:
-    - key: ANTHROPIC_API_KEY
-      description: "Anthropic API key for Claude models"
     - key: DISCORD_BOT_TOKEN
       description: "Discord bot token for Discord channel"
 
