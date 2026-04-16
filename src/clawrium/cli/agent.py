@@ -691,7 +691,7 @@ def _run_channels_stage(
     """
     from clawrium.core.secrets import get_instance_key, set_instance_secret
 
-    channels = ["cli", "discord"]
+    channels = ["cli", "discord", "slack"]
 
     console.print("[bold]Select default channel:[/bold]")
     for i, ch in enumerate(channels, 1):
@@ -795,6 +795,85 @@ def _run_channels_stage(
             instance_key, "DISCORD_BOT_TOKEN", bot_token, "Discord bot token"
         )
         console.print("[green]✓[/green] Discord bot token stored securely")
+
+    elif selected_channel == "slack":
+        console.print("\n[bold]Slack Configuration[/bold]")
+
+        bot_token = typer.prompt("Slack bot token", hide_input=True)
+
+        if not bot_token or not bot_token.strip():
+            console.print("[red]Error:[/red] Bot token cannot be empty")
+            return False
+
+        if not re.match(r"^xoxb-[A-Za-z0-9-]+$", bot_token):
+            console.print(
+                "[red]Error:[/red] Invalid bot token format (must start with xoxb-)"
+            )
+            return False
+
+        workspace_id = typer.prompt("Slack workspace ID")
+        if not re.match(r"^T[A-Z0-9]{8,}$", workspace_id):
+            console.print(
+                "[red]Error:[/red] Invalid workspace ID format (must start with T, e.g., T01ABC2DEF)"
+            )
+            return False
+
+        channel_id = typer.prompt("Slack channel ID")
+        if not re.match(r"^C[A-Z0-9]{8,}$", channel_id):
+            console.print(
+                "[red]Error:[/red] Invalid channel ID format (must start with C, e.g., C01ABC2DEF)"
+            )
+            return False
+
+        user_id = typer.prompt("Your Slack user ID (for auto-approve)")
+        if not re.match(r"^U[A-Z0-9]{8,}$", user_id):
+            console.print(
+                "[red]Error:[/red] Invalid user ID format (must start with U, e.g., U01ABC2DEF)"
+            )
+            return False
+
+        channels_config = {
+            "slack": {
+                "enabled": True,
+                "token": {
+                    "source": "env",
+                    "provider": "default",
+                    "id": "SLACK_BOT_TOKEN",
+                },
+                "allowFrom": [user_id],
+                "workspaces": {
+                    workspace_id: {
+                        "users": [user_id],
+                        "channels": {channel_id: {"allow": True}},
+                    }
+                },
+            }
+        }
+
+        console.print("Syncing channel config to agent... ", end="")
+        try:
+            _sync_channel_config(host, claw_type, channels_config, installed_name)
+            console.print("[green]✓[/green]")
+        except Exception as e:
+            console.print(f"[red]✗[/red] {rich_escape(str(e))}")
+            agent_name = installed_name or claw_type
+            console.print(
+                f"[dim]Retry with: clm agent configure {rich_escape(agent_name)} --stage channels[/dim]"
+            )
+            return False
+
+        host_data = get_host(host)
+        if not host_data:
+            console.print(f"[red]Error:[/red] Host '{host}' not found")
+            return False
+        canonical_hostname = host_data["hostname"]
+        instance_key = get_instance_key(
+            canonical_hostname, claw_type, installed_name or claw_type
+        )
+        set_instance_secret(
+            instance_key, "SLACK_BOT_TOKEN", bot_token, "Slack bot token"
+        )
+        console.print("[green]✓[/green] Slack bot token stored securely")
 
     # Check if channels stage is already complete - if so, skip complete_stage()
     # This allows re-running the stage to update config without state machine errors
@@ -1270,9 +1349,7 @@ def configure(
 
     # Validate --editor requires --edit-config
     if editor and not edit_config:
-        console.print(
-            "[red]Error:[/red] --editor can only be used with --edit-config"
-        )
+        console.print("[red]Error:[/red] --editor can only be used with --edit-config")
         raise typer.Exit(code=1)
 
     # Validate --file is only used with --stage identity
@@ -2112,7 +2189,9 @@ def integrations_add(
         raise typer.Exit(code=1)
 
     if not integration:
-        console.print(f"[red]Error:[/red] Integration '{rich_escape(integration_name)}' not found")
+        console.print(
+            f"[red]Error:[/red] Integration '{rich_escape(integration_name)}' not found"
+        )
         console.print("Use 'clm integration list' to see available integrations")
         raise typer.Exit(code=1)
 

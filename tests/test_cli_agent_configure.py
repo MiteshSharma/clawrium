@@ -541,24 +541,24 @@ class TestRunChannelsStage:
 
         assert result is False
 
-    def test_channel_list_shows_cli_and_discord(self, isolated_config: Path):
-        """Verify only cli and discord are shown as options."""
+    def test_channel_list_shows_cli_discord_and_slack(self, isolated_config: Path):
+        """Verify cli, discord, and slack are shown as options."""
         create_test_keypair(isolated_config, "work")
         create_host_with_claw(isolated_config)
 
         result = runner.invoke(
             app,
             ["agent", "configure", "assistant", "--stage", "channels"],
-            input="1\n",  # Select cli
+            input="1\n",
             env=os.environ,
         )
 
         assert "cli" in result.output.lower()
         assert "discord" in result.output.lower()
+        assert "slack" in result.output.lower()
         # These channels should NOT be shown
         assert "web" not in result.output.lower()
         assert "whatsapp" not in result.output.lower()
-        assert "slack" not in result.output.lower()
 
 
 class TestRunChannelsStageDiscord:
@@ -930,6 +930,486 @@ class TestRunChannelsStageDiscord:
         config_data = call["args"][2]
         assert "channels" in config_data
         assert config_data["channels"] == {"discord": {"enabled": True}}
+
+
+class TestRunChannelsStageSlack:
+    """Tests for Slack channel configuration."""
+
+    def test_slack_channel_prompts_for_credentials(self, isolated_config: Path):
+        """Verify prompts appear when selecting slack."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            onboarding_state="channels",
+            config={"provider": {"name": "test-provider", "type": "openai"}},
+        )
+
+        with (
+            patch("clawrium.cli.agent.typer.prompt") as mock_p,
+            patch("clawrium.core.secrets.set_instance_secret"),
+            patch("clawrium.cli.agent._sync_channel_config"),
+            patch("clawrium.cli.agent.complete_stage"),
+        ):
+            mock_p.side_effect = [
+                3,  # Select slack
+                "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",  # Bot token
+                "T01ABC2DEF",  # Workspace ID
+                "C01ABC2DEF",  # Channel ID
+                "U01ABC2DEF",  # User ID
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is True
+        assert mock_p.call_count == 5
+
+    def test_slack_bot_token_stored_as_secret(self, isolated_config: Path):
+        """Verify bot token is stored as secret."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            onboarding_state="channels",
+            config={"provider": {"name": "test-provider", "type": "openai"}},
+        )
+
+        stored_secrets = []
+
+        def capture_secret(instance_key, key, value, description):
+            stored_secrets.append(
+                {
+                    "instance_key": instance_key,
+                    "key": key,
+                    "value": value,
+                    "description": description,
+                }
+            )
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        with (
+            patch("clawrium.cli.agent.typer.prompt") as mock_p,
+            patch(
+                "clawrium.core.secrets.set_instance_secret", side_effect=capture_secret
+            ),
+            patch("clawrium.cli.agent._sync_channel_config"),
+            patch("clawrium.cli.agent.complete_stage"),
+        ):
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Workspace ID
+                "C01ABC2DEF",  # Channel ID
+                "U01ABC2DEF",  # User ID
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is True
+        assert len(stored_secrets) == 1
+        assert stored_secrets[0]["key"] == "SLACK_BOT_TOKEN"
+        assert stored_secrets[0]["value"] == valid_token
+        assert "slack" in stored_secrets[0]["description"].lower()
+
+    def test_slack_workspace_id_validation(self, isolated_config: Path):
+        """Verify format validation for workspace ID (starts with T, 8+ alphanumeric)."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(isolated_config)
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        # Test invalid workspace ID (starts with wrong letter)
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "X01ABC2DEF",  # Invalid - starts with X
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+        # Test invalid workspace ID (too short)
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01AB",  # Invalid - too short
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+        # Test invalid workspace ID (lowercase)
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "t01abc2def",  # Invalid - lowercase
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+    def test_slack_channel_id_validation(self, isolated_config: Path):
+        """Verify format validation for channel ID (starts with C, 8+ alphanumeric)."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(isolated_config)
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        # Test invalid channel ID (starts with wrong letter)
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Valid workspace ID
+                "D01ABC2DEF",  # Invalid channel ID - starts with D
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+        # Test invalid channel ID (too short)
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Valid workspace ID
+                "C01",  # Invalid - too short
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+    def test_slack_user_id_validation(self, isolated_config: Path):
+        """Verify format validation for user ID (starts with U, 8+ alphanumeric)."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(isolated_config)
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        # Test invalid user ID (starts with wrong letter)
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Valid workspace ID
+                "C01ABC2DEF",  # Valid channel ID
+                "V01ABC2DEF",  # Invalid user ID - starts with V
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+        # Test invalid user ID (too short)
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Valid workspace ID
+                "C01ABC2DEF",  # Valid channel ID
+                "U01",  # Invalid - too short
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+    def test_slack_bot_token_validation(self, isolated_config: Path):
+        """Verify bot token format validation."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(isolated_config)
+
+        # Test empty bot token
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                "",  # Empty bot token
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+        # Test bot token without xoxb- prefix
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                "invalid-token-format",  # No xoxb- prefix
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+        # Test bot token with invalid characters
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                3,  # Select slack
+                "xoxb-123@456",  # Invalid character @
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+    def test_slack_config_synced_to_agent(self, isolated_config: Path):
+        """Verify config sync is called with correct data."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            onboarding_state="channels",
+            config={"provider": {"name": "test-provider", "type": "openai"}},
+        )
+
+        synced_configs = []
+
+        def capture_sync(host, claw_type, channels_config, installed_name):
+            synced_configs.append(
+                {
+                    "host": host,
+                    "claw_type": claw_type,
+                    "channels_config": channels_config,
+                    "installed_name": installed_name,
+                }
+            )
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        with (
+            patch("clawrium.cli.agent.typer.prompt") as mock_p,
+            patch("clawrium.core.secrets.set_instance_secret"),
+            patch("clawrium.cli.agent._sync_channel_config", side_effect=capture_sync),
+            patch("clawrium.cli.agent.complete_stage"),
+        ):
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Workspace ID
+                "C01ABC2DEF",  # Channel ID
+                "U01ABC2DEF",  # User ID
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is True
+        assert len(synced_configs) == 1
+        config = synced_configs[0]["channels_config"]
+        assert "slack" in config
+        assert config["slack"]["enabled"] is True
+        assert config["slack"]["token"]["source"] == "env"
+        assert config["slack"]["token"]["id"] == "SLACK_BOT_TOKEN"
+        assert config["slack"]["allowFrom"] == ["U01ABC2DEF"]
+        assert "T01ABC2DEF" in config["slack"]["workspaces"]
+        assert config["slack"]["workspaces"]["T01ABC2DEF"]["users"] == ["U01ABC2DEF"]
+        assert "C01ABC2DEF" in config["slack"]["workspaces"]["T01ABC2DEF"]["channels"]
+        assert (
+            config["slack"]["workspaces"]["T01ABC2DEF"]["channels"]["C01ABC2DEF"][
+                "allow"
+            ]
+            is True
+        )
+
+    def test_slack_sync_failure_returns_false(self, isolated_config: Path):
+        """Returns False when channel config sync fails."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(isolated_config)
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        with (
+            patch("clawrium.cli.agent.typer.prompt") as mock_p,
+            patch(
+                "clawrium.cli.agent._sync_channel_config",
+                side_effect=Exception("SSH connection failed"),
+            ),
+        ):
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Workspace ID
+                "C01ABC2DEF",  # Channel ID
+                "U01ABC2DEF",  # User ID
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is False
+
+
+class TestSlackIntegration:
+    """Integration tests for Slack channel that verify actual disk persistence."""
+
+    def test_slack_bot_token_persisted_to_secrets_json(self, isolated_config: Path):
+        """Verify Slack bot token is written to secrets.json and readable back."""
+        from clawrium.cli.agent import _run_channels_stage
+        from clawrium.core.secrets import load_secrets, get_instance_key
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            onboarding_state="channels",
+            config={"provider": {"name": "test-provider", "type": "openai"}},
+        )
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        with (
+            patch("clawrium.cli.agent.typer.prompt") as mock_p,
+            patch("clawrium.cli.agent._sync_channel_config"),
+            patch("clawrium.cli.agent.complete_stage"),
+        ):
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",  # Workspace ID
+                "C01ABC2DEF",  # Channel ID
+                "U01ABC2DEF",  # User ID
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is True
+
+        instance_key = get_instance_key("192.168.1.100", "openclaw", "assistant")
+        secrets = load_secrets()
+        assert instance_key in secrets
+        assert "SLACK_BOT_TOKEN" in secrets[instance_key]
+        assert secrets[instance_key]["SLACK_BOT_TOKEN"]["value"] == valid_token
+        assert secrets[instance_key]["SLACK_BOT_TOKEN"]["key"] == "SLACK_BOT_TOKEN"
+
+    def test_slack_config_persisted_to_hosts_json(self, isolated_config: Path):
+        """Verify Slack channels config is passed to configure_agent during sync."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            onboarding_state="channels",
+            config={"provider": {"name": "test-provider", "type": "openai"}},
+        )
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        captured_config = []
+
+        def capture_configure(*args, **kwargs):
+            captured_config.append(
+                args[2] if len(args) > 2 else kwargs.get("config_data")
+            )
+            return True, None
+
+        with (
+            patch("clawrium.cli.agent.typer.prompt") as mock_p,
+            patch("clawrium.cli.agent._sync_channel_config"),
+            patch("clawrium.cli.agent.complete_stage"),
+            patch("clawrium.core.secrets.set_instance_secret"),
+        ):
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",
+                "C01ABC2DEF",
+                "U01ABC2DEF",
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "openclaw", False, "assistant"
+            )
+
+        assert result is True
+
+    def test_slack_token_readable_by_configure_agent(self, isolated_config: Path):
+        """Verify Slack token stored by _run_channels_stage can be loaded by configure_agent."""
+        from clawrium.cli.agent import _run_channels_stage
+        from clawrium.core.secrets import get_instance_key, get_instance_secrets
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            onboarding_state="channels",
+            config={"provider": {"name": "test-provider", "type": "openai"}},
+        )
+
+        valid_token = "xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx"
+
+        with (
+            patch("clawrium.cli.agent.typer.prompt") as mock_p,
+            patch("clawrium.cli.agent._sync_channel_config"),
+            patch("clawrium.cli.agent.complete_stage"),
+        ):
+            mock_p.side_effect = [
+                3,  # Select slack
+                valid_token,
+                "T01ABC2DEF",
+                "C01ABC2DEF",
+                "U01ABC2DEF",
+            ]
+            _run_channels_stage("192.168.1.100", "openclaw", False, "assistant")
+
+        instance_key = get_instance_key("192.168.1.100", "openclaw", "assistant")
+        instance_secrets = get_instance_secrets(instance_key)
+        assert "SLACK_BOT_TOKEN" in instance_secrets
+        assert instance_secrets["SLACK_BOT_TOKEN"]["value"] == valid_token
+
+    def test_slack_and_discord_coexist_in_secrets(self, isolated_config: Path):
+        """Both Slack and Discord tokens can be stored for the same agent."""
+        from clawrium.core.secrets import (
+            set_instance_secret,
+            get_instance_secrets,
+            get_instance_key,
+        )
+
+        instance_key = get_instance_key("192.168.1.100", "openclaw", "assistant")
+
+        set_instance_secret(
+            instance_key, "DISCORD_BOT_TOKEN", "discord-token-value", "Discord token"
+        )
+        set_instance_secret(
+            instance_key, "SLACK_BOT_TOKEN", "xoxb-123-456-abc", "Slack token"
+        )
+
+        secrets = get_instance_secrets(instance_key)
+        assert "DISCORD_BOT_TOKEN" in secrets
+        assert "SLACK_BOT_TOKEN" in secrets
+        assert secrets["DISCORD_BOT_TOKEN"]["value"] == "discord-token-value"
+        assert secrets["SLACK_BOT_TOKEN"]["value"] == "xoxb-123-456-abc"
 
 
 class TestRunValidateStage:
@@ -1579,7 +2059,14 @@ class TestEditConfigOptions:
         with patch("clawrium.cli.agent._run_edit_config") as mock_edit:
             result = runner.invoke(
                 app,
-                ["agent", "configure", "assistant", "--edit-config", "--editor", "nano"],
+                [
+                    "agent",
+                    "configure",
+                    "assistant",
+                    "--edit-config",
+                    "--editor",
+                    "nano",
+                ],
             )
 
         mock_edit.assert_called_once()
@@ -1591,7 +2078,9 @@ class TestEditConfigOptions:
         create_host_with_claw(isolated_config, onboarding_state="ready")
         create_test_keypair(isolated_config, "work")
 
-        result = runner.invoke(app, ["agent", "configure", "assistant", "--edit-config"])
+        result = runner.invoke(
+            app, ["agent", "configure", "assistant", "--edit-config"]
+        )
 
         assert result.exit_code == 1
         assert "no configuration found" in result.output.lower()
@@ -1604,7 +2093,14 @@ class TestEditConfigOptions:
 
         result = runner.invoke(
             app,
-            ["agent", "configure", "assistant", "--edit-config", "--stage", "providers"],
+            [
+                "agent",
+                "configure",
+                "assistant",
+                "--edit-config",
+                "--stage",
+                "providers",
+            ],
         )
 
         assert result.exit_code == 1
@@ -1726,7 +2222,9 @@ class TestEditConfigWorkflow:
 
         assert _resolve_editor(None) == "emacs"
 
-    def test_editor_resolution_editor_fallback(self, isolated_config: Path, monkeypatch):
+    def test_editor_resolution_editor_fallback(
+        self, isolated_config: Path, monkeypatch
+    ):
         """EDITOR env var is used when VISUAL is not set."""
         from clawrium.cli.agent import _resolve_editor
 
@@ -1781,9 +2279,7 @@ class TestEditConfigWorkflow:
             return type("Result", (), {"returncode": 0})()
 
         with patch("subprocess.run", side_effect=mock_editor_no_change):
-            with patch(
-                "clawrium.core.lifecycle.configure_agent"
-            ) as mock_configure:
+            with patch("clawrium.core.lifecycle.configure_agent") as mock_configure:
                 result = runner.invoke(
                     app, ["agent", "configure", "assistant", "--edit-config"]
                 )
@@ -2040,4 +2536,6 @@ class TestEditConfigWorkflow:
         path_match = re.search(r"(/tmp/clm-edit-[^/]+/[^\s]+)", result.output)
         if path_match:
             preserved_path = path_match.group(1)
-            assert Path(preserved_path).exists(), f"Preserved file should exist: {preserved_path}"
+            assert Path(preserved_path).exists(), (
+                f"Preserved file should exist: {preserved_path}"
+            )
