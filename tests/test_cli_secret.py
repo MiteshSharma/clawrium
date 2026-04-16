@@ -283,30 +283,34 @@ def test_secret_list_shows_keys_not_values(hosts_with_installed_claw: Path):
 
 
 def test_secret_list_shows_missing_required_secrets(hosts_with_installed_claw: Path):
-    """clm secret list shows missing required secrets per claw instance."""
+    """clm secret list shows missing required secrets per claw instance.
+
+    Note: openclaw has no required secrets (provider credentials managed separately).
+    This test verifies the command runs successfully with no missing secrets shown.
+    """
     result = runner.invoke(app, ["agent", "secret", "list", "work"], env=os.environ)
 
     assert result.exit_code == 0
-    # Should show claw and missing secrets
+    # Should show claw name
     assert "work" in result.output
-    assert "OPENAI_API_KEY" in result.output
-    assert "Missing" in result.output or "missing" in result.output
+    # openclaw has no required secrets, so no missing section
+    assert "Missing:" not in result.output
 
 
 def test_secret_list_no_missing_when_all_set(hosts_with_installed_claw: Path):
     """clm secret list does not show missing section when all required secrets set."""
-    # Set all required secrets for openclaw
-    with patch("clawrium.cli.secret.getpass.getpass", return_value="sk-test"):
+    # Set an optional secret for openclaw
+    with patch("clawrium.cli.secret.getpass.getpass", return_value="test-token"):
         runner.invoke(
-            app, ["agent", "secret", "set", "work", "OPENAI_API_KEY"], env=os.environ
+            app, ["agent", "secret", "set", "work", "DISCORD_BOT_TOKEN"], env=os.environ
         )
 
     result = runner.invoke(app, ["agent", "secret", "list", "work"], env=os.environ)
 
     assert result.exit_code == 0
     # Should show the stored secret
-    assert "OPENAI_API_KEY" in result.output
-    # Should NOT show missing section
+    assert "DISCORD_BOT_TOKEN" in result.output
+    # Should NOT show missing section (no required secrets for openclaw)
     assert "Missing:" not in result.output
 
 
@@ -554,7 +558,11 @@ def test_secret_list_per_claw(isolated_config: Path):
 
 
 def test_secret_list_shows_missing_required(isolated_config: Path):
-    """clm secret list shows missing required secrets per claw instance."""
+    """clm secret list shows missing required secrets per claw instance.
+
+    Note: openclaw has no required secrets (provider credentials managed separately).
+    This test verifies the command runs successfully with no missing secrets shown.
+    """
     _create_hosts_json(
         isolated_config,
         [
@@ -563,6 +571,7 @@ def test_secret_list_shows_missing_required(isolated_config: Path):
                 "alias": "wolf",
                 "agents": {
                     "openclaw": {
+                        "type": "openclaw",
                         "status": "installed",
                         "agent_name": "opc-work",
                     }
@@ -576,9 +585,8 @@ def test_secret_list_shows_missing_required(isolated_config: Path):
     assert result.exit_code == 0
     # Should show claw
     assert "opc-work" in result.output
-    # Should show missing required secrets
-    assert "Missing" in result.output or "missing" in result.output
-    assert "OPENAI_API_KEY" in result.output
+    # openclaw has no required secrets, so no missing section
+    assert "Missing:" not in result.output
 
 
 def test_secret_list_claw_not_found(isolated_config: Path):

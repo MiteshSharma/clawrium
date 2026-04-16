@@ -448,14 +448,15 @@ def test_status_hosts_file_corrupted():
 
 def test_status_shows_degraded_with_missing_secrets(mock_hosts_with_claws):
     """Degraded status shows missing secret keys."""
+    # Use zeroclaw secrets since openclaw has no required secrets
     mock_health = MagicMock(
         return_value={
-            "agent": "openclaw",
+            "agent": "zeroclaw",
             "host": "192.168.1.100",
             "status": ClawStatus.DEGRADED,
-            "agent_name": "opc-server1",
+            "agent_name": "zc-server1",
             "error": None,
-            "missing_secrets": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
+            "missing_secrets": ["LLM_PROVIDER_URL", "LLM_MODEL"],
             "onboarding_step": None,
             "process_running": True,
             "onboarding_stages": None,
@@ -468,8 +469,8 @@ def test_status_shows_degraded_with_missing_secrets(mock_hosts_with_claws):
 
     assert result.exit_code == 0
     assert "degraded" in result.output
-    assert "OPENAI_API_KEY" in result.output
-    assert "ANTHROPIC_API_KEY" in result.output
+    assert "LLM_PROVIDER_URL" in result.output
+    assert "LLM_MODEL" in result.output
 
 
 def test_status_degraded_truncates_long_list(mock_hosts_with_claws):

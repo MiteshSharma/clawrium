@@ -25,6 +25,7 @@ def mock_host():
         "key_id": "testhost",
         "agents": {
             "openclaw": {
+                "type": "openclaw",
                 "version": "0.1.0",
                 "status": "installed",
                 "agent_name": "opc-testhost",
@@ -408,6 +409,49 @@ def test_check_claw_health_corrupted_secrets_file(mock_host):
     assert "corrupted" in result["error"].lower()
 
 
+def test_check_claw_health_uses_type_not_key_for_secrets():
+    """Regression test: secrets lookup uses agent type, not agent key.
+
+    When the agent key (e.g., 'wolf-i') differs from the agent type (e.g., 'openclaw'),
+    get_required_secrets must receive the type, not the key. Otherwise, it would fail
+    with ManifestNotFoundError because there's no 'wolf-i' manifest.
+    """
+    # Host with agent key 'wolf-i' but type 'openclaw'
+    host = {
+        "hostname": "192.168.1.100",
+        "port": 22,
+        "key_id": "testhost",
+        "agents": {
+            "wolf-i": {  # Key differs from type
+                "type": "openclaw",  # Actual agent type
+                "version": "2026.4.2",
+                "status": "installed",
+                "agent_name": "wolf-i",
+            }
+        },
+    }
+
+    mock_runner = MagicMock()
+    mock_runner.status = "successful"
+    mock_runner.events = [{"event": "runner_on_ok", "event_data": {"res": {"rc": 0}}}]
+
+    with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+        with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner):
+            with patch(
+                "clawrium.core.health.get_instance_secrets", return_value={}
+            ) as mock_secrets:
+                with patch(
+                    "clawrium.core.health.get_required_secrets", return_value=[]
+                ) as mock_required:
+                    result = check_claw_health("wolf-i", host)
+
+    # Should call get_required_secrets with 'openclaw' (the type), not 'wolf-i' (the key)
+    mock_required.assert_called_once_with("openclaw")
+
+    # Should succeed without ManifestNotFoundError
+    assert result["status"] == ClawStatus.RUNNING
+
+
 def test_missing_secrets_none_for_non_running_status(mock_host):
     """Non-running status has missing_secrets as None."""
     mock_runner = MagicMock()
@@ -728,6 +772,7 @@ class TestHealthCheckOnboardingIntegration:
             "key_id": "testhost",
             "agents": {
                 "openclaw": {
+                    "type": "openclaw",
                     "version": "0.1.0",
                     "status": "installed",
                     "agent_name": "opc-testhost",
@@ -957,6 +1002,7 @@ class TestProcessRunningField:
             "key_id": "testhost",
             "agents": {
                 "openclaw": {
+                    "type": "openclaw",
                     "version": "0.1.0",
                     "status": "installed",
                     "agent_name": "opc-testhost",

@@ -588,8 +588,13 @@ def test_get_required_secrets_returns_list():
     """Test get_required_secrets returns list of SecretDefinition dicts."""
     from clawrium.core.registry import get_required_secrets
 
+    # openclaw has no required secrets (provider credentials managed separately)
     secrets = get_required_secrets("openclaw")
+    assert isinstance(secrets, list)
+    assert len(secrets) == 0
 
+    # zeroclaw has required secrets
+    secrets = get_required_secrets("zeroclaw")
     assert isinstance(secrets, list)
     assert len(secrets) > 0
     # Each secret should have key and description
