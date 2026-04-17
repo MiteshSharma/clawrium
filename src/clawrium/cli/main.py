@@ -15,6 +15,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 
+from clawrium import __version__
 from clawrium.cli.init import init as init_command
 from clawrium.cli.agent import agent_app
 from clawrium.cli.chat import chat as chat_command
@@ -36,8 +37,16 @@ app = typer.Typer(
 
 
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context) -> None:
+def main(
+    ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", help="Show version and exit"
+    ),
+) -> None:
     """Clawrium CLI main entry point."""
+    if version:
+        console.print(f"clm {__version__}")
+        raise typer.Exit(code=0)
     # If no command was provided, show help (handled by no_args_is_help)
     if ctx.invoked_subcommand is None:
         pass

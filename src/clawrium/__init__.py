@@ -1,3 +1,8 @@
 """Clawrium - CLI tool for managing AI assistant fleets."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("clawrium")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
