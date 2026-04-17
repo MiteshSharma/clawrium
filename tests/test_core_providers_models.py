@@ -220,7 +220,7 @@ class TestGetModelCount:
     def test_get_model_count_total(self):
         """get_model_count returns total count across all providers."""
         count = get_model_count()
-        assert count > 200  # We have 219+ models
+        assert count > 300  # We have 378+ models from models.dev
 
     def test_get_model_count_by_provider(self):
         """get_model_count returns count for specific provider."""
@@ -253,14 +253,17 @@ class TestCatalogSchema:
                 missing = required_fields - set(model.keys())
                 assert not missing, f"Model {model.get('id', 'unknown')} in {provider} missing: {missing}"
 
-    def test_all_context_windows_are_positive(self):
-        """All context_window values are positive integers."""
+    def test_all_context_windows_are_non_negative(self):
+        """All context_window values are non-negative integers.
+
+        Note: Some models (e.g., image generators) may have context_window=0.
+        """
         catalog = load_model_catalog()
 
         for provider, data in catalog["providers"].items():
             for model in data["models"]:
                 assert isinstance(model["context_window"], int)
-                assert model["context_window"] > 0, f"Invalid context_window for {model['id']}"
+                assert model["context_window"] >= 0, f"Invalid context_window for {model['id']}"
 
     def test_all_tags_are_lists_of_strings(self):
         """All tags fields are lists of strings."""
