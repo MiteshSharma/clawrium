@@ -39,6 +39,7 @@ class TestConfigureClaw:
         }
         config_data = {
             "provider": {
+                "name": "test-provider",
                 "type": "ollama",
                 "default_model": "malicious\nINJECTED=value",
             }
@@ -600,6 +601,436 @@ class TestOpenClawTemplate:
         assert success is True, f"Configuration failed: {error}"
         assert error is None
 
+    def test_configure_openclaw_with_bedrock_credentials(self, tmp_path: Path):
+        """Test that Bedrock AWS credentials are passed to ansible_runner."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000, "bind": "lan"},
+            "provider": {
+                "name": "bedrock-provider",
+                "type": "bedrock",
+                "default_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+            },
+        }
+
+        key_path = tmp_path / "key"
+        key_path.write_text("key")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ) as mock_ansible:
+                        with patch(
+                            "clawrium.core.lifecycle.update_host"
+                        ) as mock_update:
+                            with patch(
+                                "clawrium.core.providers.get_provider_aws_credentials",
+                                return_value=(
+                                    "AKIAIOSFODNN7EXAMPLE",
+                                    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                                ),
+                            ):
+                                mock_update.return_value = True
+                                success, error = configure_agent(
+                                    "test-host", "openclaw", config_data
+                                )
+
+                                # Verify ansible was called with correct inventory vars
+                                mock_ansible.assert_called_once()
+                                call_args = mock_ansible.call_args
+                                inventory = call_args.kwargs.get("inventory", {})
+
+                                # Verify AWS credentials passed in ansible_vars
+                                ansible_vars = inventory.get("all", {}).get("vars", {})
+                                assert "aws_access_key" in ansible_vars
+                                assert (
+                                    ansible_vars["aws_access_key"]
+                                    == "AKIAIOSFODNN7EXAMPLE"
+                                )
+                                assert "aws_secret_key" in ansible_vars
+                                assert (
+                                    ansible_vars["aws_secret_key"]
+                                    == "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+                                )
+                                # Bedrock should NOT use provider_api_key
+                                assert ansible_vars["provider_api_key"] == ""
+                                # Verify model is correct
+                                assert (
+                                    ansible_vars["config"]["provider"]["default_model"]
+                                    == "anthropic.claude-3-sonnet-20240229-v1:0"
+                                )
+
+        assert success is True, f"Configuration failed: {error}"
+        assert error is None
+
+    def test_configure_openclaw_with_missing_bedrock_credentials_none(
+        self, tmp_path: Path
+    ):
+        """Test that missing AWS credentials (None, None) result in empty strings."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000, "bind": "lan"},
+            "provider": {
+                "name": "bedrock-provider",
+                "type": "bedrock",
+                "default_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+            },
+        }
+
+        key_path = tmp_path / "key"
+        key_path.write_text("key")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ) as mock_ansible:
+                        with patch("clawrium.core.lifecycle.update_host") as mock_update:
+                            with patch(
+                                "clawrium.core.providers.get_provider_aws_credentials",
+                                return_value=(None, None),
+                            ):
+                                mock_update.return_value = True
+                                success, error = configure_agent(
+                                    "test-host", "openclaw", config_data
+                                )
+
+                                mock_ansible.assert_called_once()
+                                call_args = mock_ansible.call_args
+                                inventory = call_args.kwargs.get("inventory", {})
+                                ansible_vars = inventory.get("all", {}).get("vars", {})
+
+                                # Missing credentials should result in empty strings
+                                assert ansible_vars["aws_access_key"] == ""
+                                assert ansible_vars["aws_secret_key"] == ""
+                                assert ansible_vars["provider_api_key"] == ""
+
+        assert success is True, f"Configuration failed: {error}"
+        assert error is None
+
+    def test_configure_openclaw_with_missing_bedrock_credentials_empty(
+        self, tmp_path: Path
+    ):
+        """Test that empty string AWS credentials result in empty strings."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000, "bind": "lan"},
+            "provider": {
+                "name": "bedrock-provider",
+                "type": "bedrock",
+                "default_model": "anthropic.claude-3-sonnet-20240229-v1:0",
+            },
+        }
+
+        key_path = tmp_path / "key"
+        key_path.write_text("key")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ) as mock_ansible:
+                        with patch("clawrium.core.lifecycle.update_host") as mock_update:
+                            with patch(
+                                "clawrium.core.providers.get_provider_aws_credentials",
+                                return_value=("", ""),
+                            ):
+                                mock_update.return_value = True
+                                success, error = configure_agent(
+                                    "test-host", "openclaw", config_data
+                                )
+
+                                mock_ansible.assert_called_once()
+                                call_args = mock_ansible.call_args
+                                inventory = call_args.kwargs.get("inventory", {})
+                                ansible_vars = inventory.get("all", {}).get("vars", {})
+
+                                # Empty credentials should result in empty strings
+                                assert ansible_vars["aws_access_key"] == ""
+                                assert ansible_vars["aws_secret_key"] == ""
+
+        assert success is True, f"Configuration failed: {error}"
+        assert error is None
+
+    def test_configure_non_bedrock_skips_aws_credentials(self, tmp_path: Path):
+        """Test that non-bedrock providers use API key, not AWS credentials."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000, "bind": "lan"},
+            "provider": {
+                "name": "anthropic-provider",
+                "type": "anthropic",
+                "default_model": "claude-3-sonnet-20240229",
+            },
+        }
+
+        key_path = tmp_path / "key"
+        key_path.write_text("key")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ) as mock_ansible:
+                        with patch("clawrium.core.lifecycle.update_host") as mock_update:
+                            with patch(
+                                "clawrium.core.providers.get_provider_api_key",
+                                return_value="sk-test-api-key",
+                            ):
+                                mock_update.return_value = True
+                                success, error = configure_agent(
+                                    "test-host", "openclaw", config_data
+                                )
+
+                                mock_ansible.assert_called_once()
+                                call_args = mock_ansible.call_args
+                                inventory = call_args.kwargs.get("inventory", {})
+                                ansible_vars = inventory.get("all", {}).get("vars", {})
+
+                                # Non-bedrock should use provider_api_key
+                                assert ansible_vars["provider_api_key"] == "sk-test-api-key"
+                                # AWS credentials should be empty
+                                assert ansible_vars["aws_access_key"] == ""
+                                assert ansible_vars["aws_secret_key"] == ""
+
+        assert success is True, f"Configuration failed: {error}"
+        assert error is None
+
+    def test_returns_false_when_provider_config_not_dict(self):
+        """Test that non-dict provider config is rejected."""
+        host = {
+            "hostname": "test-host",
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000},
+            "provider": "invalid-not-a-dict",
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            success, error = configure_agent("test-host", "openclaw", config_data)
+
+        assert success is False
+        assert "Invalid provider config" in error
+
+    def test_returns_false_when_provider_missing_name(self):
+        """Test that provider missing name is rejected."""
+        host = {
+            "hostname": "test-host",
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000},
+            "provider": {
+                "type": "anthropic",
+                "default_model": "claude-3-sonnet",
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            success, error = configure_agent("test-host", "openclaw", config_data)
+
+        assert success is False
+        assert "missing" in error.lower()
+        assert "name" in error.lower()
+
+    def test_returns_false_when_provider_missing_type(self):
+        """Test that provider missing type is rejected."""
+        host = {
+            "hostname": "test-host",
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000},
+            "provider": {
+                "name": "my-provider",
+                "default_model": "claude-3-sonnet",
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            success, error = configure_agent("test-host", "openclaw", config_data)
+
+        assert success is False
+        assert "missing" in error.lower()
+        assert "type" in error.lower()
+
+    def test_returns_false_when_provider_missing_model(self):
+        """Test that provider missing default_model is rejected."""
+        host = {
+            "hostname": "test-host",
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000},
+            "provider": {
+                "name": "my-provider",
+                "type": "anthropic",
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            success, error = configure_agent("test-host", "openclaw", config_data)
+
+        assert success is False
+        assert "missing" in error.lower()
+        assert "default_model" in error.lower()
+
+    def test_returns_false_when_ollama_missing_endpoint(self):
+        """Test that Ollama provider without endpoint is rejected."""
+        host = {
+            "hostname": "test-host",
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000},
+            "provider": {
+                "name": "my-ollama",
+                "type": "ollama",
+                "default_model": "llama3",
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            success, error = configure_agent("test-host", "openclaw", config_data)
+
+        assert success is False
+        assert "endpoint" in error.lower()
+
+    def test_returns_false_when_model_name_empty(self):
+        """Test that empty model name is rejected."""
+        host = {
+            "hostname": "test-host",
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        config_data = {
+            "gateway": {"port": 40000},
+            "provider": {
+                "name": "my-provider",
+                "type": "anthropic",
+                "default_model": "",
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            success, error = configure_agent("test-host", "openclaw", config_data)
+
+        assert success is False
+        # Empty model name triggers "missing" validation
+        assert "missing" in error.lower() or "invalid" in error.lower()
+
+    def test_returns_false_when_model_name_has_invalid_chars(self):
+        """Test that model names with invalid characters are rejected."""
+        host = {
+            "hostname": "test-host",
+            "agents": {"ocl-test": {"type": "openclaw"}},
+        }
+        # Test various invalid patterns
+        invalid_models = [
+            "model with spaces",
+            "model;injection",
+            "model`backtick`",
+            "model$variable",
+            "model$(cmd)",
+        ]
+
+        for invalid_model in invalid_models:
+            config_data = {
+                "gateway": {"port": 40000},
+                "provider": {
+                    "name": "my-provider",
+                    "type": "anthropic",
+                    "default_model": invalid_model,
+                },
+            }
+
+            with patch("clawrium.core.lifecycle.get_host", return_value=host):
+                success, error = configure_agent("test-host", "openclaw", config_data)
+
+            assert success is False, f"Should reject model name: {invalid_model}"
+            assert "Invalid model name" in error
+
     def test_configure_openclaw_with_headless_enforces_browser_deny(
         self, tmp_path: Path
     ):
@@ -928,6 +1359,8 @@ class TestEnvTemplate:
         discord_bot_token="",
         slack_bot_token="",
         slack_app_token="",
+        aws_access_key="",
+        aws_secret_key="",
     ):
         """Helper to render the .env.j2 template."""
         template_dir = (
@@ -942,17 +1375,26 @@ class TestEnvTemplate:
             discord_bot_token=discord_bot_token,
             slack_bot_token=slack_bot_token,
             slack_app_token=slack_app_token,
+            aws_access_key=aws_access_key,
+            aws_secret_key=aws_secret_key,
         )
 
     @staticmethod
     def _parse_env(rendered):
-        """Parse rendered env file into key/value map."""
+        """Parse rendered env file into key/value map.
+
+        Handles shell-quoted values: 'value' or 'val'"'"'ue' (escaped single quote)
+        """
         result = {}
         for line in rendered.splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
+            # Handle shell quoting: strip outer single quotes and unescape inner quotes
+            if value.startswith("'") and value.endswith("'"):
+                # Remove outer quotes and unescape '"'"' -> '
+                value = value[1:-1].replace("'\"'\"'", "'")
             result[key] = value
         return result
 
@@ -1013,7 +1455,55 @@ class TestEnvTemplate:
             env_map["OPENCLAW_DEFAULT_MODEL"] == "openrouter/deepseek/deepseek-chat-v3"
         )
 
-    def test_env_bedrock_provider(self):
+    def test_env_bedrock_provider_with_credentials(self):
+        """Test that Bedrock provider outputs AWS credentials when provided."""
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "bedrock",
+                "default_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            },
+        }
+        rendered = self._render_env_template(
+            config,
+            aws_access_key="AKIAIOSFODNN7EXAMPLE",
+            aws_secret_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        )
+        # Credentials are single-quoted for shell safety
+        assert "AWS_ACCESS_KEY_ID='AKIAIOSFODNN7EXAMPLE'" in rendered
+        assert (
+            "AWS_SECRET_ACCESS_KEY='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'"
+            in rendered
+        )
+        env_map = self._parse_env(rendered)
+        # Bedrock models get prefixed with bedrock/
+        assert (
+            env_map["OPENCLAW_DEFAULT_MODEL"]
+            == "bedrock/anthropic.claude-3-7-sonnet-20250219-v1:0"
+        )
+
+    def test_env_bedrock_credentials_with_special_chars(self):
+        """Test that Bedrock credentials with special characters are escaped."""
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "bedrock",
+                "default_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            },
+        }
+        # Test with special chars: single quote, hash, equals, spaces
+        rendered = self._render_env_template(
+            config,
+            aws_access_key="AKIA'TEST",
+            aws_secret_key="secret#with=special chars'and\"quotes",
+        )
+        # Single quotes in value should be escaped
+        assert "AWS_ACCESS_KEY_ID='AKIA'\"'\"'TEST'" in rendered
+        # Other special chars are safe inside single quotes
+        assert "secret#with=special" in rendered
+
+    def test_env_bedrock_provider_without_credentials(self):
+        """Test that Bedrock provider works without AWS credentials."""
         config = {
             "gateway": {"bind": "lan", "port": 40209},
             "provider": {
@@ -1024,12 +1514,39 @@ class TestEnvTemplate:
         rendered = self._render_env_template(config)
         env_map = self._parse_env(rendered)
 
-        assert "# Bedrock uses AWS credentials from environment/profile" in rendered
+        # No AWS credentials should be in output when not provided
         assert "AWS_ACCESS_KEY_ID" not in env_map
         assert "AWS_SECRET_ACCESS_KEY" not in env_map
+        # Bedrock models get prefixed with bedrock/
         assert (
             env_map["OPENCLAW_DEFAULT_MODEL"]
-            == "anthropic.claude-3-7-sonnet-20250219-v1:0"
+            == "bedrock/anthropic.claude-3-7-sonnet-20250219-v1:0"
+        )
+
+    def test_env_bedrock_provider_with_empty_string_credentials(self):
+        """Test that Bedrock with empty string credentials does not emit AWS vars."""
+        config = {
+            "gateway": {"bind": "lan", "port": 40209},
+            "provider": {
+                "type": "bedrock",
+                "default_model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            },
+        }
+        # Empty strings should be treated as falsy - no AWS vars emitted
+        rendered = self._render_env_template(
+            config,
+            aws_access_key="",
+            aws_secret_key="",
+        )
+        env_map = self._parse_env(rendered)
+
+        # Empty credentials should NOT produce AWS vars
+        assert "AWS_ACCESS_KEY_ID" not in env_map
+        assert "AWS_SECRET_ACCESS_KEY" not in env_map
+        # Model should still be prefixed correctly
+        assert (
+            env_map["OPENCLAW_DEFAULT_MODEL"]
+            == "bedrock/anthropic.claude-3-7-sonnet-20250219-v1:0"
         )
 
     def test_env_vertex_provider(self):

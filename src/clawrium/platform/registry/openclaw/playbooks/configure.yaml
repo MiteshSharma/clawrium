@@ -97,8 +97,13 @@
           failed_when: false
 
         - name: Authenticate gh CLI for each github integration
-          ansible.builtin.shell: |
-            echo "{{ item.value.GITHUB_TOKEN }}" | {{ gh_check.stdout }} auth login --with-token
+          ansible.builtin.command:
+            argv:
+              - "{{ gh_check.stdout }}"
+              - auth
+              - login
+              - --with-token
+            stdin: "{{ item.value.GITHUB_TOKEN }}"
           become: yes
           become_user: "{{ agent_name }}"
           no_log: true
@@ -175,6 +180,115 @@
           ansible.builtin.file:
             path: "/tmp/clawrium_verify_config_{{ agent_name }}.py"
             state: absent
+
+    # Verify .env has required credentials for provider type
+    # Uses lineinfile in check mode to verify presence without shell injection risk
+    - name: Verify .env credentials for Anthropic provider
+      ansible.builtin.lineinfile:
+        path: "/home/{{ agent_name }}/.openclaw/env"
+        regexp: '^ANTHROPIC_API_KEY='
+        state: present
+        line: "# verification placeholder"
+      check_mode: true
+      register: anthropic_check
+      failed_when: anthropic_check.changed
+      no_log: true
+      when:
+        - config.provider is defined
+        - config.provider.type == 'anthropic'
+        - provider_api_key | default('') | length > 0
+
+    - name: Verify .env credentials for OpenAI provider
+      ansible.builtin.lineinfile:
+        path: "/home/{{ agent_name }}/.openclaw/env"
+        regexp: '^OPENAI_API_KEY='
+        state: present
+        line: "# verification placeholder"
+      check_mode: true
+      register: openai_check
+      failed_when: openai_check.changed
+      no_log: true
+      when:
+        - config.provider is defined
+        - config.provider.type == 'openai'
+        - provider_api_key | default('') | length > 0
+
+    - name: Verify .env credentials for OpenRouter provider
+      ansible.builtin.lineinfile:
+        path: "/home/{{ agent_name }}/.openclaw/env"
+        regexp: '^OPENROUTER_API_KEY='
+        state: present
+        line: "# verification placeholder"
+      check_mode: true
+      register: openrouter_check
+      failed_when: openrouter_check.changed
+      no_log: true
+      when:
+        - config.provider is defined
+        - config.provider.type == 'openrouter'
+        - provider_api_key | default('') | length > 0
+
+    - name: Verify .env credentials for ZAI provider
+      ansible.builtin.lineinfile:
+        path: "/home/{{ agent_name }}/.openclaw/env"
+        regexp: '^ZAI_API_KEY='
+        state: present
+        line: "# verification placeholder"
+      check_mode: true
+      register: zai_check
+      failed_when: zai_check.changed
+      no_log: true
+      when:
+        - config.provider is defined
+        - config.provider.type == 'zai'
+        - provider_api_key | default('') | length > 0
+
+    - name: Verify .env credentials for Bedrock provider (access key)
+      ansible.builtin.lineinfile:
+        path: "/home/{{ agent_name }}/.openclaw/env"
+        regexp: '^AWS_ACCESS_KEY_ID='
+        state: present
+        line: "# verification placeholder"
+      check_mode: true
+      register: bedrock_access_check
+      failed_when: bedrock_access_check.changed
+      no_log: true
+      when:
+        - config.provider is defined
+        - config.provider.type == 'bedrock'
+        - aws_access_key | default('') | length > 0
+        - aws_secret_key | default('') | length > 0
+
+    - name: Verify .env credentials for Bedrock provider (secret key)
+      ansible.builtin.lineinfile:
+        path: "/home/{{ agent_name }}/.openclaw/env"
+        regexp: '^AWS_SECRET_ACCESS_KEY='
+        state: present
+        line: "# verification placeholder"
+      check_mode: true
+      register: bedrock_secret_check
+      failed_when: bedrock_secret_check.changed
+      no_log: true
+      when:
+        - config.provider is defined
+        - config.provider.type == 'bedrock'
+        - aws_access_key | default('') | length > 0
+        - aws_secret_key | default('') | length > 0
+
+    - name: Verify .env credentials for Vertex provider
+      ansible.builtin.lineinfile:
+        path: "/home/{{ agent_name }}/.openclaw/env"
+        regexp: '^GOOGLE_APPLICATION_CREDENTIALS='
+        state: present
+        line: "# verification placeholder"
+      check_mode: true
+      register: vertex_check
+      failed_when: vertex_check.changed
+      no_log: true
+      when:
+        - config.provider is defined
+        - config.provider.type == 'vertex'
+        - provider_api_key | default('') | length > 0
 
     - name: Ensure service is enabled
       ansible.builtin.systemd:

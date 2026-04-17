@@ -700,7 +700,7 @@ def configure_agent(
     Raises:
         LifecycleError: If host not found or agent not installed
     """
-    from clawrium.core.providers import get_provider_api_key
+    from clawrium.core.providers import get_provider_api_key, get_provider_aws_credentials
     from clawrium.core.integrations import (
         get_agent_integrations,
         get_integration,
@@ -727,16 +727,7 @@ def configure_agent(
     unix_agent_name = agent_record.get("agent_name") or agent_key
 
     # Validate config data before running Ansible
-    # B7: Validate Ollama model names to prevent template injection
-    if config_data.get("provider") and config_data["provider"].get("default_model"):
-        model_name = config_data["provider"]["default_model"]
-        if not re.match(r"^[a-zA-Z0-9_.:/+-]+$", model_name):
-            return (
-                False,
-                f"Invalid model name: '{model_name}'. Model names must contain only alphanumeric characters, dots, colons, slashes, underscores, plus, and hyphens.",
-            )
-
-    # Validate required provider fields
+    # Validate required provider fields (must check dict type first)
     required_provider_fields = ["name", "type", "default_model"]
     if config_data.get("provider"):
         if not isinstance(config_data["provider"], dict):
@@ -746,6 +737,15 @@ def configure_agent(
         ]
         if missing:
             return False, f"Incomplete provider config - missing: {', '.join(missing)}"
+
+        # Validate model names to prevent template injection
+        if config_data["provider"].get("default_model"):
+            model_name = config_data["provider"]["default_model"]
+            if not re.match(r"^[a-zA-Z0-9_.:/+-]+$", model_name):
+                return (
+                    False,
+                    f"Invalid model name: '{model_name}'. Model names must contain only alphanumeric characters, dots, colons, slashes, underscores, plus, and hyphens.",
+                )
 
         # Ollama providers require endpoint
         if config_data["provider"].get("type") == "ollama":
@@ -765,11 +765,22 @@ def configure_agent(
 
     # Load provider API key from secrets if provider is configured
     provider_api_key = ""
+    aws_access_key = ""
+    aws_secret_key = ""
     if config_data.get("provider") and config_data["provider"].get("name"):
         provider_name = config_data["provider"]["name"]
-        provider_api_key = get_provider_api_key(provider_name) or ""
-        if provider_api_key:
-            emit("configure", "Loaded provider API key from secrets")
+        provider_type = config_data["provider"].get("type", "")
+        if provider_type == "bedrock":
+            # Bedrock uses AWS credentials instead of API key
+            access_key, secret_key = get_provider_aws_credentials(provider_name)
+            if access_key and secret_key:
+                aws_access_key = access_key
+                aws_secret_key = secret_key
+                emit("configure", "Loaded AWS credentials from secrets")
+        else:
+            provider_api_key = get_provider_api_key(provider_name) or ""
+            if provider_api_key:
+                emit("configure", "Loaded provider API key from secrets")
 
     # Load channel secrets (Discord bot token)
     discord_bot_token = ""
@@ -875,6 +886,8 @@ def configure_agent(
         "config": config_data,
         "template_path": str(template_path),
         "provider_api_key": provider_api_key,
+        "aws_access_key": aws_access_key,
+        "aws_secret_key": aws_secret_key,
         "discord_bot_token": discord_bot_token,
         "slack_bot_token": slack_bot_token,
         "slack_app_token": slack_app_token,

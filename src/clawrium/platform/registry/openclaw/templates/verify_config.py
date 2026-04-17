@@ -50,17 +50,17 @@ def main():
     def _expected_model_id(expected: dict) -> str | None:
         provider = expected.get("provider", {})
         default_model = provider.get("default_model")
-        if not default_model:
+        if not default_model or not isinstance(default_model, str):
             return None
 
         provider_type = provider.get("type")
-        if provider_type == "openrouter" and not str(default_model).startswith(
-            "openrouter/"
-        ):
+        if provider_type == "openrouter" and not default_model.startswith("openrouter/"):
             return f"openrouter/{default_model}"
-        if provider_type == "ollama" and not str(default_model).startswith("ollama/"):
+        if provider_type == "ollama" and not default_model.startswith("ollama/"):
             return f"ollama/{default_model}"
-        return str(default_model)
+        if provider_type == "bedrock" and not default_model.startswith("bedrock/"):
+            return f"bedrock/{default_model}"
+        return default_model
 
     # Verify model is set if provider configured
     expected_model = _expected_model_id(expected_config)
