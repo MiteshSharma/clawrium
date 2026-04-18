@@ -82,7 +82,7 @@ def chat(
         raise typer.Exit(code=1)
 
     try:
-        gateway = _extract_gateway_config(agent_record)
+        gateway = _extract_gateway_config(agent_record, host_record)
     except ValueError as exc:
         console.print(f"[red]Error:[/red] {rich_escape(str(exc))}")
         raise typer.Exit(code=1)
@@ -217,7 +217,9 @@ async def _read_user_input(prompt: str, idle_timeout_seconds: float) -> str:
         raise
 
 
-def _extract_gateway_config(agent_record: dict[str, Any]) -> GatewayConfig:
+def _extract_gateway_config(
+    agent_record: dict[str, Any], host_record: dict[str, Any]
+) -> GatewayConfig:
     config = agent_record.get("config")
     if not isinstance(config, dict):
         raise ValueError("Agent config missing. Re-run agent configure/install.")
@@ -226,8 +228,8 @@ def _extract_gateway_config(agent_record: dict[str, Any]) -> GatewayConfig:
     if not isinstance(gateway, dict):
         raise ValueError("Gateway config missing. Re-run agent configure/install.")
 
-    gateway_url = gateway.get("url")
-    if not isinstance(gateway_url, str) or not gateway_url.strip():
+    stored_url = gateway.get("url")
+    if not isinstance(stored_url, str) or not stored_url.strip():
         raise ValueError(
             "Gateway URL is missing. Re-run install/configure to capture gateway URL."
         )
@@ -237,6 +239,10 @@ def _extract_gateway_config(agent_record: dict[str, Any]) -> GatewayConfig:
         raise ValueError(
             "Gateway auth token is missing. Re-run install/configure to refresh pairing token."
         )
+
+    # Reconstruct gateway URL using current primary address from host record.
+    # This ensures connectivity regardless of which network interface is used.
+    gateway_url = _reconstruct_gateway_url(stored_url, gateway, host_record)
 
     result: GatewayConfig = {"url": gateway_url, "auth": auth_token}
 
@@ -251,6 +257,46 @@ def _extract_gateway_config(agent_record: dict[str, Any]) -> GatewayConfig:
             result["device_private_key"] = device_private_key
 
     return result
+
+
+def _reconstruct_gateway_url(
+    stored_url: str, gateway: dict[str, Any], host_record: dict[str, Any]
+) -> str:
+    """Reconstruct gateway URL using host's current primary address.
+
+    The stored URL may contain an IP that's no longer reachable (e.g., LAN IP
+    when connecting via Tailscale). This function rebuilds the URL using the
+    host's current primary address while preserving the scheme and port.
+
+    Args:
+        stored_url: The originally stored gateway URL (e.g., ws://192.168.1.36:40317)
+        gateway: Gateway config dict that may contain explicit port
+        host_record: Host record containing current primary address in 'hostname'
+
+    Returns:
+        Reconstructed gateway URL using current primary address
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(stored_url)
+    scheme = parsed.scheme or "ws"
+
+    # Get port from gateway config or parse from stored URL
+    port = gateway.get("port")
+    if not port and parsed.port:
+        port = parsed.port
+
+    if not port:
+        raise ValueError(
+            "Gateway port not found. Re-run install/configure to capture gateway config."
+        )
+
+    # Use current primary address from host record
+    current_host = host_record.get("hostname")
+    if not current_host:
+        raise ValueError("Host primary address not found.")
+
+    return f"{scheme}://{current_host}:{port}"
 
 
 def _validate_session_key(session_key: str) -> None:
