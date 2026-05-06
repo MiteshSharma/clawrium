@@ -117,6 +117,24 @@ New Issue → /itx:triage → /itx:plan-create → /itx:plan-scaffold → /itx:e
 | `/itx:verify` | Run tests and lint |
 | `/itx:review-pr [n]` | Review PR (MCP or manual) |
 
+### Planning Artifacts Directory (`.itx/`)
+
+The `.itx/` directory stores implementation plans and execution documentation for each issue. These are **NOT ephemeral files** - they document how an issue was planned and executed.
+
+```
+.itx/
+└── <issue-number>/
+    ├── 00_PLAN.md           # High-level implementation plan (from /itx:plan-create)
+    └── 01_SCAFFOLD.md       # Phased execution plan (from /itx:plan-scaffold)
+```
+
+**IMPORTANT**: Always commit the `.itx/` directory with your changes. These files serve as:
+- Historical record of implementation decisions
+- Context for future maintenance
+- Documentation of the execution approach
+
+When completing work on an issue, ensure `.itx/<issue-number>/` is included in your commit.
+
 ### Task-Based Execution
 
 The `/itx:execute` skill uses a structured task checklist approach to prevent getting lost during execution:
