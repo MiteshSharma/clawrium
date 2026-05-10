@@ -309,4 +309,31 @@ After Phase 5 merges, on a real host:
 /itx-plan-scaffold 68
 ```
 
+---
+
+**Stage**: execution
+**Skill**: /itx:execute
+**Timestamp**: 2026-05-10T17:50:00Z
+**Model**: claude-opus-4-7
+**Subtask**: #312 (Phase 1)
+**Branch**: `issue-68-phase-1-installation`
+
+```prompt
+/itx:execute 312
+```
+
+E2E findings worth carrying into Phase 2:
+
+1. The hermes `--version` output uses TWO triples: a python-package version (e.g. `v0.13.0`) followed by the upstream tag in parentheses (e.g. `(2026.5.7)`). Manifest pins on the parenthesised tag, so the install playbook's regex parses `\(([0-9]+\.[0-9]+\.[0-9]+)\)` rather than the leading triple.
+
+2. `git tag` for hermes is always `v`-prefixed (e.g. `v2026.5.7`), but `clm`'s manifest stores versions WITHOUT the `v` prefix to satisfy `packaging.version.Version`. The install playbook synthesises the tag with `hermes_target_branch: "v{{ hermes_target_version }}"` rather than passing `claw_version` straight through (which would yield `vv2026.5.7`).
+
+3. The hermes installer writes `~/.hermes/.env` itself (mode 0644). `force: no` on our `copy` task preserves it but does NOT update permissions. A subsequent `file:` task enforces 0600 unconditionally so any provider keys placed there in Phase 2 are not world-readable.
+
+4. The hermes runtime install (uv venv, pip install, npm install, playwright) takes 10+ minutes and was failing with `Shared connection ... closed`. Wrapping it in `async: 1800, poll: 30` reuses the SSH connection per-poll instead of holding it open for the entire install.
+
+5. Hermes calls `loginctl enable-linger` on first start, which keeps a per-user systemd manager + dbus running even after we stop the system unit. `userdel` then fails with "user is currently used by process". `remove.yaml` now runs `loginctl disable-linger` + `pkill -KILL -u <user>` before `userdel`.
+
+6. Per-host start/stop via `clm agent <name>` is gated by onboarding state (`pending_onboard`). Phase 1 leaves the agent in PENDING state by design (no `onboarding.stages` declared yet); Phase 2 / Phase 4 unblock the start path. Direct `systemctl start hermes-<name>.service` confirms the documented "service exits immediately, status 1, log says 'Gateway service is not installed'" behavior.
+
 </details>

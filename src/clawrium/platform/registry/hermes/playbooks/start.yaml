@@ -1,0 +1,67 @@
+---
+- hosts: all
+  become: yes
+  tasks:
+    - name: Check if systemd service exists
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ agent_type }}-{{ agent_name }}.service"
+      register: service_file
+
+    - name: Fail if service not installed
+      ansible.builtin.fail:
+        msg: "Hermes service not installed. Run 'clm agent install --type hermes ...' first."
+      when: not service_file.stat.exists
+
+    # Re-render the unit (idempotent) so changes to ExecStart / WorkingDirectory
+    # via a clm upgrade are picked up without forcing a full reinstall.
+    - name: Sync systemd service file
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ agent_type }}-{{ agent_name }}.service"
+        content: |
+          [Unit]
+          Description=Hermes AI Agent ({{ agent_name }})
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ agent_name }}
+          WorkingDirectory=/home/{{ agent_name }}/.hermes
+          EnvironmentFile=/home/{{ agent_name }}/.hermes/.env
+          ExecStart=/home/{{ agent_name }}/.local/bin/hermes gateway start
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+      register: service_file_changed
+
+    - name: Reload systemd if service file changed
+      ansible.builtin.systemd:
+        daemon_reload: yes
+      when: service_file_changed.changed
+
+    - name: Start hermes service
+      ansible.builtin.systemd:
+        name: "{{ agent_type }}-{{ agent_name }}"
+        state: started
+        enabled: yes
+        daemon_reload: yes
+      register: start_result
+
+    # The service is expected to come up and stay active when a provider is
+    # configured. Before Phase 2 wires up `.env`, the gateway starts then
+    # exits (no platforms enabled). We still report whatever systemd shows so
+    # operators see the truth instead of a misleading "started successfully".
+    - name: Capture service active state
+      ansible.builtin.systemd:
+        name: "{{ agent_type }}-{{ agent_name }}"
+      register: service_status
+
+    - name: Display service state
+      ansible.builtin.debug:
+        msg: >-
+          Hermes service {{ agent_type }}-{{ agent_name }} is
+          {{ service_status.status.ActiveState }}
+          (sub-state: {{ service_status.status.SubState }}).
+          {{ 'Note: service may exit immediately until ~/.hermes/.env is configured.' if service_status.status.ActiveState != 'active' else '' }}
