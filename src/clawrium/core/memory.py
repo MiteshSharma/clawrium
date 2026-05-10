@@ -362,11 +362,13 @@ def get_memory_info(hostname: str, agent_name: str) -> MemoryStats | None:
             return None
 
         # The memory_info playbook emits structured lines via the debug
-        # module (one msg per runner_on_ok event). Concatenate every msg
-        # value and parse the combined buffer.
+        # module. Standalone debug tasks surface as runner_on_ok events;
+        # debug tasks under a loop surface as runner_item_on_ok per
+        # iteration (the runner_on_ok aggregate just says "All items
+        # completed"). Collect msg from both.
         lines: list[str] = []
         for event in result.events:
-            if event.get("event") != "runner_on_ok":
+            if event.get("event") not in {"runner_on_ok", "runner_item_on_ok"}:
                 continue
             res = event.get("event_data", {}).get("res", {})
             msg = res.get("msg")
