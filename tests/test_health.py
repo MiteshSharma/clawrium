@@ -1326,6 +1326,39 @@ class TestCountCompletedStages:
 class TestProcessNameByAgentType:
     """Tests for agent-type-aware process name in health check (issue #224)."""
 
+    def test_hermes_uses_full_command_line_match(self):
+        """hermes runs as python3 -m hermes; pgrep must match the full command line."""
+        host = {
+            "hostname": "192.168.1.100",
+            "port": 22,
+            "user": "xclm",
+            "key_id": "testhost",
+            "agents": {
+                "hermes-test": {
+                    "type": "hermes",
+                    "agent_name": "hermes-test",
+                    "version": "2026.5.7",
+                }
+            },
+        }
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = [{"event": "runner_on_ok", "event_data": {"res": {"rc": 0}}}]
+
+        with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+            with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner) as mock_run:
+                with patch("clawrium.core.health.get_required_secrets", return_value=[]):
+                    result = check_claw_health("hermes-test", host)
+
+        assert len(mock_run.call_args_list) >= 1
+        module_args = mock_run.call_args_list[0].kwargs.get("module_args", "")
+        # Plain `pgrep -u user hermes` would not match python3 -m hermes;
+        # the -f flag with a quoted multi-word pattern is required.
+        assert module_args == 'pgrep -u hermes-test -f "hermes gateway run"'
+        assert result["status"] == ClawStatus.RUNNING
+        assert result["process_running"] is True
+
     def test_openclaw_uses_openclaw_process_name(self):
         """openclaw agent type uses 'pgrep -u {user} openclaw'."""
         host = {

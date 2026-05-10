@@ -49,7 +49,10 @@ class StageStatus(str, Enum):
 
 # Valid state transitions
 TRANSITIONS: dict[str, list[str]] = {
-    "pending": ["providers"],
+    # 'ready' under 'pending' supports manifests whose stages are all
+    # auto_skip:true (e.g. hermes Phase 1 placeholder) so the auto_skip path
+    # can transition PENDING → READY without InvalidTransitionError.
+    "pending": ["providers", "ready"],
     "providers": ["identity"],
     "identity": ["channels"],
     "channels": ["validate"],

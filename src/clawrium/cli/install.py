@@ -247,6 +247,19 @@ def install(
     matched_version = compat["matched_entry"]["version"]
     display_host = host_record.get("alias") or host_record["hostname"]
 
+    # Step 4b: --force triggers gateway-token + device-credential rotation, which
+    # silently breaks every existing integration that pinned the old credentials.
+    # Require explicit confirmation (bypassable with --yes for automation).
+    if force and not yes:
+        console.print(
+            "[yellow]Warning:[/yellow] --force will rotate gateway tokens and "
+            "device credentials. Existing integrations will break until "
+            "reconfigured."
+        )
+        if not typer.confirm("Confirm force reinstall?", default=False):
+            console.print("Installation cancelled.")
+            raise typer.Exit(code=0)
+
     # Step 5: Show confirmation summary (per D-03)
     summary = Panel(
         f"[bold]Agent Type:[/bold] {selected_claw}\n"

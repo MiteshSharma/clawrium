@@ -124,8 +124,12 @@ class TestTransitions:
     """Tests for TRANSITIONS state machine."""
 
     def test_pending_transitions(self):
-        """pending can only transition to providers."""
-        assert TRANSITIONS["pending"] == ["providers"]
+        """pending transitions to providers (normal) or ready (all stages auto_skip)."""
+        assert "providers" in TRANSITIONS["pending"]
+        # Direct PENDING → READY supports manifests whose stages are all
+        # auto_skip:true (e.g. hermes Phase 1 placeholder); transition_state()
+        # must not raise InvalidTransitionError on this path.
+        assert "ready" in TRANSITIONS["pending"]
 
     def test_providers_transitions(self):
         """providers can only transition to identity."""
@@ -195,11 +199,15 @@ class TestTransitionState:
         state = get_onboarding_state("server1", "openclaw")
         assert state == OnboardingState.PROVIDERS
 
-    def test_invalid_transition_pending_to_ready(self, host_with_onboarding):
-        """Rejects invalid transition from pending to ready."""
-        with pytest.raises(InvalidTransitionError) as exc_info:
-            transition_state("server1", "openclaw", OnboardingState.READY)
-        assert "cannot transition" in str(exc_info.value).lower()
+    def test_valid_transition_pending_to_ready_auto_skip(self, host_with_onboarding):
+        """Allows direct pending → ready (auto-skip path for all-skipped manifests)."""
+        # PENDING → READY is the auto_skip short-circuit; transition_state() must
+        # accept it so hermes Phase 1 (and any future all-auto-skip manifest) can
+        # reach READY without walking through providers/identity/channels/validate.
+        result = transition_state("server1", "openclaw", OnboardingState.READY)
+        assert result is True
+        state = get_onboarding_state("server1", "openclaw")
+        assert state == OnboardingState.READY
 
     def test_invalid_transition_pending_to_validate(self, host_with_onboarding):
         """Rejects skipping states."""
