@@ -37,6 +37,45 @@ Implementation notes (research during Phase 2 worktree work):
 - `tests/test_hermes_configure.py` adds `ollama`/custom branch coverage.
 - Phase 2 acceptance criteria (`01_EXECUTION.md` + subtask #313 body) get an additional row: "ollama provider drives `.env` correctly; service comes up; `/v1/models` returns hermes-agent identity using local-inx model".
 
+### Hermes env-var research (pinned before coding, tag v2026.5.7)
+
+Sources read:
+- `gateway/config.py` — only the API_SERVER_* gateway/platform env vars, not provider/model selection.
+- `hermes_cli/config.py` — hermes runtime config layout: TWO files in `~/.hermes/`:
+  - `config.yaml` — `model.provider`, `model.default`, `model.base_url` (the canonical model selection).
+  - `.env` — API keys (`OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) + platform vars (`API_SERVER_*`).
+- `hermes_cli/runtime_provider.py` — provider resolution precedence:
+  1. explicit `--provider` flag (CLI only, not relevant for daemon)
+  2. `model.provider` in `config.yaml`
+  3. `HERMES_INFERENCE_PROVIDER` env var (read but lower-priority than config.yaml)
+  4. `"auto"` (auto-detect from credentials present in env).
+- `hermes_cli/providers.py` — provider catalogue.
+- `cli-config.yaml.example` — default config.yaml shipped at install time.
+- `plugins/model-providers/custom/__init__.py` — `custom` is the provider that backs local Ollama / vLLM / llama.cpp / any user-OpenAI-compatible URL. The aliases `ollama`, `local`, `vllm`, `llamacpp`, `llama.cpp`, `llama-cpp` all map to `custom`. `env_vars=()` (no fixed key — base_url + optional api_key come from `model.base_url` in `config.yaml`).
+
+Findings:
+
+| Need | Mechanism |
+|------|-----------|
+| Cloud provider selection | `model.provider: openrouter` (or `anthropic`, `openai`, `auto`) in `config.yaml`. Equivalent override `HERMES_INFERENCE_PROVIDER=<name>` in `.env` is honored but lower-precedence than config.yaml. |
+| Model selection | `model.default: <id>` in `config.yaml`. `HERMES_INFERENCE_MODEL` is NOT honored (the env-var fallback in `runtime_provider.py` only looks at `HERMES_INFERENCE_PROVIDER`); plan's mention of `HERMES_INFERENCE_MODEL` was incorrect — model must be in `config.yaml`. |
+| Cloud API key | `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in `.env` (matches plan). |
+| Custom OpenAI-compatible endpoint (local Ollama, vLLM, etc.) | `model.provider: custom` (alias `ollama` works) + `model.base_url: http://host:port/v1` + `model.default: <model_id>` in `config.yaml`. No required env var. The `custom` provider's `env_vars=()` means hermes does NOT need any API key to call a local endpoint — it sends `Authorization: Bearer ` (empty) which Ollama accepts. |
+| Gateway daemon (local OpenAI-compatible API on 127.0.0.1:8642) | `API_SERVER_ENABLED=1` + `API_SERVER_KEY=<token>` in `.env` (matches plan). Optional `API_SERVER_HOST=127.0.0.1`, `API_SERVER_PORT=8642`. The `/health` endpoint does NOT require the bearer header (verified during Phase 2 E2E; `/v1/*` endpoints DO). |
+
+Decision: Phase 2 renders BOTH files:
+1. `~/.hermes/.env` (mode 0600) — cloud provider API keys + `API_SERVER_*` block. `HERMES_INFERENCE_PROVIDER` ALSO emitted as a redundant safety net (low-priority anyway).
+2. `~/.hermes/config.yaml` (mode 0600) — partial config containing only the `model:` block. Hermes deep-merges this with `DEFAULT_CONFIG` at load time, so omitted top-level keys retain hermes defaults. The installer's previously-written `config.yaml` is safe to overwrite (it was the example template).
+
+Per-provider mapping:
+
+| clm `provider.type` | rendered `model.provider` | rendered `model.base_url` | rendered `.env` key |
+|---------------------|---------------------------|----------------------------|---------------------|
+| `openrouter` | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `anthropic` | `anthropic` | (omitted; hermes default) | `ANTHROPIC_API_KEY` |
+| `openai` | `openai` | (omitted; hermes default) | `OPENAI_API_KEY` |
+| `ollama` | `custom` | `<provider.endpoint>/v1` (suffix `/v1` appended if missing) | (none) |
+
 
 
 **Rationale**: Plan (`.itx/68/00_PLAN.md`) explicitly enumerates 5 independent PRs with one strict ordering edge: Phase 1 (installation primitives + manifest schema) must land before any other phase compiles meaningfully. Phase 3 (memory generalization) depends on Phase 1's manifest fields (`workspace.memory_path`, `features.memory`). Phase 2 (configuration), Phase 4 (onboarding metadata), Phase 5 (docs) depend only on Phase 1. Phases 2/3 may run in parallel after Phase 1 lands; phases 4/5 may run in parallel after their respective deps. Splitting reduces review surface (each PR ≤ ~600 LOC) and bounds blast radius — a regression in memory generalization (Phase 3) cannot block hermes lifecycle (Phases 1+2).
