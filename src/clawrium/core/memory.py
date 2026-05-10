@@ -204,9 +204,13 @@ def _cleanup_artifacts(operation_log_dir: Path) -> None:
     """Remove ansible-runner artifacts that may contain inventory secrets.
 
     Mirrors the cleanup used in lifecycle._cleanup_ansible_artifacts so memory
-    operations do not leak SSH key paths or inventory contents on disk.
+    operations do not leak SSH key paths, extravars, or inventory contents on
+    disk. ``inventory/`` is included alongside ``artifacts/`` and ``env/``
+    because ansible-runner writes ``memory_content_b64`` and other extravars
+    there; without this, the security justification for removing ``no_log``
+    from the read playbook would only hold partway.
     """
-    for sub in ("artifacts", "env"):
+    for sub in ("artifacts", "env", "inventory"):
         target = operation_log_dir / sub
         if target.exists():
             try:
