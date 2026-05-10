@@ -121,22 +121,22 @@ def _validate_memory_filename(filename: str) -> None:
 
 def _resolve_openclaw_agent(
     hostname: str, agent_name: str
-) -> tuple[dict, str] | None:
+) -> tuple[dict, str] | tuple[None, str]:
     """Resolve agent identifier to (host_record, unix_agent_name).
 
-    Looks up the host, then finds an installed openclaw agent matching
-    ``agent_name`` against either the dict key, the inner ``agent_name``
-    field, or the ``name`` field. Returns ``None`` on any miss so callers
-    can present a degraded "unavailable" state instead of raising.
+    On miss, returns ``(None, reason)`` so callers can distinguish
+    "not found" from "not ready" and emit accurate messages — a user
+    debugging a visible agent that's still installing should not see
+    "agent not found".
     """
     host = get_host(hostname)
     if not host:
         logger.warning("Memory op: host '%s' not found", hostname)
-        return None
+        return None, f"host '{hostname}' not found"
 
     agents = host.get("agents", {})
     if not isinstance(agents, dict):
-        return None
+        return None, f"host '{hostname}' has no agents registry"
 
     matches: list[str] = []
     direct = agents.get(agent_name)
@@ -157,7 +157,7 @@ def _resolve_openclaw_agent(
         logger.warning(
             "Memory op: openclaw agent '%s' not found on '%s'", agent_name, hostname
         )
-        return None
+        return None, f"openclaw agent '{agent_name}' not found on '{hostname}'"
     if len(matches) > 1:
         logger.warning(
             "Memory op: multiple openclaw agents match '%s' on '%s': %s",
@@ -165,22 +165,30 @@ def _resolve_openclaw_agent(
             hostname,
             matches,
         )
-        return None
+        return None, (
+            f"multiple openclaw agents match '{agent_name}' on '{hostname}': "
+            f"{', '.join(matches)}"
+        )
 
     record = agents[matches[0]]
-    # Reject explicitly non-installed records ("installing" / "failed").
-    # Records without a status field are treated as legacy/installed because
-    # older host entries predate the status convention. install.py sets
-    # "installed" once provisioning succeeds.
+    # Allowlist: only records with status='installed' or no status field run
+    # memory ops. install.py writes status='installing' before Ansible runs and
+    # 'installed' on success — None means a pre-convention legacy record, not
+    # a partial new install. Treating None as installed keeps backward compat
+    # while a future status (e.g. 'removing') is rejected by default rather
+    # than silently passing through a blocklist gap.
     status = record.get("status")
-    if status in {"installing", "failed"}:
+    if status is not None and status != "installed":
         logger.warning(
             "Memory op: agent '%s' on '%s' has status '%s' (must be 'installed')",
             agent_name,
             hostname,
             status,
         )
-        return None
+        return None, (
+            f"agent '{agent_name}' on '{hostname}' is not ready "
+            f"(status='{status}', expected 'installed')"
+        )
 
     unix_name = record.get("agent_name") or matches[0]
     return host, unix_name
@@ -322,10 +330,9 @@ def _parse_memory_info_stdout(stdout: str) -> dict:
 
 def get_memory_info(hostname: str, agent_name: str) -> MemoryStats | None:
     """Return memory stats for the openclaw agent or None if unavailable."""
-    resolved = _resolve_openclaw_agent(hostname, agent_name)
-    if not resolved:
+    host, unix_name = _resolve_openclaw_agent(hostname, agent_name)
+    if host is None:
         return None
-    host, unix_name = resolved
 
     try:
         _validate_agent_name(unix_name)
@@ -416,10 +423,9 @@ def read_memory_file(
         logger.warning("Memory read: %s", e)
         return None
 
-    resolved = _resolve_openclaw_agent(hostname, agent_name)
-    if not resolved:
+    host, unix_name = _resolve_openclaw_agent(hostname, agent_name)
+    if host is None:
         return None
-    host, unix_name = resolved
 
     try:
         _validate_agent_name(unix_name)
@@ -479,10 +485,9 @@ def write_memory_file(
             f"({encoded_size} > {MAX_MEMORY_CONTENT_BYTES} bytes)"
         )
 
-    resolved = _resolve_openclaw_agent(hostname, agent_name)
-    if not resolved:
-        return False, f"openclaw agent '{agent_name}' not found on '{hostname}'"
-    host, unix_name = resolved
+    host, unix_name = _resolve_openclaw_agent(hostname, agent_name)
+    if host is None:
+        return False, unix_name
 
     try:
         _validate_agent_name(unix_name)
@@ -529,10 +534,9 @@ def delete_memory_files(
         except MemoryOpError as e:
             return False, str(e)
 
-    resolved = _resolve_openclaw_agent(hostname, agent_name)
-    if not resolved:
-        return False, f"openclaw agent '{agent_name}' not found on '{hostname}'"
-    host, unix_name = resolved
+    host, unix_name = _resolve_openclaw_agent(hostname, agent_name)
+    if host is None:
+        return False, unix_name
 
     try:
         _validate_agent_name(unix_name)

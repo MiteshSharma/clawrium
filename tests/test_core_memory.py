@@ -118,12 +118,16 @@ def _host(agents: dict) -> dict:
 class TestResolveOpenclawAgent:
     def test_returns_none_when_host_missing(self):
         with patch("clawrium.core.memory.get_host", return_value=None):
-            assert _resolve_openclaw_agent("nope", "anything") is None
+            host, reason = _resolve_openclaw_agent("nope", "anything")
+        assert host is None
+        assert "host 'nope' not found" in reason
 
     def test_returns_none_when_agents_field_invalid(self):
         host = {"hostname": "192.168.1.100", "agents": []}
         with patch("clawrium.core.memory.get_host", return_value=host):
-            assert _resolve_openclaw_agent("192.168.1.100", "x") is None
+            h, reason = _resolve_openclaw_agent("192.168.1.100", "x")
+        assert h is None
+        assert "no agents registry" in reason
 
     def test_resolves_by_dict_key(self):
         host = _host(
@@ -137,7 +141,7 @@ class TestResolveOpenclawAgent:
         )
         with patch("clawrium.core.memory.get_host", return_value=host):
             result = _resolve_openclaw_agent("192.168.1.100", "opc-work")
-        assert result is not None
+        assert result[0] is not None
         assert result[1] == "opc-work"
 
     def test_resolves_by_short_name(self):
@@ -152,20 +156,23 @@ class TestResolveOpenclawAgent:
         )
         with patch("clawrium.core.memory.get_host", return_value=host):
             result = _resolve_openclaw_agent("192.168.1.100", "work")
-        assert result is not None
+        assert result[0] is not None
         assert result[1] == "opc-work"
 
     def test_returns_none_when_agent_missing(self):
         host = _host({})
         with patch("clawrium.core.memory.get_host", return_value=host):
-            assert _resolve_openclaw_agent("192.168.1.100", "ghost") is None
+            h, reason = _resolve_openclaw_agent("192.168.1.100", "ghost")
+        assert h is None
+        assert "not found" in reason
 
     def test_returns_none_when_agent_is_wrong_type(self):
         host = _host(
             {"zeroclaw": {"type": "zeroclaw", "agent_name": "zc", "name": "zc"}}
         )
         with patch("clawrium.core.memory.get_host", return_value=host):
-            assert _resolve_openclaw_agent("192.168.1.100", "zeroclaw") is None
+            h, _ = _resolve_openclaw_agent("192.168.1.100", "zeroclaw")
+        assert h is None
 
     def test_returns_none_when_multiple_matches(self):
         host = _host(
@@ -175,7 +182,9 @@ class TestResolveOpenclawAgent:
             }
         )
         with patch("clawrium.core.memory.get_host", return_value=host):
-            assert _resolve_openclaw_agent("192.168.1.100", "shared") is None
+            h, reason = _resolve_openclaw_agent("192.168.1.100", "shared")
+        assert h is None
+        assert "multiple openclaw agents" in reason
 
     @pytest.mark.parametrize("status", ["installing", "failed"])
     def test_rejects_non_installed_status(self, status: str):
@@ -189,7 +198,30 @@ class TestResolveOpenclawAgent:
             }
         )
         with patch("clawrium.core.memory.get_host", return_value=host):
-            assert _resolve_openclaw_agent("192.168.1.100", "opc-work") is None
+            h, reason = _resolve_openclaw_agent("192.168.1.100", "opc-work")
+        assert h is None
+        # Reason must distinguish "not ready" from "not found" so users
+        # debugging a still-installing agent don't chase a red herring.
+        assert "not ready" in reason
+        assert status in reason
+
+    def test_rejects_unknown_future_status(self):
+        # Allowlist behavior: any non-'installed' status is rejected even
+        # if it isn't 'installing' or 'failed'. Guards against future
+        # status additions silently passing through.
+        host = _host(
+            {
+                "opc-work": {
+                    "type": "openclaw",
+                    "agent_name": "opc-work",
+                    "status": "removing",
+                }
+            }
+        )
+        with patch("clawrium.core.memory.get_host", return_value=host):
+            h, reason = _resolve_openclaw_agent("192.168.1.100", "opc-work")
+        assert h is None
+        assert "removing" in reason
 
     def test_accepts_explicitly_installed_status(self):
         host = _host(
@@ -203,7 +235,7 @@ class TestResolveOpenclawAgent:
         )
         with patch("clawrium.core.memory.get_host", return_value=host):
             result = _resolve_openclaw_agent("192.168.1.100", "opc-work")
-        assert result is not None and result[1] == "opc-work"
+        assert result[0] is not None and result[1] == "opc-work"
 
     def test_accepts_record_without_status_field(self):
         # Legacy/test records without status are treated as installed.
@@ -212,7 +244,7 @@ class TestResolveOpenclawAgent:
         )
         with patch("clawrium.core.memory.get_host", return_value=host):
             result = _resolve_openclaw_agent("192.168.1.100", "opc-work")
-        assert result is not None
+        assert result[0] is not None
 
 
 # ----- _parse_memory_info_stdout -------------------------------------------
@@ -326,7 +358,7 @@ def _setup_playbook_env(tmp_path: Path, operation: str) -> tuple[Path, Path]:
 
 class TestGetMemoryInfo:
     def test_returns_none_when_agent_unresolved(self):
-        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=None):
+        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=(None, "test-reason")):
             assert get_memory_info("192.168.1.100", "x") is None
 
     def test_returns_none_on_missing_playbook(self, tmp_path: Path):
@@ -459,7 +491,7 @@ class TestReadMemoryFile:
         assert read_memory_file("h", "a", "../bad") is None
 
     def test_returns_none_when_unresolved(self):
-        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=None):
+        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=(None, "test-reason")):
             assert read_memory_file("h", "a", "SOUL.md") is None
 
     def test_returns_decoded_content_on_success(self, tmp_path: Path):
@@ -598,7 +630,7 @@ class TestWriteMemoryFile:
         assert err is not None and "Invalid" in err
 
     def test_returns_false_when_unresolved(self):
-        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=None):
+        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=(None, "test-reason")):
             ok, err = write_memory_file("h", "a", "SOUL.md", "x")
         assert ok is False
         assert err is not None
@@ -759,7 +791,7 @@ class TestDeleteMemoryFiles:
         assert err is not None
 
     def test_returns_false_when_unresolved(self):
-        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=None):
+        with patch("clawrium.core.memory._resolve_openclaw_agent", return_value=(None, "test-reason")):
             ok, err = delete_memory_files("h", "a", ["SOUL.md"])
         assert ok is False
 
@@ -988,6 +1020,41 @@ class TestCleanupArtifacts:
             "clawrium.core.memory.core_keys.get_host_private_key", return_value=None
         ):
             assert expect_falsy(call())
+
+    @pytest.mark.parametrize(
+        "operation,call",
+        [
+            (
+                "memory_write",
+                lambda: write_memory_file("h", "opc-work", "SOUL.md", "x"),
+            ),
+            (
+                "memory_delete",
+                lambda: delete_memory_files("h", "opc-work", ["SOUL.md"]),
+            ),
+        ],
+    )
+    def test_ssh_key_missing_error_includes_remediation_command(
+        self, tmp_path: Path, operation: str, call
+    ):
+        # write/delete surface the structured error string back to the user;
+        # confirm the actionable 'clm host init' guidance is present so the
+        # CLI/TUI message stays useful if someone refactors the error text.
+        host = _host(
+            {"opc-work": {"type": "openclaw", "agent_name": "opc-work"}}
+        )
+        playbook_dir, _ = _setup_playbook_env(tmp_path, operation)
+
+        with patch(
+            "clawrium.core.memory._resolve_openclaw_agent",
+            return_value=(host, "opc-work"),
+        ), patch("clawrium.core.memory._PLAYBOOK_DIR", playbook_dir), patch(
+            "clawrium.core.memory.core_keys.get_host_private_key", return_value=None
+        ):
+            ok, err = call()
+        assert ok is False
+        assert err is not None
+        assert "clm host init" in err
 
     def test_cleanup_swallows_permission_error(self, tmp_path: Path):
         # Real cleanup uses shutil.rmtree which can raise PermissionError on
