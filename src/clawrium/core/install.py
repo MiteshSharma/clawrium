@@ -515,7 +515,10 @@ def run_installation(
     # (enabled / host / port).
     hermes_api_server_key = None
     if claw_name == "hermes":
-        instance_key = get_instance_key(hostname, claw_name, agent_name)
+        # Use canonical hostname (not the alias passed by the CLI) so the
+        # instance_key matches what lifecycle.configure_agent() will look up.
+        canonical_hostname = host["hostname"]
+        instance_key = get_instance_key(canonical_hostname, claw_name, agent_name)
         existing_entry = get_instance_secrets(instance_key).get(
             "HERMES_API_SERVER_KEY"
         )
