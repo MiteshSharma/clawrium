@@ -1,8 +1,9 @@
 """Hermes chat backend (OpenAI-compatible HTTP).
 
 Phase 1 scope: single-turn, non-streaming POST to /v1/chat/completions.
-Multi-turn history (phase 2), SSE streaming (phase 3), and polished error
-messaging (phase 4) land in follow-up slices of #322.
+Phase 2 (this file): client-side conversation history accumulates across
+calls in `self._history` and is sent with each request. SSE streaming
+(phase 3) and polished error messaging (phase 4) land in follow-up slices.
 """
 
 from __future__ import annotations
@@ -19,6 +20,13 @@ from clawrium.core.chat import (
 )
 
 __all__ = ["HermesOpenAIBackend"]
+
+# Cap accumulated turns to bound memory and per-request payload size on long
+# sessions. Each "turn" is a user+assistant pair (2 history entries); 100 turns
+# ≈ 200 entries. Hit-once warning is emitted via `on_delta`-like console hook
+# from the CLI layer is unnecessary — truncation is silent at the backend; the
+# REPL is the right place for any user-facing notice.
+MAX_HISTORY_TURNS = 100
 
 
 class HermesOpenAIBackend:
@@ -49,6 +57,11 @@ class HermesOpenAIBackend:
         self._model = model
         self._timeout_seconds = timeout_seconds
         self._client: httpx.AsyncClient | None = None
+        self._history: list[dict[str, str]] = []
+
+    def clear_history(self) -> None:
+        """Drop accumulated turns so the next send_message starts fresh."""
+        self._history.clear()
 
     async def connect(self) -> None:
         """Open the underlying HTTP client.
@@ -75,12 +88,23 @@ class HermesOpenAIBackend:
         on_delta: Callable[[str], None] | None = None,
         response_timeout_seconds: float = 120.0,
     ) -> str:
-        """POST a single user message and return the assistant reply.
+        """POST a user message with accumulated history and return the reply.
 
-        Phase 1 does not retain history across calls and does not stream.
-        `session_key` is accepted for signature parity with the openclaw
-        backend; it is ignored for OpenAI-typed agents (Slice 4 will surface a
-        dim warning for non-default values at the CLI layer).
+        The running `self._history` (prior user+assistant turns) is sent with
+        each request so hermes can resolve back-references like "double that".
+        On a successful reply the user message and assistant reply are both
+        appended; on any failure neither is appended so a retry sees the same
+        state the failed call started from.
+
+        Ordering contract: `_history` is mutated *before* `on_delta` is
+        invoked. If `on_delta` raises (e.g. broken pipe), the turn is already
+        committed to history — callers must NOT retry on the same backend
+        instance without first calling `clear_history()` or dropping the last
+        pair, otherwise the next request will duplicate the turn server-side.
+
+        Does not stream. `session_key` is accepted for signature parity with
+        the openclaw backend; it is ignored for OpenAI-typed agents (Slice 4
+        will surface a dim warning for non-default values at the CLI layer).
         `on_delta` is also accepted for signature parity and is invoked once
         with the full reply so the existing renderer in `cli/chat.py` works
         unchanged.
@@ -88,9 +112,10 @@ class HermesOpenAIBackend:
         if self._client is None:
             raise ChatConnectionError("Hermes chat backend not connected")
 
+        outgoing_messages = self._history + [{"role": "user", "content": message}]
         body: dict[str, Any] = {
             "model": self._model,
-            "messages": [{"role": "user", "content": message}],
+            "messages": outgoing_messages,
             "stream": False,
         }
         headers = {
@@ -140,6 +165,14 @@ class HermesOpenAIBackend:
             raise ChatProtocolError(
                 "Hermes response missing assistant content"
             )
+
+        self._history.append({"role": "user", "content": message})
+        self._history.append({"role": "assistant", "content": text})
+        # Truncate oldest turns once we exceed the cap. Keep entries aligned to
+        # user/assistant pairs so the wire format never starts mid-pair.
+        max_entries = MAX_HISTORY_TURNS * 2
+        if len(self._history) > max_entries:
+            del self._history[: len(self._history) - max_entries]
 
         if on_delta is not None:
             on_delta(text)

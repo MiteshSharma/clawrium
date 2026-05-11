@@ -422,12 +422,16 @@ class FakeChatClient:
         self.connected = False
         self.closed = False
         self.last_kwargs: dict[str, object] = {}
+        self.clear_history_calls = 0
 
     async def connect(self):
         self.connected = True
 
     async def close(self):
         self.closed = True
+
+    def clear_history(self) -> None:
+        self.clear_history_calls += 1
 
     async def send_message(self, message: str, **kwargs):
         self.messages.append(message)
@@ -482,6 +486,63 @@ def test_chat_loop_handles_eof_and_closes_client(monkeypatch):
 
     assert fake_client.connected is True
     assert fake_client.closed is True
+
+
+def test_chat_loop_reset_command_invokes_clear_history(monkeypatch, capsys):
+    fake_client = FakeChatClient()
+    inputs = iter(["hello", "/reset", "world", "/exit"])
+
+    async def fake_read_user_input(prompt: str, idle_timeout_seconds: float) -> str:
+        return next(inputs)
+
+    monkeypatch.setattr(chat_module, "_read_user_input", fake_read_user_input)
+
+    asyncio.run(
+        chat_module._chat_loop(
+            backend=fake_client,
+            session_key="main",
+            response_timeout_seconds=30.0,
+            idle_timeout_seconds=10.0,
+        )
+    )
+
+    assert fake_client.clear_history_calls == 1
+    # The /reset itself must NOT be sent as a message to the agent.
+    assert fake_client.messages == ["hello", "world"]
+    captured = capsys.readouterr().out
+    assert "Conversation history cleared" in captured
+
+
+def test_chat_loop_reset_on_noop_backend_does_not_crash(monkeypatch, capsys):
+    """WebSocket-backed clients implement clear_history as a no-op; /reset
+    still completes cleanly and prints the cleared message."""
+
+    class NoopClearBackend(FakeChatClient):
+        def clear_history(self) -> None:
+            # Mirrors OpenClawChatClient: no client-side state to clear.
+            super().clear_history()
+
+    backend = NoopClearBackend()
+    inputs = iter(["/reset", "/exit"])
+
+    async def fake_read_user_input(prompt: str, idle_timeout_seconds: float) -> str:
+        return next(inputs)
+
+    monkeypatch.setattr(chat_module, "_read_user_input", fake_read_user_input)
+
+    asyncio.run(
+        chat_module._chat_loop(
+            backend=backend,
+            session_key="main",
+            response_timeout_seconds=30.0,
+            idle_timeout_seconds=10.0,
+        )
+    )
+
+    assert backend.clear_history_calls == 1
+    assert backend.messages == []
+    captured = capsys.readouterr().out
+    assert "Conversation history cleared" in captured
 
 
 def test_chat_loop_handles_keyboard_interrupt_and_closes_client(monkeypatch):

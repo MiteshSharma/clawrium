@@ -59,9 +59,8 @@ def chat(
         help=(
             "Gateway session key for WebSocket-backed agents "
             "(for example: main, direct:<channel>, or thread-specific key). "
-            "OpenAI-backed agents (e.g. hermes) accept the flag but ignore it "
-            "in Phase 1 — server-side session routing is not wired through "
-            "/v1/chat/completions yet."
+            "OpenAI-backed agents (e.g. hermes) accept the flag but it has no "
+            "effect — server-side session isolation is not yet supported."
         ),
     ),
     timeout: float = typer.Option(
@@ -77,7 +76,13 @@ def chat(
         help="Seconds to wait for user input before auto-exit (0 disables).",
     ),
 ) -> None:
-    """Start an interactive chat session with an installed agent."""
+    """Start an interactive chat session with an installed agent.
+
+    REPL commands:
+    - /exit or /quit: end the session
+    - /reset: clear accumulated conversation history (no-op for WebSocket-backed
+      agents where the gateway owns session state)
+    """
     _validate_session_key(session)
 
     try:
@@ -146,7 +151,12 @@ def chat(
     console.print(
         f"[green]Connected target:[/green] {rich_escape(str(display_agent))} on {rich_escape(str(display_host))}"
     )
-    console.print("Type /exit or press Ctrl+D to end the chat session.")
+    if chat_type == "openai":
+        console.print(
+            "Type /exit or press Ctrl+D to end. Use /reset to clear conversation history."
+        )
+    else:
+        console.print("Type /exit or press Ctrl+D to end the chat session.")
 
     try:
         asyncio.run(
@@ -208,6 +218,10 @@ async def _chat_loop(
             if message in {"/exit", "/quit"}:
                 console.print("[dim]Bye.[/dim]")
                 break
+            if message == "/reset":
+                backend.clear_history()
+                console.print("[dim]Conversation history cleared.[/dim]")
+                continue
 
             shown_prefix = False
 
@@ -432,7 +446,7 @@ def _sanitize_exception_text(exc: Exception, max_len: int = 500) -> str:
     cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(exc))
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     cleaned = re.sub(
-        r"(?i)\b(token|auth|password)\b\s*[:=]\s*([^\s,;]+)",
+        r"(?i)\b(token|auth|password|key|bearer|secret|apikey|authorization)\b\s*[:=]\s*([^\s,;]+)",
         r"\1=***",
         cleaned,
     )
