@@ -1,13 +1,17 @@
 """Hermes chat backend (OpenAI-compatible HTTP).
 
-Phase 1 scope: single-turn, non-streaming POST to /v1/chat/completions.
-Phase 2 (this file): client-side conversation history accumulates across
-calls in `self._history` and is sent with each request. SSE streaming
-(phase 3) and polished error messaging (phase 4) land in follow-up slices.
+Combines phases 1-4 of #322:
+  Phase 1 — single-turn POST to /v1/chat/completions.
+  Phase 2 — client-side conversation history accumulates across calls in
+            `self._history` and is sent with each request.
+  Phase 3 — SSE streaming via httpx.AsyncClient.stream() with graceful
+            fallback to the single-JSON-response path for non-SSE servers.
+  Phase 4 — polished error messaging + sanitization (in cli/chat.py).
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 import httpx
@@ -105,18 +109,17 @@ class HermesOpenAIBackend:
         `on_delta` callback that raises) neither is appended so a retry sees
         the same state the failed call started from.
 
-        Ordering contract: `on_delta(text)` is invoked **before** `_history`
-        is mutated. This means a broken-pipe / TUI-disconnect inside the
-        callback aborts the turn cleanly — no "ghost half-turn" inflates the
-        wire payload of every subsequent request. This matters for Phase 3
-        streaming where `on_delta` is called many times mid-response.
+        Ordering contract: `on_delta` is invoked **before** `_history` is
+        mutated. A broken-pipe / TUI-disconnect inside the callback aborts
+        the turn cleanly — no "ghost half-turn" inflates the wire payload of
+        every subsequent request. This matters under streaming where
+        `on_delta` is called many times mid-response.
 
-        Does not stream. `session_key` is accepted for signature parity with
-        the openclaw backend; it is ignored for OpenAI-typed agents (Slice 4
-        will surface a dim warning for non-default values at the CLI layer).
-        `on_delta` is also accepted for signature parity and is invoked once
-        with the full reply so the existing renderer in `cli/chat.py` works
-        unchanged.
+        Requests `stream: true` and parses SSE chunks via the OpenAI
+        `chat.completions` delta protocol; falls back to the single-JSON
+        path when the server responds without `text/event-stream`.
+        `session_key` is accepted for signature parity with the openclaw
+        backend; it is ignored for OpenAI-typed agents.
         """
         if self._client is None:
             raise ChatConnectionError("Hermes chat backend not connected")
@@ -126,21 +129,39 @@ class HermesOpenAIBackend:
         body: dict[str, Any] = {
             "model": self._model,
             "messages": outgoing_messages,
-            "stream": False,
+            "stream": True,
         }
         headers = {
             "Authorization": f"Bearer {self._auth_token.get_secret_value()}",
             "Content-Type": "application/json",
+            "Accept": "text/event-stream",
         }
 
         url = f"{self._base_url}/chat/completions"
         try:
-            response = await self._client.post(
+            async with self._client.stream(
+                "POST",
                 url,
                 json=body,
                 headers=headers,
                 timeout=response_timeout_seconds,
-            )
+            ) as response:
+                if response.status_code in (401, 403):
+                    raise ChatAuthenticationError(
+                        f"Hermes rejected bearer token ({response.status_code})"
+                    )
+                if response.status_code >= 400:
+                    await response.aread()
+                    raise ChatProtocolError(
+                        f"Hermes returned HTTP {response.status_code}: "
+                        f"{_short_body(response.text)}"
+                    )
+
+                content_type = response.headers.get("content-type", "")
+                if "text/event-stream" in content_type.lower():
+                    text = await _consume_sse_stream(response, on_delta)
+                else:
+                    text = await _consume_json_response(response, on_delta)
         except httpx.ConnectError as exc:
             raise ChatConnectionError(
                 f"Failed to reach hermes at {self._base_url}: {exc}"
@@ -153,45 +174,90 @@ class HermesOpenAIBackend:
         except httpx.HTTPError as exc:
             raise ChatConnectionError(f"HTTP error talking to hermes: {exc}") from exc
 
-        if response.status_code in (401, 403):
-            raise ChatAuthenticationError(
-                f"Hermes rejected bearer token ({response.status_code})"
-            )
-        if response.status_code >= 400:
-            raise ChatProtocolError(
-                f"Hermes returned HTTP {response.status_code}: "
-                f"{_short_body(response.text)}"
-            )
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise ChatProtocolError(
-                "Hermes returned non-JSON response to chat.completions"
-            ) from exc
-
-        text = _extract_assistant_text(payload)
-        if not text:
-            raise ChatProtocolError(
-                "Hermes response missing assistant content"
-            )
-
-        # Render first — if on_delta raises (broken pipe / TUI disconnect),
-        # the turn is aborted before history is touched so the next request
-        # does not carry a phantom user+assistant pair.
-        if on_delta is not None:
-            on_delta(text)
-
+        # Stream completed without raising — append the turn. Truncation keeps
+        # entries aligned to user/assistant pairs so the wire format never
+        # starts mid-pair.
         self._history.append({"role": "user", "content": message})
         self._history.append({"role": "assistant", "content": text})
-        # Truncate oldest turns once we exceed the cap. Keep entries aligned
-        # to user/assistant pairs so the wire format never starts mid-pair.
         max_entries = MAX_HISTORY_TURNS * 2
         if len(self._history) > max_entries:
             overflow = len(self._history) - max_entries
             del self._history[:overflow]
             self.last_send_dropped_turns = overflow // 2
         return text
+
+
+async def _consume_sse_stream(
+    response: httpx.Response,
+    on_delta: Callable[[str], None] | None,
+) -> str:
+    """Parse an OpenAI-style SSE stream into an assembled reply.
+
+    Recognized line shapes:
+      - `data: {json}`  → parse and emit `choices[0].delta.content`
+      - `data: [DONE]`  → terminate cleanly
+      - `:keep-alive`   → ignored (comment per SSE spec)
+      - empty line      → event boundary, ignored
+      - anything else   → ignored (forward-compat for unknown event names)
+    """
+    parts: list[str] = []
+    async for line in response.aiter_lines():
+        if not line:
+            continue
+        if line.startswith(":"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].lstrip()
+        if payload == "[DONE]":
+            break
+        try:
+            chunk = json.loads(payload)
+        except ValueError as exc:
+            raise ChatProtocolError(
+                f"Hermes returned malformed SSE chunk: {_short_body(payload)}"
+            ) from exc
+        delta = _extract_delta_content(chunk)
+        if not delta:
+            continue
+        parts.append(delta)
+        # Render first — if on_delta raises (broken pipe / TUI disconnect),
+        # the turn is aborted before history is touched so the next request
+        # does not carry a phantom user+assistant pair. History append lives
+        # in `send_message` after this function returns.
+        if on_delta is not None:
+            on_delta(delta)
+
+    text = "".join(parts)
+    if not text:
+        raise ChatProtocolError("Hermes response missing assistant content")
+    return text
+
+
+async def _consume_json_response(
+    response: httpx.Response,
+    on_delta: Callable[[str], None] | None,
+) -> str:
+    """Read a non-streamed chat.completions body and emit a single delta.
+
+    Servers that don't advertise `text/event-stream` (older builds, proxies
+    that buffer) fall through here so the CLI still works end-to-end.
+    """
+    await response.aread()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ChatProtocolError(
+            "Hermes returned non-JSON response to chat.completions"
+        ) from exc
+
+    text = _extract_assistant_text(payload)
+    if not text:
+        raise ChatProtocolError("Hermes response missing assistant content")
+
+    if on_delta is not None:
+        on_delta(text)
+    return text
 
 
 def _extract_assistant_text(payload: Any) -> str:
@@ -216,6 +282,25 @@ def _extract_assistant_text(payload: Any) -> str:
             if isinstance(block, dict) and isinstance(block.get("text"), str):
                 parts.append(block["text"])
         return "".join(parts)
+    return ""
+
+
+def _extract_delta_content(chunk: Any) -> str:
+    """Pull `choices[0].delta.content` from a streamed chat.completions chunk."""
+    if not isinstance(chunk, dict):
+        return ""
+    choices = chunk.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    delta = first.get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    content = delta.get("content")
+    if isinstance(content, str):
+        return content
     return ""
 
 

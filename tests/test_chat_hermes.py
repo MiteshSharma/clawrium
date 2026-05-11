@@ -65,15 +65,15 @@ def test_happy_path_returns_assistant_content():
     assert captured["url"] == "http://hermes.test:8642/v1/chat/completions"
     assert captured["headers"]["authorization"] == "Bearer token-abc"
     assert captured["body"]["model"] == "hermes"
-    assert captured["body"]["stream"] is False
+    assert captured["body"]["stream"] is True
     assert captured["body"]["messages"] == [
         {"role": "user", "content": "hello"}
     ]
 
 
 def test_send_message_invokes_on_delta_with_full_text():
-    """Phase 1 is non-streaming; on_delta is fired once with the entire reply so
-    the existing renderer in cli/chat.py works unchanged."""
+    """Non-SSE responses fire on_delta once with the entire reply so the
+    existing renderer in cli/chat.py works unchanged."""
     deltas: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -489,3 +489,121 @@ def test_connect_is_idempotent():
     _run(backend.connect())
     assert backend._client is first_client
     _run(backend.close())
+
+
+def _sse_response(body: bytes) -> httpx.Response:
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream; charset=utf-8"},
+        content=body,
+    )
+
+
+def test_streaming_deltas():
+    """Canned SSE chunks → on_delta called per delta; final text is concatenation."""
+    deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":", "}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"world!"}}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        return _sse_response(body)
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi", on_delta=deltas.append))
+    finally:
+        _run(backend.close())
+
+    assert deltas == ["Hello", ", ", "world!"]
+    assert result == "Hello, world!"
+
+
+def test_sse_edge_cases():
+    """[DONE] terminates the stream; :keep-alive comments and other non-data
+    lines are ignored without spurious on_delta calls; bytes after [DONE]
+    are not parsed."""
+    deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b":keep-alive\n\n"
+            b'data: {"choices":[{"delta":{"content":"alpha"}}]}\n\n'
+            b": another comment\n\n"
+            b"event: ping\n\n"
+            b'data: {"choices":[{"delta":{"content":"beta"}}]}\n\n'
+            b"data: [DONE]\n\n"
+            b'data: {"choices":[{"delta":{"content":"should-not-appear"}}]}\n\n'
+        )
+        return _sse_response(body)
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi", on_delta=deltas.append))
+    finally:
+        _run(backend.close())
+
+    assert deltas == ["alpha", "beta"]
+    assert result == "alphabeta"
+
+
+def test_non_streaming_fallback():
+    """Non-SSE content-type → falls back to single-JSON-response path and emits
+    one on_delta with the full reply."""
+    captured: dict[str, Any] = {}
+    deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "fallback reply"}}
+                ]
+            },
+        )
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi", on_delta=deltas.append))
+    finally:
+        _run(backend.close())
+
+    assert captured["body"]["stream"] is True
+    assert deltas == ["fallback reply"]
+    assert result == "fallback reply"
+
+
+def test_sse_empty_stream_raises_protocol_error():
+    """A stream that only contains [DONE] (no content deltas) is a protocol
+    violation — we raise rather than return an empty string so the CLI
+    surfaces it instead of silently rendering nothing."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _sse_response(b"data: [DONE]\n\n")
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ChatProtocolError, match="missing assistant content"):
+            _run(backend.send_message("hi"))
+    finally:
+        _run(backend.close())
+
+
+def test_sse_malformed_chunk_raises_protocol_error():
+    """A `data:` line that isn't valid JSON is a protocol error, not a silent skip."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _sse_response(b"data: not-json\n\n")
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ChatProtocolError, match="malformed SSE chunk"):
+            _run(backend.send_message("hi"))
+    finally:
+        _run(backend.close())
