@@ -447,4 +447,51 @@ Implementation outcomes:
 
 E2E results on wolf-i (192.168.1.36) — captured after the next "E2E" log entry below.
 
+---
+
+**Stage**: execution
+**Skill**: /itx:execute
+**Timestamp**: 2026-05-10T19:00:00Z
+**Model**: claude-opus-4-7
+**Subtask**: #315 (Phase 4)
+**Branch**: `issue-68-phase-4-onboarding` (base: `main` @ 2cb086d)
+
+```prompt
+/itx:execute 315 (sub-agent invocation, Phase 4 — Onboarding metadata)
+```
+
+Implementation outcomes:
+
+1. Replaced hermes Phase 1 placeholder onboarding (all four stages `auto_skip: true`) with the real pipeline:
+   - `providers` — required, two canonical tasks (`provider_select` + `provider_test`) identical in shape to openclaw.
+   - `identity` — `auto_skip: true` with descriptive text. Hermes manages SOUL.md/AGENTS.md internally inside `~/.hermes/` on the agent host; clm does not push identity files in this iteration.
+   - `channels` — required, single confirm task. The CLI runner forces `channels = ["cli"]` for `claw_type == "hermes"` so the user is never offered Discord/Slack — those gateways are out of scope and deferred.
+   - `validate` — three composite tasks (`binary_check`, `env_check`, `health_check`), executed in code by the new `validate_hermes_health()` helper.
+
+2. New `validate_hermes_health()` in `core/validation.py` runs three checks on the agent host via Ansible: `hermes --version`, `test -f ~/.hermes/.env`, and `curl -fsS http://127.0.0.1:8642/health`. Because the api_server platform binds to loopback on the agent host by design, the probe MUST execute there rather than from the clm machine. Three implementation gotchas surfaced during E2E:
+   - The hermes agent user ships with `/usr/sbin/nologin` as its login shell (Phase 1 design). `sudo -u <user> -i bash` therefore fails with "This account is currently not available." Fix: use `sudo -u <user> bash -c '…'` (non-login) with explicit `HOME` and `PATH` env vars so `hermes` from `~/.local/bin` resolves.
+   - Ansible's `shell` module defaults to `/bin/sh` (dash), which does NOT support `set -o pipefail`. Removed the `pipefail` prefix; each check captures its own rc into a sentinel line instead.
+   - `curl -w "%{http_code}"` with `-o /dev/null` writes the status code with NO trailing newline. Added `\n` to the format string so the parser can read the line cleanly.
+
+3. Added per-stage `auto_skip:true` handling to `can_skip_stage()` in `core/onboarding.py`. Previously the function only honored a top-level `skip_stages: [...]` list; now it also returns True when `onboarding.stages.<stage>.auto_skip is True`. This wires up hermes' identity stage to be silently skipped by the configure wizard.
+
+4. Extended `_run_validate_stage` with a hermes branch that calls `validate_hermes_health` instead of openclaw's `validate_openclaw_gateway`. Also skips the SOUL.md check for hermes (since identity is auto_skipped, there is no local SOUL.md to validate). Step numbering is now computed from `total_checks` instead of hardcoded indices.
+
+5. The `initialize_onboarding` auto_skip → READY short-circuit is left intact. Hermes Phase 4 no longer triggers it (because `providers` is now real), but the contract MUST keep working for future agent types that declare every stage as auto_skip. New test `test_initialize_all_auto_skip_short_circuits_to_ready` exercises the short-circuit via a manifest mock to lock the behavior in independent of any specific shipping manifest.
+
+6. Test surface:
+   - New `tests/test_hermes_onboarding.py` — 14 tests covering manifest shape, `can_skip_stage` behavior, and four `validate_hermes_health` scenarios (all pass / health fail / env missing / binary missing) plus an agent-not-found guard. ansible_runner is mocked.
+   - Updated `tests/test_registry_hermes.py::test_hermes_manifest_onboarding_all_auto_skip` → `_real_pipeline` to assert the new shape.
+   - Updated `tests/test_onboarding.py::test_initialize_hermes_auto_skips_to_ready` → `_starts_pending_after_phase_4`, plus the new `_all_auto_skip_short_circuits_to_ready` regression test.
+
+E2E results on wolf-i (192.168.1.36) against provider `clm-openrouter`:
+
+- `clm agent install --type hermes --host wolf-i --name hermes-test --yes` — succeeded (~2 min, install + clone + python venv).
+- `clm agent start hermes-test` (no --force, before configure) — **correctly blocked**: "Cannot start hermes-test - onboarding not started. Run 'clm agent configure hermes-test' to begin onboarding." This is the new contract: hermes no longer fast-paths to READY at install time.
+- `clm agent configure hermes-test --yes` — walked through PROVIDERS (clm-openrouter selected) → IDENTITY (silently auto-skipped, no header printed) → CHANNELS (only `cli` offered, single recommended option auto-selected) → VALIDATE (4 checks: install, provider config, provider connectivity, hermes health). Onboarding ended in READY.
+- `clm agent start hermes-test` (no --force, after configure) — succeeded.
+- `clm agent stop hermes-test` — succeeded.
+- `clm agent configure hermes-test --yes --stage validate` (with service stopped) — **correctly failed**: "api_server /health did not return 200 for agent 'hermes-test' on host 'wolf-i'. The hermes service is not healthy. Inspect 'journalctl -u hermes-hermes-test.service'." Validate stage fails loudly when /health is down, exactly as intended.
+- `clm agent remove hermes-test --force` — cleaned up the agent user, systemd unit, `~/.hermes/`, binary symlink, and `hosts.json` record.
+
 </details>

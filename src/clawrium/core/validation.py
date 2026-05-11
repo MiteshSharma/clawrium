@@ -23,6 +23,7 @@ __all__ = [
     "validate_provider_api_key",
     "verify_provider_connectivity",
     "validate_openclaw_gateway",
+    "validate_hermes_health",
     "validate_agent_installation",
     "ERROR_MESSAGES",
     "WARNING_MESSAGES",
@@ -112,6 +113,18 @@ ERROR_MESSAGES = {
         "Verify gateway auth token and device credentials."
     ),
     "gateway_protocol_failed": "Gateway protocol error: {error}",
+    "hermes_binary_missing": (
+        "`hermes --version` failed on host '{host}'. "
+        "The hermes binary is missing or not in the agent user's PATH."
+    ),
+    "hermes_env_missing": (
+        "`~/.hermes/.env` does not exist for agent '{claw_name}' on host '{host}'. "
+        "Run 'clm agent configure {claw_name} --stage providers' first."
+    ),
+    "hermes_health_failed": (
+        "api_server /health did not return 200 for agent '{claw_name}' on host '{host}'. "
+        "The hermes service is not healthy. Inspect 'journalctl -u hermes-{claw_name}.service'."
+    ),
 }
 
 WARNING_MESSAGES = {
@@ -893,4 +906,198 @@ def validate_agent_installation(host: str, claw_name: str) -> ValidationResult:
             "version": claw_data.get("version"),
             "status": claw_data.get("status"),
         },
+    )
+
+
+def validate_hermes_health(
+    host: str,
+    claw_name: str,
+    timeout: int = 30,
+) -> ValidationResult:
+    """Validate hermes agent health on a remote host.
+
+    Runs three checks via Ansible against the agent user on the remote host:
+
+    1. ``hermes --version`` exits 0 (binary present and runnable).
+    2. ``~/.hermes/.env`` exists (configure has been run at least once).
+    3. ``curl -fsS http://127.0.0.1:8642/health`` returns 200 (api_server up).
+
+    The api_server platform binds to loopback on the agent host by design,
+    so the /health probe must be issued from inside that host. We use the
+    same ansible-runner infrastructure as the rest of clm rather than
+    setting up a port-forward.
+
+    Args:
+        host: Host alias, hostname, or key_id.
+        claw_name: Name of the hermes agent instance.
+        timeout: Ansible-runner timeout in seconds.
+
+    Returns:
+        ValidationResult with pass/fail status. On failure, ``errors``
+        contains one entry per failed check; ``details`` carries the raw
+        stdout/stderr/rc for the failing check (when available).
+    """
+    import ansible_runner
+    from clawrium.core import keys as core_keys
+    from clawrium.core.hosts import get_host_by_key_id
+
+    host_data = get_host(host)
+    if not host_data:
+        host_data = get_host_by_key_id(host)
+    if not host_data:
+        return ValidationResult(
+            passed=False,
+            errors=[f"Host '{host}' not found."],
+        )
+
+    hostname = host_data["hostname"]
+    display_host = host_data.get("alias") or hostname
+
+    agents = host_data.get("agents", {})
+    claw_record = agents.get(claw_name)
+    if not isinstance(claw_record, dict):
+        return ValidationResult(
+            passed=False,
+            errors=[
+                ERROR_MESSAGES["agent_not_installed"].format(
+                    claw_type=claw_name, host=display_host
+                )
+            ],
+        )
+
+    key_id = host_data.get("key_id") or hostname
+    ssh_key = core_keys.get_host_private_key(key_id)
+    if not ssh_key:
+        return ValidationResult(
+            passed=False,
+            errors=[
+                f"SSH key for host '{key_id}' not found. "
+                f"Run 'clm host init {hostname}' to provision it."
+            ],
+        )
+
+    inventory = {
+        "all": {
+            "hosts": {
+                hostname: {
+                    "ansible_user": host_data.get("user", "xclm"),
+                    "ansible_port": host_data.get("port", 22),
+                    "ansible_ssh_private_key_file": str(ssh_key),
+                }
+            }
+        }
+    }
+
+    # Three independent checks. Each runs as the agent user on the remote host
+    # via `sudo -u <agent_name> bash` (NOT `-i`/login shell — the hermes user
+    # ships with /usr/sbin/nologin as its login shell by design, so a login
+    # shell would refuse to start). We set HOME and PATH explicitly so the
+    # `hermes` symlink in ~/.local/bin resolves and ~/.hermes/.env is found.
+    # Ansible's `shell` module defaults to /bin/sh (dash) which doesn't
+    # support `set -o pipefail`; we don't need a pipefail since each check
+    # captures its own rc into a sentinel line.
+    agent_home = f"/home/{claw_name}"
+    shell_cmd = (
+        f"sudo -u {claw_name} bash -c '"
+        f"  export HOME={agent_home}; "
+        f'  export PATH={agent_home}/.local/bin:$PATH; '
+        f"  echo BINARY_CHECK; "
+        f"  hermes --version 2>&1; "
+        f"  echo BINARY_RC=$?; "
+        f"  echo ENV_CHECK; "
+        f"  test -f {agent_home}/.hermes/.env && echo ENV_OK || echo ENV_MISSING; "
+        f"  echo HEALTH_CHECK; "
+        f'  curl -fsS -o /dev/null -w "%{{http_code}}\\n" http://127.0.0.1:8642/health '
+        f"     || echo CURL_FAILED"
+        f"'"
+    )
+
+    errors: list[str] = []
+    details: dict[str, Any] = {}
+
+    try:
+        result = ansible_runner.run(
+            private_data_dir="/tmp",
+            inventory=inventory,
+            host_pattern=hostname,
+            module="shell",
+            module_args=shell_cmd,
+            quiet=True,
+            timeout=timeout,
+        )
+    except Exception as e:
+        return ValidationResult(
+            passed=False,
+            errors=[f"Failed to run hermes health checks on '{display_host}': {e}"],
+        )
+
+    stdout = ""
+    rc = None
+    for event in result.events:
+        if event.get("event") in ("runner_on_ok", "runner_on_failed"):
+            res = event.get("event_data", {}).get("res", {})
+            stdout = res.get("stdout", "") or ""
+            rc = res.get("rc")
+            break
+        if event.get("event") == "runner_on_unreachable":
+            res = event.get("event_data", {}).get("res", {})
+            msg = res.get("msg", "host unreachable")
+            return ValidationResult(
+                passed=False,
+                errors=[f"Host '{display_host}' unreachable: {msg}"],
+            )
+
+    details["raw_stdout"] = stdout
+    details["rc"] = rc
+
+    # Parse stdout line-by-line. We tolerate ordering surprises by scanning
+    # for each marker and the value on the following line(s).
+    lines = stdout.splitlines()
+
+    # Binary check: BINARY_RC line carries the rc of `hermes --version`.
+    binary_rc: int | None = None
+    for line in lines:
+        if line.startswith("BINARY_RC="):
+            try:
+                binary_rc = int(line.split("=", 1)[1].strip())
+            except (ValueError, IndexError):
+                binary_rc = None
+            break
+    if binary_rc != 0:
+        errors.append(
+            ERROR_MESSAGES["hermes_binary_missing"].format(host=display_host)
+        )
+
+    # Env check: literal token ENV_OK or ENV_MISSING.
+    env_ok = "ENV_OK" in lines
+    env_missing = "ENV_MISSING" in lines
+    if env_missing or not env_ok:
+        errors.append(
+            ERROR_MESSAGES["hermes_env_missing"].format(
+                claw_name=claw_name, host=display_host
+            )
+        )
+
+    # Health check: the curl line prints the HTTP status code (e.g. "200"),
+    # or "CURL_FAILED" on connection failure. Find the line immediately
+    # after the HEALTH_CHECK marker.
+    health_status = None
+    for i, line in enumerate(lines):
+        if line.strip() == "HEALTH_CHECK" and i + 1 < len(lines):
+            health_status = lines[i + 1].strip()
+            break
+    if health_status != "200":
+        errors.append(
+            ERROR_MESSAGES["hermes_health_failed"].format(
+                claw_name=claw_name, host=display_host
+            )
+        )
+    details["health_status"] = health_status
+    details["binary_rc"] = binary_rc
+    details["env_ok"] = env_ok
+
+    return ValidationResult(
+        passed=len(errors) == 0,
+        errors=errors,
+        details=details,
     )
