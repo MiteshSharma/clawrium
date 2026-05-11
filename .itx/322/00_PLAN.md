@@ -137,31 +137,87 @@ Run `make test` and `make lint` before review.
 - **SSE edge cases.** Heartbeats (`:keep-alive`), `data: [DONE]` sentinels, partial JSON across chunks. Covered by handwritten parser + fixtures.
 - **`--session` semantic drift.** No-op for hermes v1; print dim warning when user passes non-default value to a hermes agent.
 
-## Subtasks (proposed)
+## Subtasks (outcome-driven slices)
 
-This issue is large enough (server-side bind change + opportunistic migration + manifest schema + protocol refactor + new backend + REPL wiring + tests + research note) to benefit from subtasks. Proposed split:
+Each subtask delivers a user-visible improvement to `clm chat <hermes-name>` and is independently shippable. Earlier slices work without later ones; later slices strictly improve the experience.
 
-1. **#TBD-A** — `fix(hermes): bind api_server on 0.0.0.0 + migrate existing installs` — `core/install.py` default change, `core/lifecycle.py` opportunistic migration, tests. **Server-side prerequisite; merge first.**
-2. **#TBD-B** — `chore(registry): add features.chat schema + manifest entries` — registry.py extension, openclaw + hermes manifest updates, validation tests. Pure prep, no behavior change.
-3. **#TBD-C** — `refactor(chat): extract ChatBackend protocol` — protocol in `core/chat.py`, OpenClawChatClient conforms, all existing tests pass. No new behavior.
-4. **#TBD-D** — `feat(chat): HermesOpenAIBackend + cli dispatch` — `core/chat_hermes.py`, `cli/chat.py` dispatch, secret hydration, help text. Adds httpx dep.
-5. **#TBD-E** — `test(chat): hermes coverage` — split `test_cli_chat`, add `test_chat_hermes`. Parallel to D but kept separate for diff readability.
-6. **#TBD-F** — `docs(research): aichat investigation note` — short doc. Independent, can ship any time.
+### Slice 1 — `clm chat <hermes>` works end-to-end from any clm machine
+**User outcome**: I can run `clm chat my-hermes` from my laptop and roundtrip a single message through a hermes agent on another box. No SSH tunnel. No curl. Response prints when the agent finishes.
 
-Order: A → B → C → D, with E in parallel to D and F any time. Each subtask is independently mergeable without breaking main.
+**Scope** (the minimum that makes this real):
+- Flip `core/install.py:847-851` bind from `127.0.0.1` to `0.0.0.0` (new installs).
+- Opportunistic migration in `core/lifecycle.py` hermes branch (existing installs flip on next configure).
+- Add `features.chat.type` enum to `core/registry.py` + both manifests.
+- Add `httpx>=0.27` dep.
+- Replace the openclaw type gate in `cli/chat.py` with dispatch by `features.chat.type`.
+- New `core/chat_hermes.py` with `HermesOpenAIBackend`: bearer hydration, `POST /v1/chat/completions` (non-streaming for this slice), single-turn (no history yet).
+- Enough tests to prove the happy path on hermes and that openclaw chat is unchanged.
+
+**Exit criteria**: a user can chat with hermes from any machine on the LAN; openclaw chat behavior identical.
+
+---
+
+### Slice 2 — multi-turn conversations remember context
+**User outcome**: I send "what's 2+2?", agent says "4", I send "double that", agent says "8". Prior turns carry within the REPL session.
+
+**Scope**: client-side history list in `HermesOpenAIBackend.send_message` — each request includes the running `messages: [...]` array. `/reset` command clears it. Tests for two-turn accumulation.
+
+**Exit criteria**: history accumulates across turns; `/reset` clears it.
+
+---
+
+### Slice 3 — responses stream as they're generated
+**User outcome**: I see the agent's reply appear word-by-word, same as `clm chat <openclaw-name>` does today, instead of waiting for the full response.
+
+**Scope**: SSE parsing via `httpx.AsyncClient.stream()` against `/v1/chat/completions` with `stream: true`. Handle `data: [DONE]` sentinel and `:keep-alive` comments. Fall back to non-streaming JSON on non-SSE content-type. Wire `on_delta` callback so the existing REPL renderer in `cli/chat.py:186-191` works unchanged.
+
+**Exit criteria**: streaming deltas render incrementally; non-SSE servers still work via fallback.
+
+---
+
+### Slice 4 — failures are obvious and recoverable
+**User outcome**: when something's wrong, I get a clear message that tells me how to fix it, not a stack trace.
+
+**Scope** (each failure path gets a friendly message + remediation hint):
+- Missing/invalid `HERMES_API_SERVER_KEY` → "Re-run `clm agent install --type hermes`" (mirrors `lifecycle.py:748-754`).
+- Service unreachable / connection refused → "Check `systemctl --user status hermes-<name>` on the agent host" plus a hint about `clm agent configure` if the bind looks stale.
+- Bearer rejected (401/403) → "Token mismatch. Re-run `clm agent configure <name>`."
+- `--session` passed to a hermes agent → dim warning explaining it's a no-op for OpenAI-typed agents.
+
+**Exit criteria**: every failure surface has a tested, helpful message; no raw httpx/network exceptions reach the user.
+
+---
+
+### Slice 5 — aichat investigation note (issue AC, not user-facing)
+**User outcome**: future maintainers know why we built our own REPL instead of shelling out to aichat.
+
+**Scope**: `docs/research/aichat.md` — 1-page summary covering base-url config, history handling, model selection, error mapping, and the reference-implementation-vs-sidecar tradeoff. Linked from the issue.
+
+**Exit criteria**: doc exists, linked from #322.
+
+---
+
+### Ordering and parallelism
+
+- Slice 1 is the prerequisite for 2, 3, 4. After Slice 1 lands, hermes chat is *useful but rough*.
+- Slices 2, 3, 4 can be developed in parallel after Slice 1 — they touch the same backend file but different methods/paths; rebases will be cheap.
+- Slice 5 can land at any time.
+
+A reasonable shipping order: **1 → (2 ‖ 3) → 4 → 5**, with each slice as its own PR so a regression in (e.g.) streaming doesn't block multi-turn from landing.
 
 ## Acceptance Criteria Mapping
 
 | AC from issue | Covered by |
 |---|---|
-| `clm chat <hermes-name>` works | Subtasks A + D + manual verify |
-| `clm chat <openclaw-name>` unchanged | Subtask C (refactor preserves behavior) + regression test |
-| Bearer from secrets.json | Subtask D (hydration helper mirroring `lifecycle.py:734-771`) |
-| Friendly missing-key error | Subtask D + tests in E |
-| Friendly service-down error | Subtask D (health probe) + tests in E |
-| Loopback-only documented (NO LONGER LOOPBACK) | Subtask A — bind is 0.0.0.0; remove the loopback claim from docs |
-| Test coverage | Subtask E |
-| aichat investigation | Subtask F |
+| `clm chat <hermes-name>` works | Slice 1 |
+| `clm chat <openclaw-name>` unchanged | Slice 1 (regression test) |
+| Bearer from secrets.json | Slice 1 |
+| Friendly missing-key error | Slice 4 |
+| Friendly service-down error | Slice 4 |
+| Loopback-only documented (NO LONGER LOOPBACK) | Slice 1 — bind flipped to 0.0.0.0 |
+| Multi-turn / streaming UX parity with openclaw | Slices 2 + 3 |
+| Test coverage | Each slice ships with its own tests |
+| aichat investigation | Slice 5 |
 
 ---
 
