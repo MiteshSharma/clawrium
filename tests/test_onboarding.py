@@ -9,6 +9,7 @@ from clawrium.core.onboarding import (
     get_onboarding_state,
     transition_state,
     complete_stage,
+    update_stage_metadata,
     initialize_onboarding,
     can_skip_stage,
     get_stage_tasks,
@@ -308,6 +309,83 @@ class TestCompleteStage:
         """Raises AgentNotFoundError for non-existent claw."""
         with pytest.raises(AgentNotFoundError):
             complete_stage("server1", "nonexistent", "providers", StageStatus.COMPLETE)
+
+
+class TestUpdateStageMetadata:
+    """Tests for update_stage_metadata function (re-configure metadata refresh)."""
+
+    def test_patches_metadata_without_changing_status(self, host_with_onboarding):
+        """Updating metadata leaves status and completed_at unchanged."""
+        # First mark providers complete with one provider_id
+        complete_stage(
+            "server1",
+            "openclaw",
+            "providers",
+            StageStatus.COMPLETE,
+            {"provider_id": "old-provider"},
+        )
+
+        from clawrium.core.hosts import get_host
+
+        before = get_host("server1")["agents"]["openclaw"]["onboarding"]["stages"][
+            "providers"
+        ]
+        original_completed_at = before["completed_at"]
+
+        # Now re-configure with a new provider_id via the metadata-only path
+        result = update_stage_metadata(
+            "server1", "openclaw", "providers", {"provider_id": "new-provider"}
+        )
+        assert result is True
+
+        after = get_host("server1")["agents"]["openclaw"]["onboarding"]["stages"][
+            "providers"
+        ]
+        assert after["provider_id"] == "new-provider"
+        assert after["status"] == "complete"
+        # completed_at is preserved — this is metadata-only, not a re-completion
+        assert after["completed_at"] == original_completed_at
+
+    def test_works_when_in_later_state(self, host_with_onboarding):
+        """Can patch metadata even when onboarding state has moved past the stage."""
+        # Advance state past providers (simulates espresso in VALIDATE state
+        # trying to re-configure providers — the original short-circuit bug)
+        complete_stage(
+            "server1",
+            "openclaw",
+            "providers",
+            StageStatus.COMPLETE,
+            {"provider_id": "old"},
+        )
+        transition_state("server1", "openclaw", OnboardingState.PROVIDERS)
+        transition_state("server1", "openclaw", OnboardingState.IDENTITY)
+        transition_state("server1", "openclaw", OnboardingState.CHANNELS)
+        transition_state("server1", "openclaw", OnboardingState.VALIDATE)
+
+        # Re-configuring providers from VALIDATE state must not raise
+        result = update_stage_metadata(
+            "server1", "openclaw", "providers", {"provider_id": "new"}
+        )
+        assert result is True
+
+        from clawrium.core.hosts import get_host
+
+        stage = get_host("server1")["agents"]["openclaw"]["onboarding"]["stages"][
+            "providers"
+        ]
+        assert stage["provider_id"] == "new"
+
+    def test_invalid_stage_raises(self, host_with_onboarding):
+        """Rejects unknown stage names."""
+        with pytest.raises(ValueError):
+            update_stage_metadata("server1", "openclaw", "bogus", {"k": "v"})
+
+    def test_agent_not_found(self, host_with_onboarding):
+        """Raises AgentNotFoundError for non-existent claw."""
+        with pytest.raises(AgentNotFoundError):
+            update_stage_metadata(
+                "server1", "nonexistent", "providers", {"provider_id": "x"}
+            )
 
 
 class TestInitializeOnboarding:

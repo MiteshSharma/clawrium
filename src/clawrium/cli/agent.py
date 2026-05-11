@@ -436,7 +436,7 @@ def _run_providers_stage(
 
     # Check if providers stage is already complete - if so, skip complete_stage()
     # This allows re-running the stage to update config without state machine errors
-    from clawrium.core.onboarding import _get_claw_record
+    from clawrium.core.onboarding import _get_claw_record, update_stage_metadata
 
     agent_name = installed_name or claw_type
     claw_record = _get_claw_record(host, agent_name)
@@ -444,7 +444,13 @@ def _run_providers_stage(
     providers_status = stages.get("providers", {}).get("status")
 
     if providers_status == "complete":
-        # Stage already complete, config sync was successful, we're done
+        # Stage already complete (re-configure path). Patch provider_id so the
+        # validate stage reads the *current* selection instead of the original
+        # provider — complete_stage would raise InvalidTransitionError from a
+        # later state, so we update metadata in place.
+        update_stage_metadata(
+            host, agent_name, "providers", {"provider_id": provider_name}
+        )
         console.print("[green]✓[/green] Provider configuration updated")
         return True
 
