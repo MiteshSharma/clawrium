@@ -296,7 +296,11 @@ async def _consume_json_response(
 
 
 def _extract_assistant_text(payload: Any) -> str:
-    """Pull assistant text from an OpenAI-shaped chat.completions response."""
+    """Pull assistant text from an OpenAI-shaped chat.completions response.
+
+    Output is sanitized (C0/C1 controls stripped, `\\n`/`\\t` preserved)
+    so renderers can write it directly without trusting the server.
+    """
     if not isinstance(payload, dict):
         return ""
     choices = payload.get("choices")
@@ -310,18 +314,25 @@ def _extract_assistant_text(payload: Any) -> str:
         return ""
     content = message.get("content")
     if isinstance(content, str):
-        return content
+        return _sanitize_assistant_text(content)
     if isinstance(content, list):
         parts: list[str] = []
         for block in content:
             if isinstance(block, dict) and isinstance(block.get("text"), str):
                 parts.append(block["text"])
-        return "".join(parts)
+        return _sanitize_assistant_text("".join(parts))
     return ""
 
 
 def _extract_delta_content(chunk: Any) -> str:
-    """Pull `choices[0].delta.content` from a streamed chat.completions chunk."""
+    """Pull `choices[0].delta.content` from a streamed chat.completions chunk.
+
+    Output is sanitized (C0/C1 controls stripped, `\\n`/`\\t` preserved)
+    so the on_delta callback can write it directly without trusting the
+    server. A chunk whose content is *entirely* control characters
+    sanitizes to "" and is then skipped by the caller, exactly as if the
+    server had sent an empty content field.
+    """
     if not isinstance(chunk, dict):
         return ""
     choices = chunk.get("choices")
@@ -335,12 +346,26 @@ def _extract_delta_content(chunk: Any) -> str:
         return ""
     content = delta.get("content")
     if isinstance(content, str):
-        return content
+        return _sanitize_assistant_text(content)
     return ""
 
 
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _WHITESPACE_RUN_RE = re.compile(r" +")
+
+# Strip C0/C1 control characters from server-supplied assistant text before it
+# reaches any renderer. Preserves only \t (\x09) and \n (\x0a) — LLM replies
+# legitimately contain newlines (markdown, code, paragraphs) and occasional
+# tabs (indented code). Everything else — including \r (overwrite), \x1b
+# (ANSI escape), \x07 (bell), \x08 (backspace), and the C1 block — is
+# stripped at the backend boundary so neither the CLI's direct console.print
+# nor the TUI's RichLog.write can be tricked into terminal manipulation by a
+# malicious or compromised hermes server.
+_ASSISTANT_TEXT_STRIP_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _sanitize_assistant_text(text: str) -> str:
+    return _ASSISTANT_TEXT_STRIP_RE.sub("", text)
 
 
 def _short_body(body: str, limit: int = 200) -> str:

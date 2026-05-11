@@ -664,6 +664,111 @@ class _RaiseAfterChunkStream(httpx.AsyncByteStream):
         return None
 
 
+def test_sse_delta_content_is_sanitized_at_backend_boundary():
+    """Crafted SSE chunks containing terminal-manipulation control chars
+    (ANSI clear-screen, CR, bell, ESC, backspace, DEL, C1) must reach
+    `on_delta` already scrubbed.
+
+    The CLI writer (`console.print(delta, end="", markup=False)`) and the
+    TUI's `RichLog.write(escape(delta))` both pass through control bytes
+    unmodified — `rich.markup.escape` only neutralises `[` markup. Stripping
+    at the backend boundary is the only line of defense; this test pins it.
+    """
+    deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # [2J  = ANSI clear screen (visible terminal manipulation)
+        # \r         = carriage return (overwrites earlier output)
+        #      = bell
+        # \b         = backspace
+        #      = DEL
+        #      = C1 NEL (Next Line) — must also be stripped
+        # \n and \t  = MUST be preserved (legitimate LLM output)
+        body = (
+            b'data: {"choices":[{"delta":'
+            b'{"content":"hi\\u001b[2Jworld\\r\\u0007"}}]}\n\n'
+            b'data: {"choices":[{"delta":'
+            b'{"content":"x\\by\\u007fz\\u0085"}}]}\n\n'
+            b'data: {"choices":[{"delta":'
+            b'{"content":"line1\\nline2\\tindented"}}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        return _sse_response(body)
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi", on_delta=deltas.append))
+    finally:
+        _run(backend.close())
+
+    # The ESC, CR, bell, backspace, DEL, NEL are all stripped; the
+    # surrounding text — including the `[2J` letters that *followed* ESC —
+    # is now inert text rather than an escape sequence.
+    assert deltas == ["hi[2Jworld", "xyz", "line1\nline2\tindented"]
+    assert result == "hi[2Jworldxyzline1\nline2\tindented"
+    # Defensive: none of the stripped bytes survived anywhere in the
+    # assembled reply.
+    for forbidden in ("\x1b", "\r", "\x07", "\x08", "\x7f", "\x85"):
+        assert forbidden not in result
+
+
+def test_json_fallback_content_is_sanitized_at_backend_boundary():
+    """Same protection on the non-SSE path: a server that returns a single
+    JSON body with control chars in `message.content` must not leak them
+    to the renderer."""
+    deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "ok\x1b[31mRED\x1b[0m\rdone\n",
+                        }
+                    }
+                ]
+            },
+        )
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi", on_delta=deltas.append))
+    finally:
+        _run(backend.close())
+
+    assert deltas == ["ok[31mRED[0mdone\n"]
+    assert result == "ok[31mRED[0mdone\n"
+    assert "\x1b" not in result
+    assert "\r" not in result
+
+
+def test_sse_delta_of_only_control_chars_is_skipped():
+    """A chunk whose content sanitizes to "" is treated like a content-less
+    delta (e.g. a `role`-only first frame) — no on_delta call, no spurious
+    blank chunk in the assembled reply."""
+    deltas: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b'data: {"choices":[{"delta":{"content":"\\u001b\\u0007"}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        return _sse_response(body)
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi", on_delta=deltas.append))
+    finally:
+        _run(backend.close())
+
+    assert deltas == ["hello"]
+    assert result == "hello"
+
+
 def test_sse_read_error_mid_stream_raises_connection_error():
     """A mid-stream TCP reset (httpx.ReadError after first SSE chunk lands)
     must surface as ChatConnectionError, not bubble raw httpx exceptions
