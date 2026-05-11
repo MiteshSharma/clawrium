@@ -2701,6 +2701,74 @@ class TestRunChannelsStageHermesDiscord:
 
         assert result is False
 
+    def test_hermes_discord_rejects_newline_in_home_channel_name(
+        self, isolated_config: Path
+    ):
+        """Newline (or other shell metachars) in home_channel_name would
+        inject arbitrary env vars into .env on render. CLI must reject
+        before persisting."""
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            claw_type="hermes",
+            onboarding_state="channels",
+            config={
+                "provider": {
+                    "name": "p",
+                    "type": "ollama",
+                    "default_model": "x",
+                    "endpoint": "http://h/v1",
+                }
+            },
+        )
+
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                2,  # discord
+                self._valid_token(),
+                "740723459344302120",
+                "1503238729962356777",  # home channel
+                "Home\nMALICIOUS_VAR=pwned",  # injection attempt
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "hermes", False, "assistant"
+            )
+        assert result is False
+
+    def test_hermes_discord_rejects_too_long_home_channel_name(
+        self, isolated_config: Path
+    ):
+        from clawrium.cli.agent import _run_channels_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            claw_type="hermes",
+            config={
+                "provider": {
+                    "name": "p",
+                    "type": "ollama",
+                    "default_model": "x",
+                    "endpoint": "http://h/v1",
+                }
+            },
+        )
+
+        with patch("clawrium.cli.agent.typer.prompt") as mock_p:
+            mock_p.side_effect = [
+                2,
+                self._valid_token(),
+                "740723459344302120",
+                "1503238729962356777",
+                "A" * 100,  # > 64 chars
+            ]
+            result = _run_channels_stage(
+                "192.168.1.100", "hermes", False, "assistant"
+            )
+        assert result is False
+
     def test_openclaw_discord_still_uses_guilds_shape(
         self, isolated_config: Path
     ):

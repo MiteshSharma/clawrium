@@ -172,11 +172,12 @@
         - config.channels.discord.enabled | default(false)
 
     - name: Verify .env declares Discord user allowlist when Discord enabled
-      ansible.builtin.shell: |
-        grep -qE '^(DISCORD_ALLOWED_USERS=.+|DISCORD_ALLOW_ALL_USERS=true)' "/home/{{ agent_name }}/.hermes/.env"
+      ansible.builtin.command:
+        cmd: grep -qE "^(DISCORD_ALLOWED_USERS=.+|DISCORD_ALLOW_ALL_USERS=true)" "/home/{{ agent_name }}/.hermes/.env"
       register: discord_allowlist_check
       changed_when: false
       failed_when: discord_allowlist_check.rc != 0
+      no_log: true
       when:
         - config.channels is defined
         - config.channels.discord is defined

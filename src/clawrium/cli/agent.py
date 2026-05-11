@@ -809,9 +809,21 @@ def _run_channels_stage(
 
             home_channel_name = "Home"
             if home_channel_raw:
-                home_channel_name = typer.prompt(
+                home_channel_name_raw = typer.prompt(
                     "Discord home channel name", default="Home"
                 ).strip() or "Home"
+                # Reject control chars (especially newlines) so a pasted value
+                # can't inject `\nMALICIOUS_VAR=...` into ~/.hermes/.env. Allow
+                # printable ASCII + common punctuation; cap length.
+                if len(home_channel_name_raw) > 64 or not re.match(
+                    r"^[A-Za-z0-9 _\-./#]+$", home_channel_name_raw
+                ):
+                    console.print(
+                        "[red]Error:[/red] Home channel name must be 1-64 chars "
+                        "of letters/digits/spaces/_-./# (no newlines or shell metachars)."
+                    )
+                    return False
+                home_channel_name = home_channel_name_raw
 
             allowed_channels_raw = typer.prompt(
                 "Allowed Discord channel IDs (comma-separated, Enter for any channel)",

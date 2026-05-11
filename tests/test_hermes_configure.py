@@ -1284,6 +1284,238 @@ class TestConfigureYamlDiscordVerifyTasks:
             assert "channels" in joined and "discord" in joined and "enabled" in joined
 
 
+class TestHermesDiscordSecretsHygieneNegative:
+    """B3 negative guard: even if an upstream caller injects bot_token into
+    config_data directly, the updater closure strips it before persisting."""
+
+    def test_strip_runs_even_when_bot_token_injected_into_config_data(
+        self, tmp_path: Path
+    ):
+        """Simulate a future code path (or test harness) that accidentally
+        passes config_data with bot_token already set — the updater closure
+        MUST still strip it. This is the failure mode the strip exists to
+        guard against; we test it explicitly here."""
+        token = "E" * 64
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agents": {
+                "hermes-test": {
+                    "type": "hermes",
+                    "agent_name": "hermes-test",
+                    "config": {
+                        "api_server": {
+                            "enabled": True,
+                            "host": "127.0.0.1",
+                            "port": 8642,
+                        },
+                        "channels": {
+                            "discord": {
+                                "enabled": True,
+                                "allowed_users": ["111111111111111111"],
+                            }
+                        },
+                    },
+                }
+            },
+        }
+        # Caller passes config_data with bot_token already inlined — this is
+        # the leaky scenario the strip exists to defeat.
+        config_data = {
+            "provider": {
+                "name": "p",
+                "type": "openrouter",
+                "default_model": "x",
+            },
+            "channels": {
+                "discord": {
+                    "enabled": True,
+                    "allowed_users": ["111111111111111111"],
+                    "bot_token": "INJECTED-FROM-CALLER",  # must be stripped
+                }
+            },
+        }
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+        captured: dict = {}
+
+        def fake_update_host(hostname_arg, updater):
+            updated = updater({"agents": dict(host["agents"])})
+            captured["agents"] = updated["agents"]
+            return True
+
+        secrets = {
+            "HERMES_API_SERVER_KEY": {
+                "key": "HERMES_API_SERVER_KEY",
+                "value": "a" * 64,
+                "created_at": "2026-05-10T00:00:00+00:00",
+                "updated_at": "2026-05-10T00:00:00+00:00",
+                "description": "",
+            },
+            "DISCORD_BOT_TOKEN": {
+                "key": "DISCORD_BOT_TOKEN",
+                "value": token,
+                "created_at": "2026-05-10T00:00:00+00:00",
+                "updated_at": "2026-05-10T00:00:00+00:00",
+                "description": "Discord bot token",
+            },
+        }
+
+        with (
+            patch("clawrium.core.lifecycle.get_host", return_value=host),
+            patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ),
+            patch(
+                "clawrium.core.lifecycle.ansible_runner.run",
+                return_value=MagicMock(status="successful", events=[]),
+            ),
+            patch(
+                "clawrium.core.lifecycle.update_host", side_effect=fake_update_host
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_instance_secrets", return_value=secrets
+            ),
+        ):
+            success, error = configure_agent(
+                "test-host", "hermes", config_data, agent_name="hermes-test"
+            )
+
+        assert success is True, error
+        persisted_discord = (
+            captured["agents"]["hermes-test"]
+            .get("config", {})
+            .get("channels", {})
+            .get("discord", {})
+        )
+        # Even though the caller passed bot_token, the strip layer caught it.
+        assert "bot_token" not in persisted_discord, (
+            f"Strip layer failed to catch injected bot_token: {persisted_discord}"
+        )
+
+
+class TestHermesDiscordIdempotency:
+    """Re-running channels configure with the same inputs must produce
+    byte-identical .env output and same DISCORD_BOT_TOKEN value."""
+
+    def test_reconfigure_renders_byte_identical_env(self, tmp_path: Path):
+        """Two configure calls hydrate the same DISCORD_BOT_TOKEN value and
+        the same channels.discord shape; .env.j2 against both produces
+        byte-identical output (no field reordering, no whitespace drift)."""
+        token = "F" * 64
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agents": {
+                "hermes-test": {
+                    "type": "hermes",
+                    "agent_name": "hermes-test",
+                    "config": {
+                        "api_server": {
+                            "enabled": True,
+                            "host": "127.0.0.1",
+                            "port": 8642,
+                        },
+                        "channels": {
+                            "discord": {
+                                "enabled": True,
+                                "allowed_users": ["111111111111111111"],
+                                "home_channel": "222222222222222222",
+                                "home_channel_name": "Home",
+                                "require_mention": True,
+                            }
+                        },
+                    },
+                }
+            },
+        }
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+        secrets = {
+            "HERMES_API_SERVER_KEY": {
+                "key": "HERMES_API_SERVER_KEY",
+                "value": "a" * 64,
+                "created_at": "2026-05-10T00:00:00+00:00",
+                "updated_at": "2026-05-10T00:00:00+00:00",
+                "description": "",
+            },
+            "DISCORD_BOT_TOKEN": {
+                "key": "DISCORD_BOT_TOKEN",
+                "value": token,
+                "created_at": "2026-05-10T00:00:00+00:00",
+                "updated_at": "2026-05-10T00:00:00+00:00",
+                "description": "Discord bot token",
+            },
+        }
+        renders: list[str] = []
+
+        def fake_run(**kwargs):
+            sent = kwargs["inventory"]["all"]["vars"]["config"]
+            # Render .env.j2 with the hydrated config and capture the output.
+            from jinja2 import Environment, FileSystemLoader
+
+            env_jinja = Environment(
+                loader=FileSystemLoader(str(HERMES_TEMPLATES)),
+                keep_trailing_newline=True,
+            )
+            tpl = env_jinja.get_template(".env.j2")
+            renders.append(
+                tpl.render(config=sent, provider_api_key="sk-x", agent_name="h")
+            )
+            m = MagicMock()
+            m.status = "successful"
+            m.events = []
+            return m
+
+        for _ in range(2):
+            with (
+                patch("clawrium.core.lifecycle.get_host", return_value=host),
+                patch(
+                    "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                    return_value=playbook,
+                ),
+                patch(
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
+                ),
+                patch(
+                    "clawrium.core.lifecycle.ansible_runner.run",
+                    side_effect=fake_run,
+                ),
+                patch("clawrium.core.lifecycle.update_host", return_value=True),
+                patch(
+                    "clawrium.core.lifecycle.get_instance_secrets",
+                    return_value=secrets,
+                ),
+            ):
+                success, error = configure_agent(
+                    "test-host",
+                    "hermes",
+                    {
+                        "provider": {
+                            "name": "p",
+                            "type": "openrouter",
+                            "default_model": "x",
+                        }
+                    },
+                    agent_name="hermes-test",
+                )
+                assert success is True, error
+
+        assert len(renders) == 2
+        assert renders[0] == renders[1], "non-idempotent .env render"
+        # And the rendered token is the expected value.
+        assert f"DISCORD_BOT_TOKEN={token}" in renders[0]
+
+
 class TestDiscordSecretRemoval:
     """clm agent remove purges DISCORD_BOT_TOKEN alongside HERMES_API_SERVER_KEY
     via remove_instance_secrets() — no Discord-specific code path needed."""
