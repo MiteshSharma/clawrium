@@ -364,38 +364,45 @@ def _extract_delta_content(chunk: Any) -> str:
 
 # Error-path sanitizer — same coverage as _ASSISTANT_TEXT_STRIP_RE plus \n/\t
 # (error bodies are inlined into single-line exception messages, so newlines
-# and tabs are stripped too). Includes bidi/zero-width chars to match the
-# happy-path sanitizer, closing the W-A bypass where a 400-response body
-# could carry RTLO chars through _short_body.
+# and tabs are stripped too). Strips:
+#   - C0/C1 control bytes (\x00-\x1f, \x7f-\x9f)
+#   - Zero-width chars: ZWSP (U+200B) through WJ (U+2060) inclusive range
+#     + BOM/ZWNBSP (U+FEFF)
+#   - Bidi formatting controls: LRM (U+200E), RLM (U+200F),
+#     LRE-RLO + PDF (U+202A-U+202E), isolates LRI-FSI + PDI (U+2066-U+2069)
+#   - Line/paragraph separators (U+2028, U+2029) — non-newline whitespace
+#     that splits lines in some renderers
+# Uses \uXXXX escapes throughout for grep-ability and to keep the source
+# free of invisible chars that an editor's auto-fixer might "fix" away.
 _CONTROL_CHARS_RE = re.compile(
-    r"[\x00-\x1f\x7f-\x9f"
-    r"​-‍⁠﻿"
-    r"‪-‮⁦-⁩"
-    r"]"
+    "["
+    "\x00-\x1f\x7f-\x9f"
+    "\u200b-\u200f"      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "\u2028-\u2029"      # LINE / PARAGRAPH SEPARATOR
+    "\u202a-\u202e"      # LRE, RLE, PDF, LRO, RLO
+    "\u2060"             # WORD JOINER
+    "\u2066-\u2069"      # LRI, RLI, FSI, PDI
+    "\ufeff"             # ZWNBSP / BOM
+    "]"
 )
 _WHITESPACE_RUN_RE = re.compile(r" +")
 
 # Strip control / display-manipulating characters from server-supplied
-# assistant text before it reaches any renderer. Preserves only \t (\x09) and
-# \n (\x0a) — LLM replies legitimately contain newlines (markdown, code,
-# paragraphs) and occasional tabs (indented code).
-#
-# Stripped:
-#   - C0 (\x00-\x08, \x0b-\x1f) — \r overwrite, \x1b ANSI, \x07 bell, etc.
-#   - DEL + C1 (\x7f-\x9f) — including the 8-bit CSI alias at \x9b.
-#   - Unicode bidi formatting controls (‪-‮, ⁦-⁩) — RTLO
-#     and friends can reverse the visual order of displayed text, e.g. let
-#     a malicious server flip "rm -rf /tmp" into something that LOOKS benign
-#     in the terminal but copy-pastes as destructive.
-#   - Zero-width characters (​ ZWSP, ‌ ZWNJ, ‍ ZWJ, ⁠
-#     WORD JOINER, ﻿ BOM/ZWNBSP) — hide invisible payloads in
-#     copy-pasted output.
-# Rich's markup=False blocks `[…]` escapes but does not strip any of the above.
+# assistant text before it reaches any renderer. Preserves only \t (\x09)
+# and \n (\x0a) — LLM replies legitimately contain newlines (markdown, code,
+# paragraphs) and occasional tabs (indented code). Same coverage as
+# _CONTROL_CHARS_RE except \n + \t are excluded from the C0 class so they
+# survive into the rendered output.
 _ASSISTANT_TEXT_STRIP_RE = re.compile(
-    r"[\x00-\x08\x0b-\x1f\x7f-\x9f"
-    r"​-‍⁠﻿"
-    r"‪-‮⁦-⁩"
-    r"]"
+    "["
+    "\x00-\x08\x0b-\x1f\x7f-\x9f"
+    "\u200b-\u200f"      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "\u2028-\u2029"      # LINE / PARAGRAPH SEPARATOR
+    "\u202a-\u202e"      # LRE, RLE, PDF, LRO, RLO
+    "\u2060"             # WORD JOINER
+    "\u2066-\u2069"      # LRI, RLI, FSI, PDI
+    "\ufeff"             # ZWNBSP / BOM
+    "]"
 )
 
 

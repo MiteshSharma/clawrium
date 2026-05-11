@@ -540,14 +540,19 @@ def _validate_session_key(session_key: str) -> None:
 
 def _sanitize_exception_text(exc: Exception, max_len: int = 500) -> str:
     # Strip C0/C1 control bytes AND Unicode bidi-formatting + zero-width
-    # codepoints. The bidi/zero-width additions close the W-A bypass:
-    # otherwise a remote-supplied error message can embed RTLO (U+202E) /
-    # ZWSP / BOM to flip the visible order or hide payloads in copy-paste.
+    # + line/paragraph-separator codepoints. Same coverage as
+    # chat_hermes._CONTROL_CHARS_RE (keep in sync). Closes the W-A bypass
+    # where a remote-supplied error body can embed RTLO/LRM/LINE-SEP/etc.
     cleaned = re.sub(
-        r"[\x00-\x1f\x7f-\x9f"
-        r"​-‍⁠﻿"
-        r"‪-‮⁦-⁩"
-        r"]",
+        "["
+        "\x00-\x1f\x7f-\x9f"
+        "\u200b-\u200f"      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+        "\u2028-\u2029"      # LINE / PARAGRAPH SEPARATOR
+        "\u202a-\u202e"      # LRE, RLE, PDF, LRO, RLO
+        "\u2060"             # WORD JOINER
+        "\u2066-\u2069"      # LRI, RLI, FSI, PDI
+        "\ufeff"             # ZWNBSP / BOM
+        "]",
         " ",
         str(exc),
     )
