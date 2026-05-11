@@ -79,7 +79,7 @@ Hermes is intentionally scoped to a single channel in this iteration: a loopback
 ### 1. Install Hermes
 
 ```bash
-clm agent install --type hermes --host <host-alias> --name <agent-name>
+clm agent install --type hermes --host <host> --name <agent-name>
 ```
 
 What happens:
@@ -147,7 +147,7 @@ Hermes deep-merges `config.yaml` with its built-in defaults at load time, so onl
 | `openai` | `openai` | (omitted; hermes default) | `OPENAI_API_KEY` |
 | `ollama` (or any custom OpenAI-compatible URL) | `custom` | `<provider.endpoint>/v1` (suffix `/v1` appended if missing) | (none — local endpoint) |
 
-After `.env` write, the restart handler enables and starts the systemd unit. The validate stage probes `http://127.0.0.1:8642/health` (10 retries / 3s). `/health` is unauthenticated; `/v1/*` requires the bearer header.
+After `.env` write, the restart handler enables and starts the systemd unit. The configure playbook probes `http://127.0.0.1:8642/health` with `retries: 20, delay: 3` (≈60s max). `/health` is unauthenticated; `/v1/*` requires the bearer header.
 
 ### 3. Use the local OpenAI-compatible API
 
@@ -175,7 +175,7 @@ curl -fsS http://127.0.0.1:8642/v1/chat/completions \
   }'
 ```
 
-Substitute the canonical instance key (`<host-alias>:hermes:<agent-name>` — single colons) for your fleet. The `model` field is always `hermes-agent` — hermes routes to whatever upstream model is configured in `config.yaml`.
+Substitute the canonical instance key (`<host>:hermes:<agent-name>` — single colons) for your fleet. The `model` field is always `hermes-agent` — hermes routes to whatever upstream model is configured in `config.yaml`.
 
 #### Off-host access (loopback constraint)
 
@@ -209,7 +209,7 @@ clm agent remove <agent-name>    # stop, remove unit, rm ~/.hermes/, userdel
 - **No `clm chat <hermes-name>`** in this iteration. `clm chat` only supports openclaw. Tracked as [#322](https://github.com/ric03uec/clawrium/issues/322). Use `curl` against the local API in the meantime.
 - **External messaging gateways are deferred.** Discord, Slack, Telegram, WhatsApp, Signal, email, Matrix, Mattermost, Teams, Google Chat — none are wired to hermes via clm. See [Deferred items](#deferred-items--follow-ups).
 - **Identity is hermes-managed.** clm does not push `SOUL.md` / `AGENTS.md` into `~/.hermes/`. The identity onboarding stage auto-skips. If you want custom identity, edit those files directly on the agent host via SSH.
-- **Bearer token lives in `secrets.json`, not `hosts.json`.** As of PR #318, the canonical store for `HERMES_API_SERVER_KEY` is `~/.config/clawrium/secrets.json` keyed by `<host-alias>::<agent-name>`.
+- **Bearer token lives in `secrets.json`, not `hosts.json`.** As of PR #318, the canonical store for `HERMES_API_SERVER_KEY` is `~/.config/clawrium/secrets.json` keyed by `<host>:hermes:<agent-name>` (single-colon, 3 components). Provider keys use a different schema (`provider:<provider-name>`) in the same file.
 - **Memory has hard size limits.** `MEMORY.md` ≤ 2200 chars, `USER.md` ≤ 1375 chars. Other filenames in `~/.hermes/memories/` are rejected by `clm agent memory edit`. See [memory.md](memory.md).
 - **Concurrent writes are visible-atomic.** Hermes' `memory_write.yaml` uses a stage-then-rename pattern (`rename(2)` within the same filesystem) so the running hermes daemon never observes a partial file. The pattern is visible-atomic, not crash-durable (no explicit `fsync`).
 
@@ -241,13 +241,13 @@ Full details: [memory.md](memory.md).
    sudo journalctl -u hermes-<agent-name>.service -n 100 --no-pager
    ```
 
-2. The most common Phase 1 carryover symptom is `Gateway service is not installed`. That means the unit was rendered with `ExecStart=... hermes gateway start` instead of `gateway run`. `configure` re-renders the unit with `gateway run`; if you skipped configure, re-run it.
-
-3. Check that `~/.hermes/.env` exists and has `API_SERVER_ENABLED=1` and `API_SERVER_KEY=...`:
+2. Check that `~/.hermes/.env` exists and has `API_SERVER_ENABLED=1` and `API_SERVER_KEY=...`:
 
    ```bash
-   sudo -u <agent-name> cat /home/<agent-name>/.hermes/.env
+   sudo cat /home/<agent-name>/.hermes/.env
    ```
+
+3. Confirm the unit's `ExecStart` references `hermes gateway run` (the foreground supervisor command — both `install.yaml` and `start.yaml` render this). If you see `gateway start` in the unit file, you're on a pre-PR #318 build; `clm agent remove` + reinstall to pick up the corrected unit.
 
 </details>
 
