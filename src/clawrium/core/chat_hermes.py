@@ -12,6 +12,7 @@ Combines phases 1-4 of #322:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 import httpx
@@ -118,6 +119,15 @@ class HermesOpenAIBackend:
         Requests `stream: true` and parses SSE chunks via the OpenAI
         `chat.completions` delta protocol; falls back to the single-JSON
         path when the server responds without `text/event-stream`.
+
+        `on_delta` semantics:
+          - SSE path: called once per non-empty content chunk (N times). Empty
+            chunks (`role`-only first frame, finish_reason-only last frame,
+            heartbeats) are skipped. `[DONE]` terminates without calling it.
+          - JSON fallback: called exactly once with the full reply.
+          - Callers should not rely on call count; use the return value for
+            the assembled final text.
+
         `session_key` is accepted for signature parity with the openclaw
         backend; it is ignored for OpenAI-typed agents.
         """
@@ -193,24 +203,29 @@ async def _consume_sse_stream(
 ) -> str:
     """Parse an OpenAI-style SSE stream into an assembled reply.
 
-    Recognized line shapes:
-      - `data: {json}`  → parse and emit `choices[0].delta.content`
-      - `data: [DONE]`  → terminate cleanly
-      - `:keep-alive`   → ignored (comment per SSE spec)
-      - empty line      → event boundary, ignored
-      - anything else   → ignored (forward-compat for unknown event names)
+    Recognized line shapes (SSE / W3C EventSource §9.2.6):
+      - `data: <value>` → field value appended to the current event's data
+        buffer. Multiple `data:` lines in the same event accumulate joined
+        by `\\n` before parsing — required by the spec even though OpenAI
+        sends single-line JSON today.
+      - empty line      → event terminator; the assembled data buffer is
+        decoded as JSON, `[DONE]` short-circuits termination.
+      - `:<comment>`    → ignored (heartbeat / `:keep-alive`).
+      - any other line  → ignored (forward-compat for unknown event names,
+        `event:`, `id:`, `retry:`).
     """
     parts: list[str] = []
-    async for line in response.aiter_lines():
-        if not line:
-            continue
-        if line.startswith(":"):
-            continue
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:"):].lstrip()
+    data_lines: list[str] = []
+    done = False
+
+    def _dispatch_event() -> bool:
+        """Decode the accumulated event buffer; return True to stop the stream."""
+        if not data_lines:
+            return False
+        payload = "\n".join(data_lines)
+        data_lines.clear()
         if payload == "[DONE]":
-            break
+            return True
         try:
             chunk = json.loads(payload)
         except ValueError as exc:
@@ -219,7 +234,7 @@ async def _consume_sse_stream(
             ) from exc
         delta = _extract_delta_content(chunk)
         if not delta:
-            continue
+            return False
         parts.append(delta)
         # Render first — if on_delta raises (broken pipe / TUI disconnect),
         # the turn is aborted before history is touched so the next request
@@ -227,6 +242,26 @@ async def _consume_sse_stream(
         # in `send_message` after this function returns.
         if on_delta is not None:
             on_delta(delta)
+        return False
+
+    async for line in response.aiter_lines():
+        if not line:
+            done = _dispatch_event()
+            if done:
+                break
+            continue
+        if line.startswith(":"):
+            continue
+        if not line.startswith("data:"):
+            continue
+        # Per spec, a single leading space after the colon is stripped;
+        # we use lstrip() so common "data:foo" (no space) variants work too.
+        data_lines.append(line[len("data:"):].lstrip(" "))
+
+    # Servers that close the connection without a trailing blank line still
+    # delivered a complete event — flush whatever sits in the buffer.
+    if not done and data_lines:
+        _dispatch_event()
 
     text = "".join(parts)
     if not text:
@@ -304,8 +339,21 @@ def _extract_delta_content(chunk: Any) -> str:
     return ""
 
 
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_WHITESPACE_RUN_RE = re.compile(r" +")
+
+
 def _short_body(body: str, limit: int = 200) -> str:
-    cleaned = body.strip().replace("\n", " ")
+    """Strip C0/C1 control chars (incl. CR/ANSI) and collapse runs of spaces.
+
+    Error text from a remote server is interpolated into exception messages
+    and may be rendered by callers that do not run their own sanitizer
+    (e.g. the TUI's `_add_system_message`). Sanitizing at the source keeps
+    `\\r` from rewriting earlier output and ANSI escapes from re-colouring
+    the terminal.
+    """
+    cleaned = _CONTROL_CHARS_RE.sub(" ", body.strip())
+    cleaned = _WHITESPACE_RUN_RE.sub(" ", cleaned).strip()
     if len(cleaned) > limit:
         return cleaned[:limit] + "..."
     return cleaned

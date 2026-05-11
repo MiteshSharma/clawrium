@@ -1,8 +1,12 @@
-"""Unit tests for HermesOpenAIBackend.
+"""Unit tests for HermesOpenAIBackend — phases 1, 2, 3.
 
-Phase 1 covered non-streaming single-turn behavior. Slice 2 (this file's
-additions) covers client-side conversation history accumulation, /reset
-semantics, and failure-atomicity of history mutations.
+Covers:
+  - Single-turn non-streaming behavior (phase 1).
+  - Client-side conversation history accumulation, /reset semantics, and
+    failure-atomicity of history mutations (phase 2).
+  - SSE streaming with delta accumulation, `[DONE]` sentinel,
+    `:keep-alive`/comment handling, multi-line `data:` fields, and
+    mid-stream failure surfaces (phase 3).
 """
 
 from __future__ import annotations
@@ -500,10 +504,18 @@ def _sse_response(body: bytes) -> httpx.Response:
 
 
 def test_streaming_deltas():
-    """Canned SSE chunks → on_delta called per delta; final text is concatenation."""
+    """Canned SSE chunks → on_delta called per delta; final text is concatenation.
+
+    Also pins the streaming request contract: `Accept: text/event-stream`
+    header and `stream: true` body field MUST be present so a future
+    accidental regression that drops either is caught at unit-test time.
+    """
     deltas: list[str] = []
+    captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["accept"] = request.headers.get("accept")
+        captured["body"] = json.loads(request.content.decode())
         body = (
             b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
             b'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
@@ -521,6 +533,8 @@ def test_streaming_deltas():
 
     assert deltas == ["Hello", ", ", "world!"]
     assert result == "Hello, world!"
+    assert captured["accept"] == "text/event-stream"
+    assert captured["body"]["stream"] is True
 
 
 def test_sse_edge_cases():
@@ -605,5 +619,69 @@ def test_sse_malformed_chunk_raises_protocol_error():
     try:
         with pytest.raises(ChatProtocolError, match="malformed SSE chunk"):
             _run(backend.send_message("hi"))
+    finally:
+        _run(backend.close())
+
+
+def test_sse_multiline_data_field_concatenates_per_spec():
+    """SSE §9.2.6: multiple `data:` lines in one event accumulate joined by \\n.
+
+    OpenAI sends single-line JSON today, but a buffering proxy may chunk a
+    JSON payload across `data:` continuations. The parser must reassemble
+    the event before json.loads.
+    """
+    multi_line_payload = (
+        b'data: {"choices":[{"delta":\n'
+        b'data: {"content":"reassembled"}}]}\n'
+        b"\n"
+        b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _sse_response(multi_line_payload)
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi"))
+    finally:
+        _run(backend.close())
+
+    assert result == "reassembled"
+
+
+class _RaiseAfterChunkStream(httpx.AsyncByteStream):
+    """Yields a fixed prefix then raises — emulates mid-body TCP reset."""
+
+    def __init__(self, prefix: bytes, exc: BaseException) -> None:
+        self._prefix = prefix
+        self._exc = exc
+
+    async def __aiter__(self):
+        yield self._prefix
+        raise self._exc
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_sse_read_error_mid_stream_raises_connection_error():
+    """A mid-stream TCP reset (httpx.ReadError after first SSE chunk lands)
+    must surface as ChatConnectionError, not bubble raw httpx exceptions
+    to the caller. This is the most realistic LAN failure mode."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_RaiseAfterChunkStream(
+                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+                httpx.ReadError("connection reset"),
+            ),
+        )
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ChatConnectionError, match="HTTP error talking to hermes"):
+            _run(backend.send_message("ping"))
     finally:
         _run(backend.close())
