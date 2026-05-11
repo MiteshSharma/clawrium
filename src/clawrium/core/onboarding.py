@@ -422,11 +422,17 @@ def initialize_onboarding(host: str, claw_name: str) -> bool:
 def can_skip_stage(agent_type: str, stage: str) -> bool:
     """Check if a stage can be auto-skipped for an agent type.
 
-    Some agent types may not need certain stages (e.g., an agent without
-    communication features doesn't need the channels stage).
+    Recognized signals (in precedence order):
+
+    1. Top-level ``skip_stages: [stage_name, ...]`` list in the manifest.
+       (Legacy contract; preserved for backward compatibility.)
+    2. Per-stage ``onboarding.stages.<stage>.auto_skip: true``.
+       Used by hermes' ``identity`` stage in Phase 4 so the configure wizard
+       skips it without prompting (hermes manages its own SOUL.md/AGENTS.md
+       inside ~/.hermes/ on the agent host).
 
     Args:
-        agent_type: Type of agent (e.g., "openclaw", "zeroclaw")
+        agent_type: Type of agent (e.g., "openclaw", "zeroclaw", "hermes")
         stage: Stage name to check
 
     Returns:
@@ -437,9 +443,13 @@ def can_skip_stage(agent_type: str, stage: str) -> bool:
     except Exception:
         return False
 
-    # Check if manifest has skip_stages configuration
     skip_stages = manifest.get("skip_stages", [])
-    return stage in skip_stages
+    if stage in skip_stages:
+        return True
+
+    stages = (manifest.get("onboarding") or {}).get("stages") or {}
+    stage_config = stages.get(stage) or {}
+    return stage_config.get("auto_skip") is True
 
 
 def get_stage_tasks(agent_type: str, stage: str) -> list[dict]:

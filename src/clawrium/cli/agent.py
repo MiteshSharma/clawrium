@@ -708,7 +708,13 @@ def _run_channels_stage(
     """
     from clawrium.core.secrets import get_instance_key, set_instance_secret
 
-    channels = ["cli", "discord", "slack"]
+    # Hermes ships with only the loopback api_server platform in this iteration.
+    # External messaging gateways (Discord/Slack/Telegram/etc.) are tracked as
+    # a separate follow-up issue; offering them here would mislead the user.
+    if claw_type == "hermes":
+        channels = ["cli"]
+    else:
+        channels = ["cli", "discord", "slack"]
 
     console.print("[bold]Select default channel:[/bold]")
     for i, ch in enumerate(channels, 1):
@@ -717,7 +723,7 @@ def _run_channels_stage(
 
     console.print()
 
-    if yes:
+    if yes or len(channels) == 1:
         choice = 1
     else:
         choice = typer.prompt("Select", type=int, default=1)
@@ -955,14 +961,29 @@ def _run_validate_stage(
         verify_provider_connectivity,
         validate_agent_installation,
         validate_openclaw_gateway,
+        validate_hermes_health,
     )
 
     all_errors = []
     all_warnings = []
 
-    total_checks = 5 if claw_type == "openclaw" else 4
+    # Hermes manages SOUL.md/AGENTS.md internally inside ~/.hermes/ on the
+    # agent host — clm does not push identity files for hermes (identity stage
+    # auto_skips). So we skip the SOUL.md check for hermes and replace
+    # openclaw's gateway health probe with the hermes-specific /health check.
+    skip_soul_check = claw_type == "hermes"
 
-    console.print(f"[1/{total_checks}] Validating agent installation...")
+    total_checks = 5
+    if skip_soul_check:
+        total_checks -= 1
+    if claw_type not in ("openclaw", "hermes"):
+        # Generic claws (zeroclaw, future agents) have no gateway/health step.
+        total_checks -= 1
+
+    step_idx = 0
+
+    step_idx += 1
+    console.print(f"[{step_idx}/{total_checks}] Validating agent installation...")
     agent_name = installed_name or claw_type
     install_result = validate_agent_installation(host, agent_name)
     if install_result.passed:
@@ -973,20 +994,25 @@ def _run_validate_stage(
             console.print(f"    [red]Error:[/red] {rich_escape(error)}")
         all_errors.extend(install_result.errors)
 
-    console.print(f"[2/{total_checks}] Validating personality file (SOUL.md)...")
-    soul_result = validate_soul_md(claw_type)
-    if soul_result.passed:
-        console.print("  [green]✓[/green] SOUL.md exists and readable")
-        for warning in soul_result.warnings:
-            console.print(f"    [yellow]Warning:[/yellow] {rich_escape(warning)}")
-            all_warnings.append(warning)
-    else:
-        console.print("  [red]✗[/red] SOUL.md validation failed")
-        for error in soul_result.errors:
-            console.print(f"    [red]Error:[/red] {rich_escape(error)}")
-        all_errors.extend(soul_result.errors)
+    if not skip_soul_check:
+        step_idx += 1
+        console.print(
+            f"[{step_idx}/{total_checks}] Validating personality file (SOUL.md)..."
+        )
+        soul_result = validate_soul_md(claw_type)
+        if soul_result.passed:
+            console.print("  [green]✓[/green] SOUL.md exists and readable")
+            for warning in soul_result.warnings:
+                console.print(f"    [yellow]Warning:[/yellow] {rich_escape(warning)}")
+                all_warnings.append(warning)
+        else:
+            console.print("  [red]✗[/red] SOUL.md validation failed")
+            for error in soul_result.errors:
+                console.print(f"    [red]Error:[/red] {rich_escape(error)}")
+            all_errors.extend(soul_result.errors)
 
-    console.print(f"[3/{total_checks}] Validating provider configuration...")
+    step_idx += 1
+    console.print(f"[{step_idx}/{total_checks}] Validating provider configuration...")
     provider_result = validate_provider_config(host, agent_name)
     if provider_result.passed:
         provider_id = provider_result.details.get("provider_id", "unknown")
@@ -1017,7 +1043,8 @@ def _run_validate_stage(
             console.print(f"    [red]Error:[/red] {rich_escape(error)}")
         all_errors.extend(provider_result.errors)
 
-    console.print(f"[4/{total_checks}] Testing provider connectivity...")
+    step_idx += 1
+    console.print(f"[{step_idx}/{total_checks}] Testing provider connectivity...")
     if provider_result.passed:
         provider_id = provider_result.details.get("provider_id")
         conn_result = verify_provider_connectivity(provider_id)
@@ -1037,9 +1064,15 @@ def _run_validate_stage(
     gateway_status = "not_applicable"
     gateway_reason = ""
     gateway_details: dict = {}
+    hermes_health_status = "not_applicable"
+    hermes_health_reason = ""
+    hermes_health_details: dict = {}
 
     if claw_type == "openclaw":
-        console.print(f"[5/{total_checks}] Verifying OpenClaw gateway health...")
+        step_idx += 1
+        console.print(
+            f"[{step_idx}/{total_checks}] Verifying OpenClaw gateway health..."
+        )
         if skip_health:
             gateway_status = "skipped"
             gateway_reason = "skipped via --skip-health"
@@ -1066,6 +1099,37 @@ def _run_validate_stage(
                 for error in conn_result.errors:
                     console.print(f"    [red]Error:[/red] {rich_escape(error)}")
                 all_errors.extend(conn_result.errors)
+    elif claw_type == "hermes":
+        # hermes runs three checks on the agent host (binary + .env +
+        # loopback /health). The api_server platform binds to 127.0.0.1:8642
+        # on the agent host, so the probe runs there via Ansible rather than
+        # from the clm machine.
+        step_idx += 1
+        console.print(
+            f"[{step_idx}/{total_checks}] Verifying hermes health on agent host..."
+        )
+        if skip_health:
+            hermes_health_status = "skipped"
+            hermes_health_reason = "skipped via --skip-health"
+            console.print("  [yellow]⚠[/yellow] Skipped (--skip-health)")
+        elif all_errors:
+            hermes_health_status = "skipped"
+            hermes_health_reason = "skipped due to earlier validation errors"
+            console.print("  [dim]Skipped due to previous validation errors[/dim]")
+        else:
+            hermes_result = validate_hermes_health(host, agent_name)
+            hermes_health_details = hermes_result.details
+            if hermes_result.passed:
+                hermes_health_status = "passed"
+                console.print(
+                    "  [green]✓[/green] hermes --version OK, ~/.hermes/.env exists, /health returned 200"
+                )
+            else:
+                hermes_health_status = "failed"
+                console.print("  [red]✗[/red] hermes health check failed")
+                for error in hermes_result.errors:
+                    console.print(f"    [red]Error:[/red] {rich_escape(error)}")
+                all_errors.extend(hermes_result.errors)
 
     console.print()
     if all_errors:
@@ -1091,6 +1155,15 @@ def _run_validate_stage(
             metadata["gateway_health_reason"] = gateway_reason
         if "gateway_url" in gateway_details:
             metadata["gateway_url"] = gateway_details["gateway_url"]
+    elif claw_type == "hermes":
+        metadata = {
+            "hermes_health_checked": hermes_health_status == "passed",
+            "hermes_health_status": hermes_health_status,
+        }
+        if hermes_health_reason:
+            metadata["hermes_health_reason"] = hermes_health_reason
+        if "health_status" in hermes_health_details:
+            metadata["hermes_http_status"] = hermes_health_details["health_status"]
 
     try:
         complete_stage(
@@ -1311,7 +1384,7 @@ def configure(
     skip_health: bool = typer.Option(
         False,
         "--skip-health",
-        help="Skip OpenClaw gateway health verification during validate",
+        help="Skip agent health verification during validate (openclaw gateway probe or hermes /health probe)",
     ),
     file: Optional[list[Path]] = typer.Option(
         None,
@@ -1526,6 +1599,36 @@ def configure(
                 continue
 
             if can_skip_stage(claw_type, stage_name):
+                # Print a one-line breadcrumb so the user sees WHY a stage was
+                # skipped rather than silently swallowed. The reason comes
+                # from the manifest stage's `description` field (set by the
+                # claw author), e.g. "Hermes manages SOUL.md/AGENTS.md
+                # inside ~/.hermes/; clm does not push identity files in
+                # this iteration".
+                from clawrium.core.registry import load_manifest
+
+                skip_reason = ""
+                try:
+                    _manifest = load_manifest(claw_type)
+                    _stage_cfg = (
+                        (_manifest.get("onboarding") or {})
+                        .get("stages", {})
+                        .get(stage_name, {})
+                    )
+                    skip_reason = _stage_cfg.get("description", "") or ""
+                except Exception:
+                    pass
+                if skip_reason:
+                    console.print(
+                        f"[dim]Stage {i + 1}/{total_stages}: "
+                        f"{rich_escape(stage_name.upper())} — auto-skipped "
+                        f"({rich_escape(skip_reason)})[/dim]"
+                    )
+                else:
+                    console.print(
+                        f"[dim]Stage {i + 1}/{total_stages}: "
+                        f"{rich_escape(stage_name.upper())} — auto-skipped[/dim]"
+                    )
                 try:
                     complete_stage(
                         hostname, installed_name, stage_name, StageStatus.SKIPPED
@@ -1535,6 +1638,20 @@ def configure(
                         f"[red]Error:[/red] Failed to skip stage: {rich_escape(str(e))}"
                     )
                     raise typer.Exit(code=1)
+                # Also advance the state pointer so the next required stage's
+                # `transition_state(PENDING → providers/identity/...)` does not
+                # InvalidTransitionError when 2+ consecutive stages auto-skip.
+                next_state = STAGE_TO_NEXT_STATE.get(stage_name)
+                if next_state is not None:
+                    current_st = get_onboarding_state(hostname, installed_name)
+                    # Only advance forward; don't revert e.g. validate→ready loop.
+                    if current_st.value != next_state.value:
+                        try:
+                            transition_state(hostname, installed_name, next_state)
+                        except InvalidTransitionError:
+                            # Either the state already advanced past us or the
+                            # caller is re-running. Either way, drop through.
+                            pass
                 continue
 
             _stage_header(
@@ -1625,15 +1742,18 @@ def _show_start_blocked_error(
     completed_count = sum(
         1
         for stage_name in [s[0] for s in STAGES]
-        if stages_data.get(stage_name, {}).get("status") == "complete"
+        if stages_data.get(stage_name, {}).get("status") in ("complete", "skipped")
     )
 
     total_stages = len(STAGES)
 
+    # Treat both "complete" and "skipped" as resolved — a skipped stage (e.g.
+    # hermes' identity stage in Phase 4) is not something the user needs to
+    # come back to.
     incomplete_stages = [
         (name, desc)
         for name, desc in STAGES
-        if stages_data.get(name, {}).get("status") != "complete"
+        if stages_data.get(name, {}).get("status") not in ("complete", "skipped")
     ]
 
     console.print()

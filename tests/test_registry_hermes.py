@@ -250,18 +250,70 @@ def test_hermes_install_env_file_created_with_mode_0600():
     )
 
 
-def test_hermes_manifest_onboarding_all_auto_skip():
-    """All four canonical stages in the hermes manifest must be auto_skip:true
-    so initialize_onboarding short-circuits to READY. Phase 4 will replace
-    this with a real onboarding pipeline."""
+def test_hermes_manifest_onboarding_real_pipeline():
+    """Phase 4 replaces the Phase 1 placeholder all-auto_skip block with a real
+    onboarding pipeline mirroring openclaw's structure:
+
+      * ``providers`` is required (no auto_skip) and exposes the canonical
+        provider_select + provider_test tasks.
+      * ``identity`` keeps auto_skip:true (hermes manages SOUL.md/AGENTS.md
+        internally inside ~/.hermes/; clm does not push identity files in
+        this iteration).
+      * ``channels`` is required (no auto_skip) with a confirm task — the
+        only legal option is `cli` since the api_server platform is the
+        local-CLI-equivalent endpoint.
+      * ``validate`` runs a composite shell check (hermes binary present,
+        ~/.hermes/.env exists, /health returns 200).
+
+    Each assertion guards a specific contract independently so a future
+    regression points at exactly which property changed."""
     manifest = load_manifest("hermes")
     onboarding = manifest.get("onboarding") or {}
     stages = onboarding.get("stages") or {}
+
     for stage_name in ("providers", "identity", "channels", "validate"):
         assert stage_name in stages, f"hermes onboarding missing stage: {stage_name}"
-        assert stages[stage_name].get("auto_skip") is True, (
-            f"hermes onboarding stage '{stage_name}' must declare auto_skip: true"
-        )
+
+    # providers — required, exposes provider_select + provider_test
+    providers = stages["providers"]
+    assert providers.get("required") is True
+    assert providers.get("auto_skip") is not True
+    task_types = [t.get("type") for t in providers.get("tasks", [])]
+    assert "provider_select" in task_types
+    assert "provider_test" in task_types
+
+    # identity — auto_skip:true
+    identity = stages["identity"]
+    assert identity.get("auto_skip") is True
+    assert identity.get("required") is not True
+    assert identity.get("description")
+
+    # channels — required, cli-only confirm task
+    channels = stages["channels"]
+    assert channels.get("required") is True
+    assert channels.get("auto_skip") is not True
+    channel_task_types = [t.get("type") for t in channels.get("tasks", [])]
+    assert "confirm" in channel_task_types
+
+    # validate — three composite checks (binary + env + health)
+    validate_stage = stages["validate"]
+    assert validate_stage.get("auto_skip") is not True
+    validate_task_ids = [t.get("id") for t in validate_stage.get("tasks", [])]
+    assert "binary_check" in validate_task_ids
+    assert "env_check" in validate_task_ids
+    assert "health_check" in validate_task_ids
+
+
+def test_hermes_manifest_onboarding_stage_ordering():
+    """Stage order must match the canonical openclaw ordering (providers →
+    identity → channels → validate) so the configure wizard walks them in
+    the expected sequence."""
+    manifest = load_manifest("hermes")
+    stages = ((manifest.get("onboarding") or {}).get("stages") or {})
+    keys = list(stages.keys())
+    assert keys == ["providers", "identity", "channels", "validate"], (
+        f"hermes stage ordering must match canonical pipeline, got {keys}"
+    )
 
 
 def test_hermes_start_playbook_fails_on_inactive_service():

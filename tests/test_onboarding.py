@@ -358,11 +358,16 @@ class TestInitializeOnboarding:
         with pytest.raises(AgentNotFoundError):
             initialize_onboarding("nonexistent", "openclaw")
 
-    def test_initialize_hermes_auto_skips_to_ready(self, isolated_config):
-        """hermes manifest declares auto_skip:true on every stage, so
-        initialize_onboarding must short-circuit straight to READY with all
-        stages marked SKIPPED. This unblocks `clm agent start` without --force
-        for the Phase 1 placeholder onboarding pipeline (ATX B2)."""
+    def test_initialize_hermes_starts_pending_after_phase_4(self, isolated_config):
+        """Phase 4 replaces the placeholder all-auto_skip pipeline with a real
+        onboarding flow (providers required, identity auto_skip, channels
+        required, validate required). `initialize_onboarding` must therefore
+        leave hermes in PENDING — the auto_skip short-circuit no longer fires
+        because `providers` is no longer auto_skip.
+
+        Regression guard: if a future commit reverts hermes back to all-auto_skip
+        without intending to, this test starts failing immediately.
+        """
         hosts_data = [
             {
                 "hostname": "192.168.1.100",
@@ -391,10 +396,79 @@ class TestInitializeOnboarding:
         host = get_host("server1")
         onboarding = host["agents"]["hermes-test"]["onboarding"]
 
+        assert onboarding["state"] == "pending"
+        for stage_name, stage_data in onboarding["stages"].items():
+            assert stage_data["status"] == "pending", (
+                f"hermes stage {stage_name} should be pending after Phase 4, got "
+                f"{stage_data['status']}"
+            )
+            assert stage_data["completed_at"] is None
+
+    def test_initialize_all_auto_skip_short_circuits_to_ready(
+        self, isolated_config, monkeypatch
+    ):
+        """The auto_skip → READY short-circuit contract MUST remain intact
+        for hypothetical future agent types whose manifest declares every
+        stage as auto_skip:true. Hermes Phase 4 stops being such an agent
+        (providers is real and required), but the contract must keep working
+        for other agents — exercised here via a manifest mock.
+        """
+        hosts_data = [
+            {
+                "hostname": "192.168.1.100",
+                "alias": "server1",
+                "port": 22,
+                "agent_name": "xclm",
+                "agents": {
+                    "future-claw-test": {
+                        "type": "future-claw",
+                        "version": "1.0.0",
+                        "status": "installed",
+                        "agent_name": "future-claw-test",
+                    }
+                },
+            }
+        ]
+        isolated_config.mkdir(parents=True, exist_ok=True)
+        hosts_path = isolated_config / "hosts.json"
+        hosts_path.write_text(json.dumps(hosts_data))
+
+        fake_manifest = {
+            "agent": {"type": "future-claw", "description": "Future claw type"},
+            "platforms": [],
+            "onboarding": {
+                "stages": {
+                    "providers": {
+                        "description": "n/a",
+                        "auto_skip": True,
+                    },
+                    "identity": {"description": "n/a", "auto_skip": True},
+                    "channels": {"description": "n/a", "auto_skip": True},
+                    "validate": {"description": "n/a", "auto_skip": True},
+                }
+            },
+        }
+
+        from clawrium.core import onboarding as onboarding_module
+
+        monkeypatch.setattr(
+            onboarding_module,
+            "load_manifest",
+            lambda agent_type: fake_manifest,
+        )
+
+        result = initialize_onboarding("server1", "future-claw-test")
+        assert result is True
+
+        from clawrium.core.hosts import get_host
+
+        host = get_host("server1")
+        onboarding = host["agents"]["future-claw-test"]["onboarding"]
+
         assert onboarding["state"] == "ready"
         for stage_name, stage_data in onboarding["stages"].items():
             assert stage_data["status"] == "skipped", (
-                f"hermes stage {stage_name} should be skipped, got "
+                f"future-claw stage {stage_name} should be skipped, got "
                 f"{stage_data['status']}"
             )
             assert stage_data["completed_at"] is not None

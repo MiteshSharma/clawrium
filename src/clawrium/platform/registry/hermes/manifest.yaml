@@ -28,30 +28,71 @@ secrets:
 
 # Onboarding workflow configuration.
 #
-# Phase 1 ships a placeholder pipeline where every stage is auto-skipped so
-# fresh installs reach READY immediately and `clm agent start` works without
-# `--force`. Phase 4 will replace this with the real onboarding flow that
-# walks through provider selection, identity bootstrapping, and channel
-# configuration for hermes. Until then, configuration is performed by
-# `clm agent configure` (Phase 2), which writes ~/.hermes/.env directly.
+# Phase 4 replaces the Phase 1 placeholder (where every stage was auto-skipped
+# to short-circuit to READY) with a real onboarding pipeline. `clm agent start`
+# now requires the user to walk through `clm agent configure` first, mirroring
+# the openclaw flow.
+#
+# Stage notes:
+#   providers  required.  provider_select + provider_test, identical wiring
+#              to openclaw. Selecting a provider writes ~/.hermes/.env and
+#              ~/.hermes/config.yaml on the agent host (Phase 2 logic).
+#   identity   auto_skip. Hermes manages its own identity files (SOUL.md,
+#              AGENTS.md) inside ~/.hermes/ on the agent host; clm does not
+#              push identity files in this iteration. The wizard records this
+#              stage as SKIPPED and advances.
+#   channels   default `cli`. The api_server platform (loopback
+#              OpenAI-compatible HTTP API at 127.0.0.1:8642) is the local
+#              CLI-equivalent endpoint. External messaging gateways
+#              (Discord/Slack/Telegram/etc.) are out of scope and tracked as a
+#              separate follow-up issue.
+#   validate   Composite shell-level check: `hermes --version` succeeds,
+#              ~/.hermes/.env exists, and GET /health returns 200.
 onboarding:
   stages:
     providers:
-      required: false
-      auto_skip: true
-      description: "Provider configuration deferred to `clm agent configure` (Phase 2)"
+      required: true
+      description: "Assign inference provider"
+      tasks:
+        - id: select_provider
+          name: "Select inference provider"
+          type: provider_select
+        - id: verify_provider
+          name: "Verify provider connectivity"
+          type: provider_test
+
     identity:
       required: false
       auto_skip: true
-      description: "Identity bootstrapping deferred to Phase 4"
+      description: "Hermes manages SOUL.md/AGENTS.md inside ~/.hermes/; clm does not push identity files in this iteration"
+
     channels:
-      required: false
-      auto_skip: true
-      description: "Channel configuration deferred to Phase 4"
+      required: true
+      description: "Configure communication channel (cli only; external messaging gateways deferred)"
+      tasks:
+        - id: confirm_cli
+          name: "Confirm CLI channel"
+          type: confirm
+          message: "Hermes will use the loopback api_server platform on 127.0.0.1:8642 as its CLI-equivalent endpoint."
+          default: true
+
     validate:
-      required: false
-      auto_skip: true
-      description: "Validation deferred to Phase 4"
+      required: true
+      description: "Verify hermes is healthy"
+      tasks:
+        - id: binary_check
+          name: "Verify hermes binary"
+          type: command
+          command: "hermes --version"
+        - id: env_check
+          name: "Verify ~/.hermes/.env exists"
+          type: file_exists
+          paths:
+            - "~/.hermes/.env"
+        - id: health_check
+          name: "Verify api_server /health returns 200"
+          type: command
+          command: "curl -fsS http://127.0.0.1:8642/health"
 
 # Note: The hermes installer is a single bash script served from
 # raw.githubusercontent.com at the pinned tag. The same script content is
