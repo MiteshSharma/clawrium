@@ -64,6 +64,10 @@ When a host is removed with `clm host remove`, both the host entry in `hosts.jso
 | **Agent Name** | The unique identifier for an installed agent instance |
 | **Registry** | Platform-defined agent types with versions, dependencies, and templates |
 
+## Design Decisions
+
+- [aichat investigation](research/aichat.md) — why `clm chat` will be a pure-Python REPL on `httpx` instead of shelling out to [aichat](https://github.com/sigoden/aichat) (in progress — see [#322](https://github.com/ric03uec/clawrium/issues/322)).
+
 ## FAQ
 
 ### 1. Why not Kubernetes?
