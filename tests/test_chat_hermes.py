@@ -101,10 +101,15 @@ def test_unauthorized_response_raises_auth_error():
 
     backend = _build_backend(httpx.MockTransport(handler))
     try:
-        with pytest.raises(ChatAuthenticationError, match="401"):
+        with pytest.raises(ChatAuthenticationError) as excinfo:
             _run(backend.send_message("ping"))
     finally:
         _run(backend.close())
+
+    # The exception message must not echo the raw HTTP status — the type
+    # alone discriminates auth failures from other errors.
+    assert "401" not in str(excinfo.value)
+    assert "rejected bearer token" in str(excinfo.value)
 
 
 def test_forbidden_response_raises_auth_error():
@@ -113,10 +118,13 @@ def test_forbidden_response_raises_auth_error():
 
     backend = _build_backend(httpx.MockTransport(handler))
     try:
-        with pytest.raises(ChatAuthenticationError, match="403"):
+        with pytest.raises(ChatAuthenticationError) as excinfo:
             _run(backend.send_message("ping"))
     finally:
         _run(backend.close())
+
+    assert "403" not in str(excinfo.value)
+    assert "rejected bearer token" in str(excinfo.value)
 
 
 def test_server_error_raises_protocol_error():
@@ -482,6 +490,76 @@ def test_on_delta_failure_does_not_pollute_history():
         _run(backend.close())
 
 
+def test_connection_error_does_not_leak_httpx_internals():
+    """httpx exception text (errno codes, file paths, internal types) MUST NOT
+    appear in the ChatConnectionError message. The CLI surfaces the error
+    string verbatim, so any leakage reaches the user."""
+    leaky_message = (
+        "[Errno 111] Connection refused; "
+        "/usr/lib/python3/dist-packages/httpx/_transports/default.py"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(leaky_message)
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ChatConnectionError) as excinfo:
+            _run(backend.send_message("ping"))
+    finally:
+        _run(backend.close())
+
+    message = str(excinfo.value)
+    assert "Errno" not in message
+    assert "httpx" not in message
+    assert "/usr/lib" not in message
+    assert "Failed to reach hermes" in message
+
+
+def test_protocol_error_body_strips_control_chars():
+    """ChatProtocolError messages route response bodies through _short_body,
+    which must drop ANSI/control sequences as defence in depth — a future
+    caller that bypasses the CLI sanitizer should still not be able to
+    smuggle terminal escapes via a 4xx/5xx response body."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            content=b"boom\r\x1b[31mred\x1b[0m\x07bell",
+            headers={"content-type": "text/plain"},
+        )
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ChatProtocolError) as excinfo:
+            _run(backend.send_message("ping"))
+    finally:
+        _run(backend.close())
+
+    message = str(excinfo.value)
+    assert "\x1b" not in message
+    assert "\r" not in message
+    assert "\x07" not in message
+
+
+def test_http_error_does_not_leak_httpx_internals():
+    """Generic httpx.HTTPError (non-connect, non-timeout) also gets sanitized."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.HTTPError("internal httpx error: pool_timeout etc")
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ChatConnectionError) as excinfo:
+            _run(backend.send_message("ping"))
+    finally:
+        _run(backend.close())
+
+    message = str(excinfo.value)
+    assert "pool_timeout" not in message
+    assert "httpx" not in message
+
+
 def test_connect_is_idempotent():
     """Repeated connect() calls do not replace an existing client (resource leak guard)."""
     backend = HermesOpenAIBackend(
@@ -790,3 +868,164 @@ def test_sse_read_error_mid_stream_raises_connection_error():
             _run(backend.send_message("ping"))
     finally:
         _run(backend.close())
+
+
+def test_sse_on_delta_failure_mid_stream_does_not_pollute_history():
+    """The "render before history" invariant must hold for the SSE path,
+    not just the JSON fallback. Returns N SSE chunks; on_delta raises on
+    chunk 2. After the failure, history must equal its pre-call snapshot —
+    no phantom partial turn (which would inflate every subsequent request).
+    """
+    chunk_count = {"n": 0}
+
+    def boom_on_chunk_two(_text: str) -> None:
+        chunk_count["n"] += 1
+        if chunk_count["n"] == 2:
+            raise RuntimeError("broken pipe mid-stream")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = (
+            b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"second"}}]}\n\n'
+            b'data: {"choices":[{"delta":{"content":"third"}}]}\n\n'
+            b"data: [DONE]\n\n"
+        )
+        return _sse_response(body)
+
+    backend = _build_backend(httpx.MockTransport(handler))
+
+    try:
+        # First, prime history with one successful turn so we have a non-empty
+        # snapshot to assert against.
+        def first_handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json={"choices": [{"message": {"content": "prime"}}]}
+            )
+
+        backend._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(first_handler), timeout=30.0
+        )
+        _run(backend.send_message("warmup"))
+        pre_failure_snapshot = list(backend._history)
+        assert len(pre_failure_snapshot) == 2
+
+        # Swap to the SSE handler and trigger the mid-stream raise.
+        backend._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), timeout=30.0
+        )
+        with pytest.raises(RuntimeError, match="broken pipe mid-stream"):
+            _run(backend.send_message("failing", on_delta=boom_on_chunk_two))
+
+        assert backend._history == pre_failure_snapshot, (
+            "SSE path corrupted _history despite on_delta raising mid-stream"
+        )
+    finally:
+        _run(backend.close())
+
+
+def test_assistant_text_bidi_overrides_are_stripped():
+    """Unicode bidi-override characters (RTLO, ZWSP, etc.) can flip the
+    visual order of displayed text or hide invisible payloads in
+    copy-pasted output. Strip them at the backend boundary so neither the
+    CLI's console.print nor the TUI's RichLog.write is fooled.
+    """
+    leaky = "rm -rf /‮tmp‬"  # RTLO + PDF — visual reverse
+    invisible = "before​after"  # ZWSP — invisible in terminal
+    bom = "﻿trailing"  # BOM/ZWNBSP — invisible
+    payload = leaky + invisible + bom
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": payload}}]}
+        )
+
+    backend = _build_backend(httpx.MockTransport(handler))
+    try:
+        result = _run(backend.send_message("hi"))
+    finally:
+        _run(backend.close())
+
+    # Positive assertion: surrounding ASCII is preserved verbatim, only the
+    # bidi/zero-width chars are stripped. Without this, a sanitizer bug that
+    # over-stripped to "" would silently pass the negative checks below.
+    expected = "rm -rf /tmpbeforeaftertrailing"
+    assert result == expected, (
+        f"Sanitizer over- or under-stripped: got {result!r}, expected {expected!r}"
+    )
+    # Defense in depth: each bidi/zero-width char individually verified gone.
+    for char in ("‮", "‬", "​", "﻿"):
+        assert char not in result, f"{hex(ord(char))} survived sanitizer"
+
+
+def test_error_path_short_body_strips_bidi_overrides():
+    """W-A regression: error-response bodies must also be sanitized for bidi
+    and zero-width chars, not just assistant-content text. A compromised
+    hermes returning HTTP 4xx/5xx with RTLO chars in the body would otherwise
+    smuggle them through `_short_body` into the ChatProtocolError message.
+    """
+    from clawrium.core.chat_hermes import _short_body
+
+    payload = "error ‮evil‬ before​after ﻿bom"
+    cleaned = _short_body(payload)
+
+    # Surrounding ASCII preserved; bidi/zero-width stripped to spaces and
+    # whitespace runs collapsed.
+    assert "‮" not in cleaned
+    assert "‬" not in cleaned
+    assert "​" not in cleaned
+    assert "﻿" not in cleaned
+    # Positive assertion guards against over-stripping.
+    assert "error" in cleaned
+    assert "evil" in cleaned
+    assert "before" in cleaned
+    assert "after" in cleaned
+    assert "bom" in cleaned
+
+
+def test_response_timeout_seconds_defaults_to_instance_timeout():
+    """Constructor's `timeout_seconds` must control per-request timeout when
+    no explicit value is passed to send_message. The prior signature hardcoded
+    120s in the kwarg default, silently overriding any caller-supplied
+    instance timeout (W4 in the v2 review).
+    """
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # httpx exposes the request timeout via extensions when set
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "ok"}}]}
+        )
+
+    backend = HermesOpenAIBackend(
+        base_url="http://hermes.test:8642/v1",
+        auth_token=SecretStr("tok"),
+        timeout_seconds=7.5,
+    )
+    backend._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), timeout=7.5
+    )
+    try:
+        _run(backend.send_message("ping"))
+    finally:
+        _run(backend.close())
+
+    # httpx records the per-call timeout under request.extensions["timeout"].
+    timeout = captured["timeout"]
+    assert timeout is not None, (
+        "httpx did not record a per-call timeout — cannot verify W4 fix"
+    )
+    # At least one phase must reflect the instance-level 7.5s default; the
+    # bug being guarded against was send_message hardcoding 120s and ignoring
+    # the constructor's timeout_seconds entirely. Asserting *some* phase
+    # carries the expected value is sufficient — different httpx versions
+    # populate different subsets of phases.
+    matching_phases = [
+        phase
+        for phase in ("connect", "read", "write", "pool")
+        if timeout.get(phase) == 7.5
+    ]
+    assert matching_phases, (
+        f"No phase carried the instance timeout (7.5s); got {timeout!r}. "
+        f"The constructor's timeout_seconds is not threading to send_message."
+    )

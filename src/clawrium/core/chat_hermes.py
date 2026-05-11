@@ -99,7 +99,7 @@ class HermesOpenAIBackend:
         message: str,
         session_key: str = "main",
         on_delta: Callable[[str], None] | None = None,
-        response_timeout_seconds: float = 120.0,
+        response_timeout_seconds: float | None = None,
     ) -> str:
         """POST a user message with accumulated history and return the reply.
 
@@ -134,6 +134,13 @@ class HermesOpenAIBackend:
         if self._client is None:
             raise ChatConnectionError("Hermes chat backend not connected")
 
+        # Honor caller-supplied per-request timeout; otherwise fall back to
+        # the instance default set at __init__ (the prior code shipped a
+        # hardcoded 120s here, silently overriding any `timeout_seconds=X`
+        # passed to the constructor — W4 in the v2 review).
+        if response_timeout_seconds is None:
+            response_timeout_seconds = self._timeout_seconds
+
         self.last_send_dropped_turns = 0
         outgoing_messages = self._history + [{"role": "user", "content": message}]
         body: dict[str, Any] = {
@@ -157,9 +164,11 @@ class HermesOpenAIBackend:
                 timeout=response_timeout_seconds,
             ) as response:
                 if response.status_code in (401, 403):
-                    raise ChatAuthenticationError(
-                        f"Hermes rejected bearer token ({response.status_code})"
-                    )
+                    # Drop the raw HTTP status from the exception message —
+                    # the remediation hint at the CLI layer is what the user
+                    # needs, not the wire-level code. (Internal callers can
+                    # still distinguish via the exception type.)
+                    raise ChatAuthenticationError("Hermes rejected bearer token")
                 if response.status_code >= 400:
                     await response.aread()
                     raise ChatProtocolError(
@@ -173,8 +182,11 @@ class HermesOpenAIBackend:
                 else:
                     text = await _consume_json_response(response, on_delta)
         except httpx.ConnectError as exc:
+            # Drop raw httpx text — it leaks transport internals (e.g. errno,
+            # socket addrs) into user-facing errors. Slice 4 owns the friendly
+            # remediation hint at the CLI layer.
             raise ChatConnectionError(
-                f"Failed to reach hermes at {self._base_url}: {exc}"
+                f"Failed to reach hermes at {self._base_url}"
             ) from exc
         except httpx.TimeoutException as exc:
             raise ChatConnectionError(
@@ -182,7 +194,7 @@ class HermesOpenAIBackend:
                 f"{response_timeout_seconds}s"
             ) from exc
         except httpx.HTTPError as exc:
-            raise ChatConnectionError(f"HTTP error talking to hermes: {exc}") from exc
+            raise ChatConnectionError("HTTP error talking to hermes") from exc
 
         # Stream completed without raising — append the turn. Truncation keeps
         # entries aligned to user/assistant pairs so the wire format never
@@ -350,18 +362,48 @@ def _extract_delta_content(chunk: Any) -> str:
     return ""
 
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Error-path sanitizer — same coverage as _ASSISTANT_TEXT_STRIP_RE plus \n/\t
+# (error bodies are inlined into single-line exception messages, so newlines
+# and tabs are stripped too). Strips:
+#   - C0/C1 control bytes (\x00-\x1f, \x7f-\x9f)
+#   - Zero-width chars: ZWSP (U+200B) through WJ (U+2060) inclusive range
+#     + BOM/ZWNBSP (U+FEFF)
+#   - Bidi formatting controls: LRM (U+200E), RLM (U+200F),
+#     LRE-RLO + PDF (U+202A-U+202E), isolates LRI-FSI + PDI (U+2066-U+2069)
+#   - Line/paragraph separators (U+2028, U+2029) — non-newline whitespace
+#     that splits lines in some renderers
+# Uses \uXXXX escapes throughout for grep-ability and to keep the source
+# free of invisible chars that an editor's auto-fixer might "fix" away.
+_CONTROL_CHARS_RE = re.compile(
+    "["
+    "\x00-\x1f\x7f-\x9f"
+    "\u200b-\u200f"      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "\u2028-\u2029"      # LINE / PARAGRAPH SEPARATOR
+    "\u202a-\u202e"      # LRE, RLE, PDF, LRO, RLO
+    "\u2060"             # WORD JOINER
+    "\u2066-\u2069"      # LRI, RLI, FSI, PDI
+    "\ufeff"             # ZWNBSP / BOM
+    "]"
+)
 _WHITESPACE_RUN_RE = re.compile(r" +")
 
-# Strip C0/C1 control characters from server-supplied assistant text before it
-# reaches any renderer. Preserves only \t (\x09) and \n (\x0a) — LLM replies
-# legitimately contain newlines (markdown, code, paragraphs) and occasional
-# tabs (indented code). Everything else — including \r (overwrite), \x1b
-# (ANSI escape), \x07 (bell), \x08 (backspace), and the C1 block — is
-# stripped at the backend boundary so neither the CLI's direct console.print
-# nor the TUI's RichLog.write can be tricked into terminal manipulation by a
-# malicious or compromised hermes server.
-_ASSISTANT_TEXT_STRIP_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# Strip control / display-manipulating characters from server-supplied
+# assistant text before it reaches any renderer. Preserves only \t (\x09)
+# and \n (\x0a) — LLM replies legitimately contain newlines (markdown, code,
+# paragraphs) and occasional tabs (indented code). Same coverage as
+# _CONTROL_CHARS_RE except \n + \t are excluded from the C0 class so they
+# survive into the rendered output.
+_ASSISTANT_TEXT_STRIP_RE = re.compile(
+    "["
+    "\x00-\x08\x0b-\x1f\x7f-\x9f"
+    "\u200b-\u200f"      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+    "\u2028-\u2029"      # LINE / PARAGRAPH SEPARATOR
+    "\u202a-\u202e"      # LRE, RLE, PDF, LRO, RLO
+    "\u2060"             # WORD JOINER
+    "\u2066-\u2069"      # LRI, RLI, FSI, PDI
+    "\ufeff"             # ZWNBSP / BOM
+    "]"
+)
 
 
 def _sanitize_assistant_text(text: str) -> str:

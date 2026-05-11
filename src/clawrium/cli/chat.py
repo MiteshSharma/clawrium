@@ -148,6 +148,16 @@ def chat(
         console.print(f"[red]Error:[/red] {rich_escape(str(exc))}")
         raise typer.Exit(code=1)
 
+    # Emit the `--session` no-op notice only after backend construction
+    # succeeds so the user doesn't see a misleading "chat is about to start"
+    # warning followed by a hard error.
+    if chat_type == "openai" and session != "main":
+        console.print(
+            "[dim]`--session` is accepted but has no effect for this agent type "
+            "— conversation history is in-memory only and will not be routed to "
+            "a named session.[/dim]"
+        )
+
     console.print(
         f"[green]Connected target:[/green] {rich_escape(str(display_agent))} on {rich_escape(str(display_host))}"
     )
@@ -172,14 +182,50 @@ def chat(
         console.print(
             f"[red]Authentication failed:[/red] {rich_escape(_sanitize_exception_text(exc))}"
         )
+        if chat_type == "openai":
+            console.print(
+                f"Token mismatch. Re-run 'clm agent configure {rich_escape(str(canonical_name))}'."
+            )
         raise typer.Exit(code=1)
     except ChatConnectionError as exc:
         console.print(
             f"[red]Connection failed:[/red] {rich_escape(_sanitize_exception_text(exc))}"
         )
-        console.print(
-            "Verify the host is online and the recorded gateway URL/token are current (re-run configure/install if needed)."
-        )
+        if chat_type == "openai":
+            # The backend uses two distinct ChatConnectionError messages:
+            # - "Failed to reach hermes at <url>" for connect-refused / DNS
+            # - "Timed out waiting for hermes response after Ns" for timeouts
+            # A genuine timeout means the service is up but slow; the right
+            # remediation is `--timeout`, not `systemctl`.
+            if str(exc).startswith("Timed out"):
+                console.print(
+                    f"Try a higher --timeout value (current: {timeout}s)."
+                )
+            else:
+                console.print(
+                    f"Check 'systemctl --user status hermes-{rich_escape(str(canonical_name))}' on the agent host."
+                )
+                # Legacy install hint: persisted bind still on loopback means the
+                # opportunistic 127.0.0.1 → 0.0.0.0 migration in lifecycle hasn't
+                # run for this agent yet. Re-running configure flips it.
+                api_server = (
+                    agent_record.get("config", {}).get("api_server")
+                    if isinstance(agent_record.get("config"), dict)
+                    else None
+                )
+                if (
+                    isinstance(api_server, dict)
+                    and api_server.get("host") == "127.0.0.1"
+                ):
+                    console.print(
+                        f"Legacy bind detected (127.0.0.1). "
+                        f"Re-run 'clm agent configure {rich_escape(str(canonical_name))}' "
+                        f"to bind a reachable interface."
+                    )
+        else:
+            console.print(
+                "Verify the host is online and the recorded gateway URL/token are current (re-run configure/install if needed)."
+            )
         raise typer.Exit(code=1)
     except ChatProtocolError as exc:
         console.print(
@@ -384,11 +430,15 @@ def _build_hermes_backend(
 
     instance_key = get_instance_key(hostname, agent_type, agent_name)
     secret_entry = get_instance_secrets(instance_key).get("HERMES_API_SERVER_KEY")
-    raw_token = secret_entry["value"] if secret_entry else None
+    # `.get("value")` not `["value"]`: a truthy-but-malformed entry (no
+    # "value" field) would otherwise raise KeyError and escape the outer
+    # `except ValueError` handler, dumping a traceback to the user.
+    raw_token = secret_entry.get("value") if secret_entry else None
     if not isinstance(raw_token, str) or not raw_token.strip():
         raise ValueError(
             "HERMES_API_SERVER_KEY missing from secrets.json. "
-            "Re-run 'clm agent install --type hermes ...' to generate one."
+            f"Re-run 'clm agent install --type {agent_type} --host {hostname}' "
+            "to regenerate the API key."
         )
 
     base_url = f"http://{hostname}:{port}/v1"
@@ -489,7 +539,23 @@ def _validate_session_key(session_key: str) -> None:
 
 
 def _sanitize_exception_text(exc: Exception, max_len: int = 500) -> str:
-    cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(exc))
+    # Strip C0/C1 control bytes AND Unicode bidi-formatting + zero-width
+    # + line/paragraph-separator codepoints. Same coverage as
+    # chat_hermes._CONTROL_CHARS_RE (keep in sync). Closes the W-A bypass
+    # where a remote-supplied error body can embed RTLO/LRM/LINE-SEP/etc.
+    cleaned = re.sub(
+        "["
+        "\x00-\x1f\x7f-\x9f"
+        "\u200b-\u200f"      # ZWSP, ZWNJ, ZWJ, LRM, RLM
+        "\u2028-\u2029"      # LINE / PARAGRAPH SEPARATOR
+        "\u202a-\u202e"      # LRE, RLE, PDF, LRO, RLO
+        "\u2060"             # WORD JOINER
+        "\u2066-\u2069"      # LRI, RLI, FSI, PDI
+        "\ufeff"             # ZWNBSP / BOM
+        "]",
+        " ",
+        str(exc),
+    )
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     # First pass: redact `<scheme> <value>` header forms like
     # `Authorization: Bearer abc-123` and the shorthand `bearer abc-123`.
@@ -509,6 +575,15 @@ def _sanitize_exception_text(exc: Exception, max_len: int = 500) -> str:
     cleaned = re.sub(
         r"(?i)\b([A-Za-z0-9_]*(?:token|auth|password|key|bearer|secret|apikey|authorization)[A-Za-z0-9_]*)\s*[:=]\s*([^\s,;]+)",
         r"\1=***",
+        cleaned,
+    )
+    # Bearer scheme uses a space separator and is not covered by the
+    # token=/auth= pattern above. Mask the credential, keep the scheme word.
+    cleaned = re.sub(r"(?i)\bbearer\s+(\S+)", "Bearer ***", cleaned)
+    # api_key / api-key / apikey variants with = or : separator.
+    cleaned = re.sub(
+        r"(?i)\bapi[_-]?key\s*[:=]\s*([^\s,;]+)",
+        "api_key=***",
         cleaned,
     )
     return cleaned[:max_len]

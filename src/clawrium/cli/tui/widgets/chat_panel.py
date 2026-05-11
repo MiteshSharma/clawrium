@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from rich.markup import escape
@@ -14,6 +13,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Input, RichLog
 
+from clawrium.cli.chat import _sanitize_exception_text
 from clawrium.core.chat import (
     ChatAuthenticationError,
     ChatConnectionError,
@@ -22,12 +22,21 @@ from clawrium.core.chat import (
     SecretStr,
 )
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
-
 
 def _scrub_exception(exc: BaseException, limit: int = 200) -> str:
-    """Strip C0/C1 controls (incl. CR, ANSI) from exception text for safe display."""
-    return _CONTROL_CHARS_RE.sub(" ", str(exc))[:limit]
+    """Strip control/bidi/zero-width chars AND redact bearer/key/token
+    keywords from exception text before TUI display.
+
+    Delegates to the CLI's `_sanitize_exception_text` so the TUI path has
+    keyword-redaction parity with the CLI path. The CLI sanitizer requires
+    `Exception`; cast `BaseException` (Textual hands us either).
+    Truncates at `limit` chars for the compact TUI log line.
+    """
+    sanitized = _sanitize_exception_text(
+        exc if isinstance(exc, Exception) else Exception(str(exc)),
+        max_len=limit,
+    )
+    return sanitized[:limit]
 
 
 class ChatPanel(Widget):

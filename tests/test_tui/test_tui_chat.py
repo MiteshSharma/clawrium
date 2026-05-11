@@ -187,3 +187,71 @@ class TestDetailScreenChatEnabled:
         )
         screen = DetailScreen(agent=agent)
         assert screen._is_chat_enabled() is False
+
+
+class TestScrubException:
+    """`_scrub_exception` in chat_panel.py must redact credentials AND strip
+    display-manipulating chars — parity with the CLI's `_sanitize_exception_text`.
+    """
+
+    def test_strips_control_and_bidi_chars(self):
+        from clawrium.cli.tui.widgets.chat_panel import _scrub_exception
+
+        exc = Exception("ok\x1bbad\rmore‮flip‬end")
+        cleaned = _scrub_exception(exc)
+        assert "\x1b" not in cleaned
+        assert "\r" not in cleaned
+        assert "‮" not in cleaned
+        assert "‬" not in cleaned
+        # Positive: surrounding ASCII preserved.
+        assert "ok" in cleaned
+        assert "bad" in cleaned
+        assert "end" in cleaned
+
+    def test_strips_line_paragraph_separators(self):
+        """U+2028 / U+2029 break line-oriented parsing in some renderers."""
+        from clawrium.cli.tui.widgets.chat_panel import _scrub_exception
+
+        cleaned = _scrub_exception(Exception("line1 line2 end"))
+        assert " " not in cleaned
+        assert " " not in cleaned
+        assert "line1" in cleaned
+        assert "line2" in cleaned
+        assert "end" in cleaned
+
+    def test_redacts_bearer_tokens(self):
+        """B2 fix: TUI path must redact bearer/api_key/etc just like CLI path.
+
+        Without this, a server-returned `Authorization: Bearer <real-token>`
+        in an exception body reaches the TUI log verbatim.
+        """
+        from clawrium.cli.tui.widgets.chat_panel import _scrub_exception
+
+        exc = Exception(
+            "HTTP 401: Authorization: Bearer abc-very-secret-token-123"
+        )
+        cleaned = _scrub_exception(exc)
+        assert "abc-very-secret-token-123" not in cleaned
+        assert "***" in cleaned
+
+    def test_redacts_keyword_anchored_tokens(self):
+        """Keyword-anchored tokens (HERMES_API_SERVER_KEY=..., api_key=...) too."""
+        from clawrium.cli.tui.widgets.chat_panel import _scrub_exception
+
+        for body in (
+            "HERMES_API_SERVER_KEY=ffffffffffffffff",
+            "api_key=user-supplied-secret-value",
+            "secret: hunter2-very-secret",
+        ):
+            cleaned = _scrub_exception(Exception(body))
+            # The credential value must be redacted; the keyword may stay.
+            assert "ffffffffffffffff" not in cleaned, body
+            assert "user-supplied-secret-value" not in cleaned, body
+            assert "hunter2-very-secret" not in cleaned, body
+
+    def test_respects_limit(self):
+        from clawrium.cli.tui.widgets.chat_panel import _scrub_exception
+
+        long = "x" * 1000
+        cleaned = _scrub_exception(Exception(long), limit=50)
+        assert len(cleaned) <= 50
