@@ -64,7 +64,7 @@ The only structural difference vs openclaw is the transport itself (HTTP + SSE v
 ### New
 - `src/clawrium/core/chat_hermes.py` — `HermesOpenAIBackend`:
   - `__init__(base_url, auth_token: SecretStr, timeout: float)`
-  - `connect()` — `GET <base>/health` with 5s timeout for fail-fast. Maps connection refused → `ChatConnectionError` with a remediation hint pointing at `systemctl --user status hermes-<name>`.
+  - `connect()` — `GET <base>/health` with 5s timeout for fail-fast. Maps connection refused → `ChatConnectionError` with a remediation hint pointing at `systemctl status hermes-<name>.service` (system unit; no `--user` — hermes installs at `/etc/systemd/system/`).
   - `send_message(message, on_delta, response_timeout_seconds)` — `POST /v1/chat/completions` with `Authorization: Bearer …`, body `{model, messages, stream: true}`. Streams SSE via `httpx.AsyncClient.stream()`, parses `data: {...}` lines, extracts `choices[0].delta.content`. Handles `data: [DONE]` sentinel and `:keep-alive` comments. Falls back to single-JSON-response path on non-SSE content-type.
   - Maintains `self._history: list[dict]` for client-side conversation continuity within a REPL session.
 - `tests/test_chat_hermes.py` — backend unit tests.
@@ -180,7 +180,7 @@ Each subtask delivers a user-visible improvement to `clm chat <hermes-name>` and
 
 **Scope** (each failure path gets a friendly message + remediation hint):
 - Missing/invalid `HERMES_API_SERVER_KEY` → "Re-run `clm agent install --type hermes`" (mirrors `lifecycle.py:748-754`).
-- Service unreachable / connection refused → "Check `systemctl --user status hermes-<name>` on the agent host" plus a hint about `clm agent configure` if the bind looks stale.
+- Service unreachable / connection refused → "Check `systemctl status hermes-<name>.service` on the agent host" (system scope; no `--user`) plus a hint about `clm agent configure` if the bind looks stale.
 - Bearer rejected (401/403) → "Token mismatch. Re-run `clm agent configure <name>`."
 - `--session` passed to a hermes agent → dim warning explaining it's a no-op for OpenAI-typed agents.
 
