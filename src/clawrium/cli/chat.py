@@ -56,7 +56,13 @@ def chat(
         "main",
         "--session",
         "-s",
-        help="Gateway session key (for example: main, direct:<channel>, or thread-specific key)",
+        help=(
+            "Gateway session key for WebSocket-backed agents "
+            "(for example: main, direct:<channel>, or thread-specific key). "
+            "OpenAI-backed agents (e.g. hermes) accept the flag but ignore it "
+            "in Phase 1 — server-side session routing is not wired through "
+            "/v1/chat/completions yet."
+        ),
     ),
     timeout: float = typer.Option(
         120.0,
@@ -99,6 +105,12 @@ def chat(
     display_host = (
         host_record.get("alias") or host_record.get("hostname") or "unknown-host"
     )
+    # `canonical_name` is the Unix-level agent name used in secret instance
+    # keys (host:type:name). Must NOT fall back to `agent_type` — that would
+    # mint a wrong instance_key (e.g. host:hermes:hermes) and the bearer
+    # lookup would silently miss the real entry.
+    canonical_name = agent_record.get("agent_name") or agent_name
+    # `display_agent` is for printing only; safe to fall back further.
     display_agent = (
         agent_record.get("agent_name")
         or agent_record.get("name")
@@ -118,7 +130,7 @@ def chat(
                 agent_record=agent_record,
                 host_record=host_record,
                 agent_type=agent_type,
-                agent_name=str(display_agent),
+                agent_name=str(canonical_name),
                 response_timeout_seconds=timeout,
             )
         else:

@@ -636,3 +636,88 @@ class TestHermesChat:
         assert result.exit_code == 0
         assert "0.0.0.0" not in captured["backend"]._base_url
         assert "wolf-i.lan" in captured["backend"]._base_url
+
+    def _setup_resolved_hermes(self, monkeypatch):
+        monkeypatch.setattr(
+            "clawrium.cli.chat.get_agent_by_name",
+            lambda _name: (self.HOST, "hermes", self.AGENT),
+        )
+        monkeypatch.setattr(
+            "clawrium.cli.chat._resolve_chat_type", lambda _agent_type: "openai"
+        )
+        monkeypatch.setattr(
+            "clawrium.cli.chat.get_instance_secrets",
+            lambda _key: {
+                "HERMES_API_SERVER_KEY": {
+                    "key": "HERMES_API_SERVER_KEY",
+                    "value": "f" * 64,
+                }
+            },
+        )
+
+    def test_service_unreachable(self, monkeypatch):
+        """ChatConnectionError from the backend surfaces as exit 1 with a
+        remediation hint (mirrors the openclaw connection-failure path)."""
+        from clawrium.core.chat import ChatConnectionError
+
+        self._setup_resolved_hermes(monkeypatch)
+
+        def fake_asyncio_run(_coro):
+            _coro.close()
+            raise ChatConnectionError("connection refused on 192.168.1.50:8642")
+
+        monkeypatch.setattr("clawrium.cli.chat.asyncio.run", fake_asyncio_run)
+
+        result = runner.invoke(app, ["chat", "hermes-test"])
+
+        assert result.exit_code == 1
+        assert "connection failed" in result.output.lower()
+        assert "connection refused" in result.output.lower()
+        # Remediation hint must be present so the user knows what to do next.
+        assert "configure" in result.output.lower() or "install" in result.output.lower()
+
+    def test_authentication_failure(self, monkeypatch):
+        """ChatAuthenticationError from the backend surfaces as exit 1."""
+        from clawrium.core.chat import ChatAuthenticationError
+
+        self._setup_resolved_hermes(monkeypatch)
+
+        def fake_asyncio_run(_coro):
+            _coro.close()
+            raise ChatAuthenticationError("Hermes rejected bearer token (401)")
+
+        monkeypatch.setattr("clawrium.cli.chat.asyncio.run", fake_asyncio_run)
+
+        result = runner.invoke(app, ["chat", "hermes-test"])
+
+        assert result.exit_code == 1
+        assert "authentication failed" in result.output.lower()
+        assert "401" in result.output
+
+
+# ---------------------------------------------------------------------------
+# ChatBackend Protocol conformance (W5) — both transports satisfy the Protocol
+# so the dispatch in cli/chat.py can pass either through `_chat_loop` without
+# transport-specific knowledge.
+# ---------------------------------------------------------------------------
+
+
+def test_openclaw_satisfies_chat_backend_protocol():
+    from clawrium.core.chat import ChatBackend, OpenClawChatClient, SecretStr
+
+    client = OpenClawChatClient(
+        gateway_url="ws://example.test:40123",
+        auth_token=SecretStr("token"),
+    )
+    assert isinstance(client, ChatBackend)
+
+
+def test_hermes_satisfies_chat_backend_protocol():
+    from clawrium.core.chat import ChatBackend, SecretStr
+    from clawrium.core.chat_hermes import HermesOpenAIBackend
+
+    backend = HermesOpenAIBackend(
+        base_url="http://example.test:8642/v1",
+        auth_token=SecretStr("token"),
+    )
+    assert isinstance(backend, ChatBackend)

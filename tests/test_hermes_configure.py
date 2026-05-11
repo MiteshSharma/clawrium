@@ -1652,18 +1652,40 @@ class TestHermesBindMigration:
         assert sent["api_server"]["host"] == "0.0.0.0"
 
     def test_migration_is_idempotent(self, tmp_path: Path):
-        """A second configure on an already-migrated record makes no further
-        rewrite calls — host stays at 0.0.0.0 and no migration update_host fires."""
+        """A second configure on an already-migrated record makes no migration
+        write. configure_agent still performs its single post-Ansible persist
+        of the agent record (line 1137), so we expect exactly one update_host
+        call total — the persist, not a migration rewrite. A no-op migration
+        write would push the count to two and this assertion would catch it."""
         host, captured = self._run_configure("0.0.0.0", tmp_path)
 
         assert (
             host["agents"]["hermes-test"]["config"]["api_server"]["host"] == "0.0.0.0"
         )
-        # No update_host call should have rewritten the bind, because it was
-        # already 0.0.0.0. Any update_host calls made here must NOT change the
-        # host field.
-        for snapshot in captured["update_calls"]:
-            assert snapshot["host"] == "0.0.0.0"
+        # Exactly one update_host call: the final post-Ansible persist.
+        # If the migration block ever fires unnecessarily, count goes to 2.
+        assert len(captured["update_calls"]) == 1, (
+            f"expected 1 update_host call (post-Ansible persist only), "
+            f"got {len(captured['update_calls'])}: {captured['update_calls']}"
+        )
+        # And the persisted value is still 0.0.0.0 (sanity check).
+        assert captured["update_calls"][0]["host"] == "0.0.0.0"
+
+    def test_migration_pass_writes_twice(self, tmp_path: Path):
+        """On a legacy 127.0.0.1 record, configure_agent calls update_host
+        exactly twice: once for the migration rewrite, once for the
+        post-Ansible persist. This pairs with `test_migration_is_idempotent`
+        — together they prove the migration runs exactly when it should."""
+        _host, captured = self._run_configure("127.0.0.1", tmp_path)
+
+        assert len(captured["update_calls"]) == 2, (
+            f"expected 2 update_host calls (migration + post-Ansible persist), "
+            f"got {len(captured['update_calls'])}: {captured['update_calls']}"
+        )
+        # The migration write (first) and the persist (second) both end with
+        # host=0.0.0.0 because the migration mutates the fixture in place.
+        assert captured["update_calls"][0]["host"] == "0.0.0.0"
+        assert captured["update_calls"][1]["host"] == "0.0.0.0"
 
     def test_legacy_missing_api_server_block_uses_zero_bind_default(
         self, tmp_path: Path
