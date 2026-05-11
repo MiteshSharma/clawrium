@@ -10,6 +10,9 @@ workspace:
 # Capability flags advertised by this manifest.
 features:
   memory: true
+  # Chat dispatch resolves to the OpenAI-compatible HTTP backend for hermes.
+  chat:
+    type: openai
 
 # Secrets configuration.
 # All provider keys are optional: Phase 1 installs the binary in an inert state.

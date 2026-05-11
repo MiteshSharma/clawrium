@@ -413,7 +413,9 @@ class TestConfigureAgentApiServerKey:
         # value is now sourced from secrets.json, not hosts.json.
         sent_config = captured["inventory"]["all"]["vars"]["config"]
         assert sent_config["api_server"]["key"] == persisted_key
-        assert sent_config["api_server"]["host"] == "127.0.0.1"
+        # Migration: legacy 127.0.0.1 is rewritten to 0.0.0.0 so hermes binds a
+        # reachable interface (Phase 1 of #322 — `clm chat <hermes>` over LAN).
+        assert sent_config["api_server"]["host"] == "0.0.0.0"
         assert sent_config["api_server"]["port"] == 8642
 
     def test_hermes_reconfigure_does_not_rotate_persisted_key(self, tmp_path: Path):
@@ -613,9 +615,9 @@ class TestHermesApiServerKeySecretsHygiene:
         assert "key" not in persisted_api_server, (
             "hermes bearer token leaked into hosts.json: " f"{persisted_api_server}"
         )
-        # Non-sensitive shape is preserved.
+        # Non-sensitive shape is preserved (with the host migration applied).
         assert persisted_api_server.get("enabled") is True
-        assert persisted_api_server.get("host") == "127.0.0.1"
+        assert persisted_api_server.get("host") == "0.0.0.0"
         assert persisted_api_server.get("port") == 8642
 
     def test_configure_rejects_invalid_hex_key_in_secrets(self, tmp_path: Path):
@@ -1540,3 +1542,184 @@ class TestDiscordSecretRemoval:
             assert ik not in list_instances_with_secrets()
         finally:
             os.environ.pop("CLAWRIUM_CONFIG_DIR", None)
+
+
+# ---------------------------------------------------------------------------
+# Bind migration (Phase 1 of #322) — opportunistically rewrite legacy
+# host="127.0.0.1" to "0.0.0.0" in hosts.json on the next configure call.
+# ---------------------------------------------------------------------------
+
+
+class TestHermesBindMigration:
+    """Existing hermes installs with loopback bind get rewritten on configure."""
+
+    def _persisted_key_secret(self, key_value: str) -> dict:
+        return {
+            "HERMES_API_SERVER_KEY": {
+                "key": "HERMES_API_SERVER_KEY",
+                "value": key_value,
+                "created_at": "2026-05-10T00:00:00+00:00",
+                "updated_at": "2026-05-10T00:00:00+00:00",
+                "description": "",
+            }
+        }
+
+    def _make_host(self, host_value: str) -> dict:
+        return {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agents": {
+                "hermes-test": {
+                    "type": "hermes",
+                    "agent_name": "hermes-test",
+                    "config": {
+                        "api_server": {
+                            "enabled": True,
+                            "host": host_value,
+                            "port": 8642,
+                        }
+                    },
+                }
+            },
+        }
+
+    def _run_configure(self, host_value: str, tmp_path: Path):
+        host = self._make_host(host_value)
+        config_data = {
+            "provider": {
+                "name": "p",
+                "type": "openrouter",
+                "default_model": "x",
+            },
+        }
+
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        captured = {"inventory": None, "update_calls": []}
+
+        def fake_update_host(hostname_arg, updater):
+            # Mutate the in-memory fixture so subsequent reads see the migration.
+            updated = updater(host)
+            captured["update_calls"].append(
+                updated["agents"]["hermes-test"]["config"]["api_server"].copy()
+            )
+            return True
+
+        def fake_run(**kwargs):
+            captured["inventory"] = kwargs["inventory"]
+            mock = MagicMock()
+            mock.status = "successful"
+            mock.events = []
+            return mock
+
+        with (
+            patch("clawrium.core.lifecycle.get_host", return_value=host),
+            patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ),
+            patch("clawrium.core.lifecycle.ansible_runner.run", side_effect=fake_run),
+            patch(
+                "clawrium.core.lifecycle.update_host", side_effect=fake_update_host
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_instance_secrets",
+                return_value=self._persisted_key_secret("a" * 64),
+            ),
+        ):
+            success, error = configure_agent(
+                "test-host", "hermes", config_data, agent_name="hermes-test"
+            )
+        assert success is True, error
+        return host, captured
+
+    def test_legacy_loopback_is_rewritten_to_zero_bind(self, tmp_path: Path):
+        """Persisted host=127.0.0.1 must be rewritten to 0.0.0.0 on configure."""
+        host, captured = self._run_configure("127.0.0.1", tmp_path)
+
+        # The in-memory fixture was mutated by the migration's update_host call.
+        assert (
+            host["agents"]["hermes-test"]["config"]["api_server"]["host"] == "0.0.0.0"
+        )
+        # The config sent to the playbook reflects the migrated bind.
+        sent = captured["inventory"]["all"]["vars"]["config"]
+        assert sent["api_server"]["host"] == "0.0.0.0"
+
+    def test_migration_is_idempotent(self, tmp_path: Path):
+        """A second configure on an already-migrated record makes no further
+        rewrite calls — host stays at 0.0.0.0 and no migration update_host fires."""
+        host, captured = self._run_configure("0.0.0.0", tmp_path)
+
+        assert (
+            host["agents"]["hermes-test"]["config"]["api_server"]["host"] == "0.0.0.0"
+        )
+        # No update_host call should have rewritten the bind, because it was
+        # already 0.0.0.0. Any update_host calls made here must NOT change the
+        # host field.
+        for snapshot in captured["update_calls"]:
+            assert snapshot["host"] == "0.0.0.0"
+
+    def test_legacy_missing_api_server_block_uses_zero_bind_default(
+        self, tmp_path: Path
+    ):
+        """If hosts.json has no api_server block at all (legacy/corrupted),
+        configure rebuilds defaults with host=0.0.0.0 — not the loopback we
+        used to ship with."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agents": {
+                "hermes-test": {
+                    "type": "hermes",
+                    "agent_name": "hermes-test",
+                    "config": {},  # no api_server block
+                }
+            },
+        }
+        config_data = {
+            "provider": {"name": "p", "type": "openrouter", "default_model": "x"},
+        }
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        captured = {}
+
+        def fake_run(**kwargs):
+            captured["inventory"] = kwargs["inventory"]
+            mock = MagicMock()
+            mock.status = "successful"
+            mock.events = []
+            return mock
+
+        with (
+            patch("clawrium.core.lifecycle.get_host", return_value=host),
+            patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ),
+            patch("clawrium.core.lifecycle.ansible_runner.run", side_effect=fake_run),
+            patch("clawrium.core.lifecycle.update_host", return_value=True),
+            patch(
+                "clawrium.core.lifecycle.get_instance_secrets",
+                return_value=self._persisted_key_secret("b" * 64),
+            ),
+        ):
+            success, error = configure_agent(
+                "test-host", "hermes", config_data, agent_name="hermes-test"
+            )
+
+        assert success is True, error
+        sent = captured["inventory"]["all"]["vars"]["config"]
+        assert sent["api_server"]["host"] == "0.0.0.0"
+        assert sent["api_server"]["port"] == 8642
