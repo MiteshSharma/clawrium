@@ -1384,7 +1384,7 @@ def configure(
     skip_health: bool = typer.Option(
         False,
         "--skip-health",
-        help="Skip OpenClaw gateway health verification during validate",
+        help="Skip agent health verification during validate (openclaw gateway probe or hermes /health probe)",
     ),
     file: Optional[list[Path]] = typer.Option(
         None,
@@ -1599,6 +1599,12 @@ def configure(
                 continue
 
             if can_skip_stage(claw_type, stage_name):
+                # Print a one-line breadcrumb so the user sees that a stage
+                # was deliberately skipped rather than silently swallowed.
+                console.print(
+                    f"[dim]Stage {i + 1}/{total_stages}: "
+                    f"{stage_name.upper()} — auto-skipped[/dim]"
+                )
                 try:
                     complete_stage(
                         hostname, installed_name, stage_name, StageStatus.SKIPPED
@@ -1608,6 +1614,20 @@ def configure(
                         f"[red]Error:[/red] Failed to skip stage: {rich_escape(str(e))}"
                     )
                     raise typer.Exit(code=1)
+                # Also advance the state pointer so the next required stage's
+                # `transition_state(PENDING → providers/identity/...)` does not
+                # InvalidTransitionError when 2+ consecutive stages auto-skip.
+                next_state = STAGE_TO_NEXT_STATE.get(stage_name)
+                if next_state is not None:
+                    current_st = get_onboarding_state(hostname, installed_name)
+                    # Only advance forward; don't revert e.g. validate→ready loop.
+                    if current_st.value != next_state.value:
+                        try:
+                            transition_state(hostname, installed_name, next_state)
+                        except InvalidTransitionError:
+                            # Either the state already advanced past us or the
+                            # caller is re-running. Either way, drop through.
+                            pass
                 continue
 
             _stage_header(
@@ -1703,10 +1723,13 @@ def _show_start_blocked_error(
 
     total_stages = len(STAGES)
 
+    # Treat both "complete" and "skipped" as resolved — a skipped stage (e.g.
+    # hermes' identity stage in Phase 4) is not something the user needs to
+    # come back to.
     incomplete_stages = [
         (name, desc)
         for name, desc in STAGES
-        if stages_data.get(name, {}).get("status") != "complete"
+        if stages_data.get(name, {}).get("status") not in ("complete", "skipped")
     ]
 
     console.print()

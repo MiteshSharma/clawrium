@@ -6,6 +6,7 @@ and connectivity before transitioning to READY state.
 
 import asyncio
 import json
+import re
 import socket
 import time
 import urllib.request
@@ -15,6 +16,12 @@ from typing import Any
 
 from clawrium.core.config import get_config_dir
 from clawrium.core.hosts import get_host
+
+
+# Reused for shell-argument safety in validate_hermes_health: the agent name is
+# interpolated into a sudo command line, so we re-validate at point of use
+# (defense-in-depth) even though hosts.json is normally trusted.
+_AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 __all__ = [
     "ValidationResult",
@@ -938,8 +945,26 @@ def validate_hermes_health(
         stdout/stderr/rc for the failing check (when available).
     """
     import ansible_runner
+    import os
+    import shutil
+    import tempfile
     from clawrium.core import keys as core_keys
     from clawrium.core.hosts import get_host_by_key_id
+
+    # Defense-in-depth: claw_name is interpolated into a `sudo -u <name>` shell
+    # command below. hosts.json is normally trusted (the canonical writer is
+    # `clm agent install` which validates the name via validate_agent_name()),
+    # but we re-validate at point of use so a corrupted record can never
+    # trigger shell injection through this path.
+    if not _AGENT_NAME_PATTERN.match(claw_name):
+        return ValidationResult(
+            passed=False,
+            errors=[
+                f"Invalid agent name '{claw_name}'. Must start with a lowercase "
+                f"letter and contain only lowercase letters, digits, hyphens, "
+                f"underscores (max 32 chars)."
+            ],
+        )
 
     host_data = get_host(host)
     if not host_data:
@@ -1015,37 +1040,58 @@ def validate_hermes_health(
     errors: list[str] = []
     details: dict[str, Any] = {}
 
+    # Ansible-runner writes the inventory (host IPs, SSH key paths) into
+    # `private_data_dir`. Using /tmp directly would leak those to other local
+    # users; create a per-run 0o700 directory and clean it up unconditionally.
+    # IMPORTANT: ansible_runner.Runner.events is a lazy iterator that reads
+    # the on-disk job_events directory at iteration time, so we must keep the
+    # directory alive while collecting stdout below and only clean up at the
+    # very end of the function.
+    runner_dir = tempfile.mkdtemp(prefix="clawrium-validate-hermes-")
     try:
-        result = ansible_runner.run(
-            private_data_dir="/tmp",
-            inventory=inventory,
-            host_pattern=hostname,
-            module="shell",
-            module_args=shell_cmd,
-            quiet=True,
-            timeout=timeout,
-        )
-    except Exception as e:
-        return ValidationResult(
-            passed=False,
-            errors=[f"Failed to run hermes health checks on '{display_host}': {e}"],
-        )
-
-    stdout = ""
-    rc = None
-    for event in result.events:
-        if event.get("event") in ("runner_on_ok", "runner_on_failed"):
-            res = event.get("event_data", {}).get("res", {})
-            stdout = res.get("stdout", "") or ""
-            rc = res.get("rc")
-            break
-        if event.get("event") == "runner_on_unreachable":
-            res = event.get("event_data", {}).get("res", {})
-            msg = res.get("msg", "host unreachable")
+        os.chmod(runner_dir, 0o700)
+        try:
+            result = ansible_runner.run(
+                private_data_dir=runner_dir,
+                inventory=inventory,
+                host_pattern=hostname,
+                module="shell",
+                module_args=shell_cmd,
+                quiet=True,
+                timeout=timeout,
+            )
+        except Exception as e:
             return ValidationResult(
                 passed=False,
-                errors=[f"Host '{display_host}' unreachable: {msg}"],
+                errors=[
+                    f"Failed to run hermes health checks on '{display_host}': {e}"
+                ],
             )
+
+        # Drain events while the runner dir is still on disk; the iterator
+        # reads job_events lazily so it MUST be consumed inside this try.
+        stdout = ""
+        rc = None
+        unreachable_msg: str | None = None
+        for event in result.events:
+            ev_type = event.get("event")
+            if ev_type in ("runner_on_ok", "runner_on_failed"):
+                res = event.get("event_data", {}).get("res", {})
+                stdout = res.get("stdout", "") or ""
+                rc = res.get("rc")
+                break
+            if ev_type == "runner_on_unreachable":
+                res = event.get("event_data", {}).get("res", {})
+                unreachable_msg = res.get("msg", "host unreachable")
+                break
+    finally:
+        shutil.rmtree(runner_dir, ignore_errors=True)
+
+    if unreachable_msg is not None:
+        return ValidationResult(
+            passed=False,
+            errors=[f"Host '{display_host}' unreachable: {unreachable_msg}"],
+        )
 
     details["raw_stdout"] = stdout
     details["rc"] = rc

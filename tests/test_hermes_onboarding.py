@@ -258,3 +258,116 @@ def test_validate_hermes_health_reports_missing_agent(hermes_host_record):
 
     assert result.passed is False
     assert any("not" in e.lower() for e in result.errors)
+
+
+def test_validate_hermes_health_rejects_injection_payload_in_claw_name():
+    """Defense-in-depth: claw_name is interpolated into a `sudo -u <name>`
+    shell command. Re-validate at point of use so even a corrupted
+    hosts.json entry cannot trigger shell injection through this path.
+
+    A name like `hermes-test; rm -rf /` MUST be rejected before any
+    ansible_runner.run call.
+    """
+    with (
+        patch(
+            "ansible_runner.run",
+            side_effect=AssertionError(
+                "validate_hermes_health must NOT call ansible_runner with an "
+                "unsafe agent name"
+            ),
+        ),
+        patch(
+            "clawrium.core.validation.get_host",
+            side_effect=AssertionError(
+                "validate_hermes_health must short-circuit BEFORE host lookup "
+                "when claw_name is malformed"
+            ),
+        ),
+    ):
+        result = validate_hermes_health("wolf-i", "hermes-test; rm -rf /")
+
+    assert result.passed is False
+    assert any("invalid agent name" in e.lower() for e in result.errors)
+
+
+def test_validate_hermes_health_handles_ansible_exception(hermes_host_record):
+    """If ansible_runner.run raises (e.g. SSH timeout, network failure,
+    runner bootstrap error), validate_hermes_health must surface a
+    ValidationResult with a single, well-shaped error instead of
+    propagating an uncaught exception out of the validation layer."""
+    with (
+        patch(
+            "clawrium.core.validation.get_host",
+            return_value=hermes_host_record,
+        ),
+        patch(
+            "clawrium.core.keys.get_host_private_key",
+            return_value="/tmp/fake-key",
+        ),
+        patch(
+            "ansible_runner.run",
+            side_effect=RuntimeError("ssh: connect to host: timeout"),
+        ),
+    ):
+        result = validate_hermes_health("wolf-i", "hermes-test")
+
+    assert result.passed is False
+    assert len(result.errors) == 1
+    assert "hermes health checks" in result.errors[0].lower()
+    assert "timeout" in result.errors[0].lower()
+
+
+def test_validate_hermes_health_cleans_up_runner_directory(hermes_host_record):
+    """Ansible-runner writes inventory (host IPs, SSH key paths) under its
+    `private_data_dir`. validate_hermes_health must allocate a 0o700 temp
+    directory and remove it unconditionally, so secrets do not leak to other
+    local users via /tmp world-readable inventory files."""
+    import os
+
+    captured_paths: list[str] = []
+
+    def fake_run(*, private_data_dir, **kwargs):
+        captured_paths.append(private_data_dir)
+        # Confirm permissions match the security contract while the dir
+        # still exists.
+        mode = os.stat(private_data_dir).st_mode & 0o777
+        assert mode == 0o700, f"runner dir must be 0o700, got {oct(mode)}"
+        return _build_mock_runner_result(
+            "BINARY_CHECK\nv1\nBINARY_RC=0\nENV_CHECK\nENV_OK\nHEALTH_CHECK\n200\n"
+        )
+
+    with (
+        patch(
+            "clawrium.core.validation.get_host",
+            return_value=hermes_host_record,
+        ),
+        patch(
+            "clawrium.core.keys.get_host_private_key",
+            return_value="/tmp/fake-key",
+        ),
+        patch("ansible_runner.run", side_effect=fake_run),
+    ):
+        result = validate_hermes_health("wolf-i", "hermes-test")
+
+    assert result.passed is True
+    assert captured_paths, "ansible_runner.run was not called"
+    # The directory MUST be cleaned up after validate returns.
+    assert not os.path.exists(captured_paths[0]), (
+        f"runner dir {captured_paths[0]} leaked after validate_hermes_health"
+    )
+
+
+# ---------------------------------------------------------------------------
+# can_skip_stage edge cases (S6).
+# ---------------------------------------------------------------------------
+
+
+def test_can_skip_stage_unknown_stage_returns_false():
+    """A stage name that isn't present in the manifest cannot be skipped."""
+    assert can_skip_stage("hermes", "nonexistent-stage") is False
+
+
+def test_can_skip_stage_stage_without_auto_skip_returns_false():
+    """A stage that omits the auto_skip key entirely is not auto-skipped."""
+    # The hermes manifest's providers stage has no auto_skip key, only required:true.
+    assert can_skip_stage("hermes", "providers") is False
