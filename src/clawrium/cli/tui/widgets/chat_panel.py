@@ -22,11 +22,21 @@ from clawrium.core.chat import (
     SecretStr,
 )
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Strip C0/C1 control bytes PLUS Unicode bidi-formatting + zero-width
+# codepoints. The bidi/zero-width additions close the W-A bypass where a
+# remote-supplied error message could embed RTLO (U+202E) / ZWSP / BOM to
+# reverse displayed text or hide payloads in copy-paste output.
+_CONTROL_CHARS_RE = re.compile(
+    r"[\x00-\x1f\x7f-\x9f"
+    r"​-‍⁠﻿"
+    r"‪-‮⁦-⁩"
+    r"]"
+)
 
 
 def _scrub_exception(exc: BaseException, limit: int = 200) -> str:
-    """Strip C0/C1 controls (incl. CR, ANSI) from exception text for safe display."""
+    """Strip C0/C1 controls (incl. CR, ANSI) and Unicode bidi/zero-width
+    chars from exception text for safe terminal display."""
     return _CONTROL_CHARS_RE.sub(" ", str(exc))[:limit]
 
 

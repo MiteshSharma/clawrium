@@ -539,7 +539,18 @@ def _validate_session_key(session_key: str) -> None:
 
 
 def _sanitize_exception_text(exc: Exception, max_len: int = 500) -> str:
-    cleaned = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", str(exc))
+    # Strip C0/C1 control bytes AND Unicode bidi-formatting + zero-width
+    # codepoints. The bidi/zero-width additions close the W-A bypass:
+    # otherwise a remote-supplied error message can embed RTLO (U+202E) /
+    # ZWSP / BOM to flip the visible order or hide payloads in copy-paste.
+    cleaned = re.sub(
+        r"[\x00-\x1f\x7f-\x9f"
+        r"​-‍⁠﻿"
+        r"‪-‮⁦-⁩"
+        r"]",
+        " ",
+        str(exc),
+    )
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     # First pass: redact `<scheme> <value>` header forms like
     # `Authorization: Bearer abc-123` and the shorthand `bearer abc-123`.

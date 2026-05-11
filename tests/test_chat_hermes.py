@@ -945,9 +945,41 @@ def test_assistant_text_bidi_overrides_are_stripped():
     finally:
         _run(backend.close())
 
-    # Each bidi/zero-width char must be gone.
+    # Positive assertion: surrounding ASCII is preserved verbatim, only the
+    # bidi/zero-width chars are stripped. Without this, a sanitizer bug that
+    # over-stripped to "" would silently pass the negative checks below.
+    expected = "rm -rf /tmpbeforeaftertrailing"
+    assert result == expected, (
+        f"Sanitizer over- or under-stripped: got {result!r}, expected {expected!r}"
+    )
+    # Defense in depth: each bidi/zero-width char individually verified gone.
     for char in ("‮", "‬", "​", "﻿"):
         assert char not in result, f"{hex(ord(char))} survived sanitizer"
+
+
+def test_error_path_short_body_strips_bidi_overrides():
+    """W-A regression: error-response bodies must also be sanitized for bidi
+    and zero-width chars, not just assistant-content text. A compromised
+    hermes returning HTTP 4xx/5xx with RTLO chars in the body would otherwise
+    smuggle them through `_short_body` into the ChatProtocolError message.
+    """
+    from clawrium.core.chat_hermes import _short_body
+
+    payload = "error ‮evil‬ before​after ﻿bom"
+    cleaned = _short_body(payload)
+
+    # Surrounding ASCII preserved; bidi/zero-width stripped to spaces and
+    # whitespace runs collapsed.
+    assert "‮" not in cleaned
+    assert "‬" not in cleaned
+    assert "​" not in cleaned
+    assert "﻿" not in cleaned
+    # Positive assertion guards against over-stripping.
+    assert "error" in cleaned
+    assert "evil" in cleaned
+    assert "before" in cleaned
+    assert "after" in cleaned
+    assert "bom" in cleaned
 
 
 def test_response_timeout_seconds_defaults_to_instance_timeout():
@@ -978,12 +1010,22 @@ def test_response_timeout_seconds_defaults_to_instance_timeout():
     finally:
         _run(backend.close())
 
-    # httpx records per-call timeout under all four phases when explicitly set
+    # httpx records the per-call timeout under request.extensions["timeout"].
     timeout = captured["timeout"]
-    assert timeout is not None
-    # All four phases set to the instance default (7.5s), not 120s
-    for phase in ("connect", "read", "write", "pool"):
-        if phase in timeout and timeout[phase] is not None:
-            assert timeout[phase] == 7.5, (
-                f"{phase} timeout was {timeout[phase]}, expected 7.5"
-            )
+    assert timeout is not None, (
+        "httpx did not record a per-call timeout — cannot verify W4 fix"
+    )
+    # At least one phase must reflect the instance-level 7.5s default; the
+    # bug being guarded against was send_message hardcoding 120s and ignoring
+    # the constructor's timeout_seconds entirely. Asserting *some* phase
+    # carries the expected value is sufficient — different httpx versions
+    # populate different subsets of phases.
+    matching_phases = [
+        phase
+        for phase in ("connect", "read", "write", "pool")
+        if timeout.get(phase) == 7.5
+    ]
+    assert matching_phases, (
+        f"No phase carried the instance timeout (7.5s); got {timeout!r}. "
+        f"The constructor's timeout_seconds is not threading to send_message."
+    )

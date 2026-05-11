@@ -362,7 +362,17 @@ def _extract_delta_content(chunk: Any) -> str:
     return ""
 
 
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Error-path sanitizer — same coverage as _ASSISTANT_TEXT_STRIP_RE plus \n/\t
+# (error bodies are inlined into single-line exception messages, so newlines
+# and tabs are stripped too). Includes bidi/zero-width chars to match the
+# happy-path sanitizer, closing the W-A bypass where a 400-response body
+# could carry RTLO chars through _short_body.
+_CONTROL_CHARS_RE = re.compile(
+    r"[\x00-\x1f\x7f-\x9f"
+    r"​-‍⁠﻿"
+    r"‪-‮⁦-⁩"
+    r"]"
+)
 _WHITESPACE_RUN_RE = re.compile(r" +")
 
 # Strip control / display-manipulating characters from server-supplied
