@@ -1,6 +1,6 @@
 # Slack
 
-**Status:** ✅ Supported (OpenClaw only)
+**Status:** ✅ Supported (OpenClaw, Hermes)
 
 **Mode:** Socket Mode (default) — outbound WebSocket, no public endpoint needed.
 
@@ -197,6 +197,53 @@ Tokens use SecretRef objects instead of plaintext values. The secret value is st
 ```
 
 At runtime, OpenClaw resolves the token from the environment file written by Clawrium.
+
+---
+
+## Hermes Configuration
+
+Hermes uses a simpler configuration model — env vars rendered directly into `~/.hermes/.env`. There are no SecretRef objects; tokens are written as plain values in the env file (mode 0600 on the agent host).
+
+### Env vars rendered by clm
+
+| Variable | Required | Description |
+|----------|:--------:|-------------|
+| `SLACK_BOT_TOKEN` | yes | Bot User OAuth Token (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | yes | App-Level Token for Socket Mode (`xapp-...`) |
+| `SLACK_ALLOWED_USERS` | yes | Comma-separated Slack Member IDs (e.g., `U01ABC2DEF3,U04XYZ7GHI8`) |
+| `SLACK_HOME_CHANNEL` | no | Channel ID for cron/scheduled messages (e.g., `C01234567890`) |
+| `SLACK_HOME_CHANNEL_NAME` | no | Display name for the home channel |
+
+### Required scopes (minimal set for Hermes)
+
+| Scope | Purpose |
+|-------|---------|
+| `app_mentions:read` | Bot can see when @-mentioned in channels |
+| `chat:write` | Bot can send messages |
+| `channels:read` | Bot can list public channels |
+| `groups:read` | Bot can list private channels it's a member of |
+| `im:history` | Bot can read DM history |
+| `im:read` | Bot can read DM metadata |
+| `im:write` | Bot can open/write DMs |
+| `users:read` | Bot can look up user info |
+
+### Required event subscriptions
+
+| Event | Purpose |
+|-------|---------|
+| `app_mention` | Fires when someone @-mentions the bot in a channel |
+| `message.im` | Fires on direct messages to the bot |
+
+### Access control differences from OpenClaw
+
+| Aspect | OpenClaw | Hermes |
+|--------|----------|--------|
+| **Config location** | `openclaw.json` (SecretRef objects) | `~/.hermes/.env` (plain env vars) |
+| **DM policy** | Configurable (`pairing`, `allowlist`, `open`, `disabled`) | `SLACK_ALLOWED_USERS` allowlist only |
+| **Group policy** | Configurable (`open`, `allowlist`, `disabled`) | Channel membership controls access (invite-only) |
+| **Token storage** | `secrets.json` → rendered to env at runtime | `secrets.json` → rendered to `.env` at configure time |
+
+For the full Hermes Slack setup walkthrough, see [Hermes Support Matrix > Slack walkthrough](../hermes.md#slack-walkthrough).
 
 ---
 

@@ -31,7 +31,7 @@ Hermes supports cloud providers via API keys and any OpenAI-compatible local end
 | **[Anthropic](providers/anthropic.md)** | ✅ | `anthropic` | Renders `ANTHROPIC_API_KEY`; uses hermes default `base_url` |
 | **[OpenAI](providers/openai.md)** | ✅ | `openai` | Renders `OPENAI_API_KEY`; uses hermes default `base_url` |
 | **[Ollama / custom OpenAI-compatible](providers/ollama.md)** | ✅ | `ollama` | Renders `model.provider: custom` + `model.base_url: <endpoint>/v1`. No API key required for local endpoints. |
-| **AWS Bedrock** | 📋 | — | Deferred. Hermes upstream supports it; clm wiring not in this iteration. |
+| **[AWS Bedrock](providers/bedrock.md)** | ✅ | `bedrock` | Renders `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_DEFAULT_REGION`. Requires IAM credentials with `bedrock:InvokeModel` permission. |
 | **Google Vertex** | 📋 | — | Deferred. |
 | **ZAI / BigModel** | 📋 | — | Deferred. |
 | **Azure OpenAI** | 📋 | — | Deferred. |
@@ -42,14 +42,14 @@ The provider mapping is implemented in `src/clawrium/platform/registry/hermes/te
 
 ## Channel Support
 
-Hermes supports two channels managed by clm: a loopback OpenAI-compatible HTTP API (always on) and Discord (opt-in via the channels onboarding stage).
+Hermes supports three channels managed by clm: a loopback OpenAI-compatible HTTP API (always on), Discord (opt-in), and Slack (opt-in via Socket Mode).
 
 | Channel | Status | Notes |
 |---------|:------:|-------|
 | **Local OpenAI-compatible HTTP API** (`POST /v1/chat/completions`, `GET /v1/models`, `GET /health`) | ✅ | Bound to loopback on the agent host. See [Use the local API](#3-use-the-local-openai-compatible-api). |
 | **Discord** | ✅ | clm-managed via `clm agent configure <name> --stage channels`. Token in `secrets.json` (B3 invariant); non-sensitive config in `hosts.json`. See [Discord walkthrough](#discord-walkthrough). |
+| **[Slack](channels/slack.md)** | ✅ | Socket Mode (no public endpoint). clm-managed via `clm agent configure <name> --stage channels`. Both tokens in `secrets.json`; non-sensitive config in `hosts.json`. See [Slack walkthrough](#slack-walkthrough). |
 | **clm `chat <hermes-name>`** | 🚧 | Not supported yet (only openclaw). Tracked as [#322](https://github.com/ric03uec/clawrium/issues/322). |
-| **Slack** | 📋 | Deferred |
 | **Telegram / WhatsApp / Signal** | 📋 | Deferred |
 | **Email / Matrix / Mattermost / Teams / Google Chat** | 📋 | Deferred |
 
@@ -66,7 +66,7 @@ Hermes supports two channels managed by clm: a loopback OpenAI-compatible HTTP A
 | **Secrets management** | ✅ | `HERMES_API_SERVER_KEY` persisted in `~/.config/clawrium/secrets.json` (NOT `hosts.json`) under the canonical instance key `<host>:hermes:<agent-name>` (single-colon, 3 components). `secrets.json` is chmod 0600 on creation. Per-agent secrets are isolated by instance key. |
 | **Auto-restart** | ✅ | Systemd unit `hermes-<agent_name>.service` with `Restart=on-failure`; systemd is the supervisor (no separate process). |
 | **Log streaming** | ✅ | `journalctl -u hermes-<agent_name>.service` on the agent host |
-| **Onboarding wizard** | ✅ | 4 stages: `providers` (required) → `identity` (auto-skipped) → `channels` (cli only) → `validate` |
+| **Onboarding wizard** | ✅ | 4 stages: `providers` (required) → `identity` (auto-skipped) → `channels` (cli, discord, slack) → `validate` |
 | **Identity files (`SOUL.md` / `AGENTS.md`)** | 🚧 | Hermes manages these internally inside `~/.hermes/`. clm does not push identity files in this iteration — the identity onboarding stage auto-skips. |
 | **MCP server registration** | 📋 | Deferred |
 | **`~/.hermes/state.db` (session/transcript history)** | 📋 | Out of scope for memory CLI |
@@ -113,7 +113,7 @@ The wizard walks through:
 |-------|----------|
 | **providers** | Required. Pick from your registered clm providers; clm validates connectivity. |
 | **identity** | Auto-skipped. Hermes manages `SOUL.md` / `AGENTS.md` internally inside `~/.hermes/`. |
-| **channels** | Required. Only `cli` is offered (the api_server platform is the CLI-equivalent endpoint). |
+| **channels** | Required. Offers `cli`, `discord`, and `slack`. The api_server (CLI) is always enabled; Discord and Slack are opt-in. |
 | **validate** | Required. Runs `hermes --version`, checks `~/.hermes/.env`, and probes `GET /health`. |
 
 Configure renders TWO files on the agent host:
@@ -146,6 +146,7 @@ Hermes deep-merges `config.yaml` with its built-in defaults at load time, so onl
 | `anthropic` | `anthropic` | (omitted; hermes default) | `ANTHROPIC_API_KEY` |
 | `openai` | `openai` | (omitted; hermes default) | `OPENAI_API_KEY` |
 | `ollama` (or any custom OpenAI-compatible URL) | `custom` | `<provider.endpoint>/v1` (suffix `/v1` appended if missing) | (none — local endpoint) |
+| `bedrock` | `bedrock` | (omitted; hermes uses boto3 credential chain) | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` + `AWS_DEFAULT_REGION` |
 
 After `.env` write, the restart handler enables and starts the systemd unit. The configure playbook probes `http://127.0.0.1:8642/health` with `retries: 20, delay: 3` (≈60s max). `/health` is unauthenticated; `/v1/*` requires the bearer header.
 
@@ -207,7 +208,7 @@ clm agent remove <agent-name>    # stop, remove unit, rm ~/.hermes/, userdel
 ## Important caveats
 
 - **No `clm chat <hermes-name>`** in this iteration. `clm chat` only supports openclaw. Tracked as [#322](https://github.com/ric03uec/clawrium/issues/322). Use `curl` against the local API in the meantime.
-- **Discord is the only clm-managed messaging gateway today.** Slack, Telegram, WhatsApp, Signal, email, Matrix, Mattermost, Teams, Google Chat are tracked as separate follow-ups. Discord is fully wired — see [Discord walkthrough](#discord-walkthrough).
+- **Discord and Slack are the clm-managed messaging gateways today.** Telegram, WhatsApp, Signal, email, Matrix, Mattermost, Teams, Google Chat are tracked as separate follow-ups. See [Discord walkthrough](#discord-walkthrough) and [Slack walkthrough](#slack-walkthrough).
 - **Identity is hermes-managed.** clm does not push `SOUL.md` / `AGENTS.md` into `~/.hermes/`. The identity onboarding stage auto-skips. If you want custom identity, edit those files directly on the agent host via SSH.
 - **Bearer token lives in `secrets.json`, not `hosts.json`.** As of PR #318, the canonical store for `HERMES_API_SERVER_KEY` is `~/.config/clawrium/secrets.json` keyed by `<host>:hermes:<agent-name>` (single-colon, 3 components). Provider keys use a different schema (`provider:<provider-name>`) in the same file.
 - **Memory has hard size limits.** `MEMORY.md` ≤ 2200 chars, `USER.md` ≤ 1375 chars. Other filenames in `~/.hermes/memories/` are rejected by `clm agent memory edit`. See [memory.md](memory.md).
@@ -309,6 +310,159 @@ Re-run `clm agent configure <name> --stage channels`, pick `discord` again, and 
 ### Non-interactive flags
 
 Planned for a follow-up — interactive is the supported path in this release. For automation today, drive `clm agent configure --stage channels` via expect/pexpect, or set the values directly in `hosts.json` + `secrets.json` and re-run the stage to trigger a re-render.
+
+---
+
+## Slack walkthrough
+
+Slack is opt-in and uses **Socket Mode** — the bot maintains an outbound WebSocket to Slack, so no public endpoint or ingress is required on the agent host.
+
+### Prerequisites
+
+You'll need:
+
+1. A Slack workspace where you have admin/app-install permissions
+2. A Slack App configured for Socket Mode (see [Step-by-step setup](#step-by-step-slack-app-setup) below)
+3. Your Slack Member ID (starts with `U`, e.g., `U01ABC2DEF3`)
+
+### Step-by-step Slack App setup
+
+1. **Create the app**: Go to [https://api.slack.com/apps/new](https://api.slack.com/apps/new), choose "From scratch", name it (e.g., "Hermes"), select your workspace.
+
+2. **Enable Socket Mode**: Navigate to **Socket Mode** in the sidebar and toggle it on.
+
+3. **Generate App-Level Token**: You'll be prompted to create an app-level token. Name it `socket-mode`, add the `connections:write` scope. Copy the token — it starts with `xapp-`. This is your `SLACK_APP_TOKEN`.
+
+4. **Set Bot Token Scopes**: Go to **OAuth & Permissions** > **Scopes** > **Bot Token Scopes** and add:
+   - `app_mentions:read` — Bot can see when mentioned
+   - `chat:write` — Bot can send messages
+   - `channels:read` — Bot can list public channels
+   - `groups:read` — Bot can list private channels it's in
+   - `im:history` — Bot can read DM history
+   - `im:read` — Bot can read DM metadata
+   - `im:write` — Bot can open/write DMs
+   - `users:read` — Bot can look up user info
+
+5. **Enable Event Subscriptions**: Go to **Event Subscriptions**, toggle on. Under **Subscribe to bot events**, add:
+   - `app_mention` — Fires when someone @-mentions the bot
+   - `message.im` — Fires on direct messages to the bot
+
+6. **Install to Workspace**: Go to **OAuth & Permissions** > **Install to Workspace**. Authorize. Copy the **Bot User OAuth Token** (starts with `xoxb-`). This is your `SLACK_BOT_TOKEN`.
+
+7. **Invite the bot to a channel**: In Slack, go to the channel and type `/invite @Hermes` (or whatever you named the bot).
+
+### Interactive setup
+
+```bash
+clm agent configure <hermes-name> --stage channels
+```
+
+The wizard offers `cli`, `discord`, and `slack`. Pick `slack` and the CLI prompts for:
+
+| Prompt | Stored where | Required | Notes |
+|--------|--------------|:--------:|-------|
+| Slack Bot Token | `secrets.json` as `SLACK_BOT_TOKEN` | yes | Masked input. Must start with `xoxb-`. |
+| Slack App Token | `secrets.json` as `SLACK_APP_TOKEN` | yes | Masked input. Must start with `xapp-`. |
+| Allowed Slack user IDs | `hosts.json` `channels.slack.allowed_users` | yes | Comma-separated Member IDs (format: `U` + 8+ alphanumeric chars). |
+| Slack home channel ID | `hosts.json` `channels.slack.home_channel` | optional | Channel for cron/scheduled messages. Format: `C` + alphanumeric. |
+| Slack home channel name | `hosts.json` `channels.slack.home_channel_name` | optional | Display name for the home channel. |
+
+`clm` then runs the configure playbook which re-renders `~/.hermes/.env` with the `SLACK_*` block and restarts `hermes-<name>.service`.
+
+### Resulting on-disk shape
+
+`hosts.json` (non-sensitive only):
+
+```json
+"config": {
+  "api_server": {"enabled": true, "host": "127.0.0.1", "port": 8642},
+  "provider": {...},
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "allowed_users": ["U01ABC2DEF3"],
+      "home_channel": "C01234567890",
+      "home_channel_name": "general"
+    }
+  }
+}
+```
+
+`secrets.json`:
+
+```json
+"192.168.1.36:hermes:<name>": {
+  "HERMES_API_SERVER_KEY": {...},
+  "SLACK_BOT_TOKEN": {"value": "xoxb-...", "description": "Slack bot token", ...},
+  "SLACK_APP_TOKEN": {"value": "xapp-...", "description": "Slack app token", ...}
+}
+```
+
+Both tokens **never** land in `hosts.json` — the configure flow stores them exclusively in `secrets.json` (B3 invariant). Re-running `clm agent configure --stage channels` with the same tokens reuses them byte-identical.
+
+### Rendered `.env` (Slack block)
+
+After configure, the relevant section of `~/.hermes/.env` on the agent host looks like:
+
+```env
+# Slack
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...
+SLACK_ALLOWED_USERS=U01ABC2DEF3
+SLACK_HOME_CHANNEL=C01234567890
+SLACK_HOME_CHANNEL_NAME=general
+```
+
+### Access control
+
+Hermes uses `SLACK_ALLOWED_USERS` to control who can interact with the bot via DMs. For channel messages, the bot only responds in channels it's been invited to — **channel membership is your access control for group conversations**. Only invite the bot to channels where it should be active.
+
+### Removal
+
+`clm agent remove <name> --force` purges the entire instance entry from `secrets.json`, including both Slack tokens. There is no separate "rotate Slack token" command — re-run the channels stage with new tokens to overwrite.
+
+### Troubleshooting
+
+<details>
+<summary><strong>Bot connects but gets `missing_scope` errors</strong></summary>
+
+Hermes logs will show errors like `slack_bolt: missing_scope: channels:read`. Go to your Slack app's **OAuth & Permissions** > **Scopes** and add the missing scope. Then **reinstall the app** to your workspace (Slack requires reinstall after scope changes). You do NOT need to re-run `clm agent configure` — the tokens remain valid after reinstall.
+
+</details>
+
+<details>
+<summary><strong>Bot gets `not_in_channel` error for home channel</strong></summary>
+
+The bot must be a member of the home channel. In Slack, go to that channel and type `/invite @Hermes`. The `SLACK_HOME_CHANNEL` setting only tells hermes where to post scheduled/cron messages — it doesn't auto-join.
+
+</details>
+
+<details>
+<summary><strong>Bot doesn't respond to DMs</strong></summary>
+
+1. Confirm your Slack Member ID is in `hosts.json` `channels.slack.allowed_users`. Hermes drops messages from non-allowlisted users silently.
+2. Verify `im:history`, `im:read`, and `im:write` scopes are present.
+3. Verify `message.im` event subscription is enabled.
+
+</details>
+
+<details>
+<summary><strong>Bot doesn't respond in channels</strong></summary>
+
+1. The bot only listens for `app_mention` events in channels — you must @-mention it.
+2. Confirm the bot has been invited to the channel (`/invite @Hermes`).
+3. Verify `app_mentions:read` and `channels:read` scopes are enabled.
+
+</details>
+
+<details>
+<summary><strong>Socket Mode not connecting</strong></summary>
+
+1. Verify Socket Mode is enabled in the Slack app settings.
+2. Confirm `SLACK_APP_TOKEN` starts with `xapp-` and has the `connections:write` scope.
+3. Check the journal: `ssh <agent-host> "sudo journalctl -u hermes-<name>.service -n 200 --no-pager | grep -iE 'slack|socket'"`.
+
+</details>
 
 ---
 
@@ -426,7 +580,7 @@ Then re-run `clm agent remove <name> --force`.
 
 The following are explicitly out of scope for issue #68 and tracked as separate follow-ups (see `.itx/68/00_PLAN.md` → "Out of scope"):
 
-- Messaging gateway pairing: Slack, Telegram, WhatsApp, Signal, email, Teams, Google Chat, Matrix, Mattermost, QQBot, Feishu, DingTalk. (Discord shipped — see [Discord walkthrough](#discord-walkthrough).)
+- Messaging gateway pairing: Telegram, WhatsApp, Signal, email, Teams, Google Chat, Matrix, Mattermost, QQBot, Feishu, DingTalk. (Discord and Slack shipped — see [Discord walkthrough](#discord-walkthrough) and [Slack walkthrough](#slack-walkthrough).)
 - Pluggable memory backends: Holographic, Honcho, Hindsight, Mem0, Byterover, OpenViking. clm's `memory` CLI only sees the default markdown backend.
 - MCP server registration.
 - `~/.hermes/state.db` (session / transcript history) inspection via clm.
