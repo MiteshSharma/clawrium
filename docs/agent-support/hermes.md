@@ -49,7 +49,7 @@ Hermes supports three channels managed by clm: a loopback OpenAI-compatible HTTP
 | **Local OpenAI-compatible HTTP API** (`POST /v1/chat/completions`, `GET /v1/models`, `GET /health`) | ✅ | Bound to loopback on the agent host. See [Use the local API](#3-use-the-local-openai-compatible-api). |
 | **Discord** | ✅ | clm-managed via `clm agent configure <name> --stage channels`. Token in `secrets.json` (B3 invariant); non-sensitive config in `hosts.json`. See [Discord walkthrough](#discord-walkthrough). |
 | **[Slack](channels/slack.md)** | ✅ | Socket Mode (no public endpoint). clm-managed via `clm agent configure <name> --stage channels`. Both tokens in `secrets.json`; non-sensitive config in `hosts.json`. See [Slack walkthrough](#slack-walkthrough). |
-| **clm `chat <hermes-name>`** | 🚧 | Not supported yet (only openclaw). Tracked as [#322](https://github.com/ric03uec/clawrium/issues/322). |
+| **clm `chat <hermes-name>`** | ✅ | Supported via the OpenAI-compatible HTTP backend (`HermesOpenAIBackend`). Connects to `http://<host>:8642/v1` using the bearer token from `secrets.json`. |
 | **Telegram / WhatsApp / Signal** | 📋 | Deferred |
 | **Email / Matrix / Mattermost / Teams / Google Chat** | 📋 | Deferred |
 
@@ -67,7 +67,7 @@ Hermes supports three channels managed by clm: a loopback OpenAI-compatible HTTP
 | **Auto-restart** | ✅ | Systemd unit `hermes-<agent_name>.service` with `Restart=on-failure`; systemd is the supervisor (no separate process). |
 | **Log streaming** | ✅ | `journalctl -u hermes-<agent_name>.service` on the agent host |
 | **Onboarding wizard** | ✅ | 4 stages: `providers` (required) → `identity` (auto-skipped) → `channels` (cli, discord, slack) → `validate` |
-| **Identity files (`SOUL.md` / `AGENTS.md`)** | 🚧 | Hermes manages these internally inside `~/.hermes/`. clm does not push identity files in this iteration — the identity onboarding stage auto-skips. |
+| **Identity files (`SOUL.md` / `AGENTS.md`)** | ✅ | Hermes-managed inside `~/.hermes/`. The identity onboarding stage auto-skips (by design — hermes owns these). `SOUL.md` is reachable via `clm agent memory read/write/info` (routed to `~/.hermes/SOUL.md`). |
 | **MCP server registration** | 📋 | Deferred |
 | **`~/.hermes/state.db` (session/transcript history)** | 📋 | Out of scope for memory CLI |
 | **OAuth / webhook secrets** | 📋 | Deferred |
@@ -207,9 +207,8 @@ clm agent remove <agent-name>    # stop, remove unit, rm ~/.hermes/, userdel
 
 ## Important caveats
 
-- **No `clm chat <hermes-name>`** in this iteration. `clm chat` only supports openclaw. Tracked as [#322](https://github.com/ric03uec/clawrium/issues/322). Use `curl` against the local API in the meantime.
 - **Discord and Slack are the clm-managed messaging gateways today.** Telegram, WhatsApp, Signal, email, Matrix, Mattermost, Teams, Google Chat are tracked as separate follow-ups. See [Discord walkthrough](#discord-walkthrough) and [Slack walkthrough](#slack-walkthrough).
-- **Identity is hermes-managed.** clm does not push `SOUL.md` / `AGENTS.md` into `~/.hermes/`. The identity onboarding stage auto-skips. If you want custom identity, edit those files directly on the agent host via SSH.
+- **Identity is hermes-managed by design.** Hermes owns `SOUL.md` and `AGENTS.md` inside `~/.hermes/`; the onboarding `identity` stage auto-skips. `SOUL.md` is editable via `clm agent memory write <name> SOUL.md`, which routes to `~/.hermes/SOUL.md` (other memories live under `~/.hermes/memories/`).
 - **Bearer token lives in `secrets.json`, not `hosts.json`.** As of PR #318, the canonical store for `HERMES_API_SERVER_KEY` is `~/.config/clawrium/secrets.json` keyed by `<host>:hermes:<agent-name>` (single-colon, 3 components). Provider keys use a different schema (`provider:<provider-name>`) in the same file.
 - **Memory has hard size limits.** `MEMORY.md` ≤ 2200 chars, `USER.md` ≤ 1375 chars. Other filenames in `~/.hermes/memories/` are rejected by `clm agent memory edit`. See [memory.md](memory.md).
 - **Concurrent writes are visible-atomic.** Hermes' `memory_write.yaml` uses a stage-then-rename pattern (`rename(2)` within the same filesystem) so the running hermes daemon never observes a partial file. The pattern is visible-atomic, not crash-durable (no explicit `fsync`).
@@ -586,7 +585,6 @@ The following are explicitly out of scope for issue #68 and tracked as separate 
 - `~/.hermes/state.db` (session / transcript history) inspection via clm.
 - OAuth file (`HERMES_OAUTH_FILE`) and webhook secrets.
 - Installer-checksum refresh helper (manifest must be re-pinned every version bump — currently manual).
-- `clm chat <hermes-name>` ([#322](https://github.com/ric03uec/clawrium/issues/322)).
 
 ---
 
