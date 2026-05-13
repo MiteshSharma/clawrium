@@ -1,4 +1,4 @@
-# Hermes Support Matrix
+# Hermes
 
 Hermes is the [Nous Research self-improving AI agent](https://github.com/NousResearch/hermes-agent) — a Python daemon that exposes a local OpenAI-compatible HTTP API and is designed to maintain its own identity, memory, and skills over time.
 
