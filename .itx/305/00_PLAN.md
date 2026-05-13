@@ -105,8 +105,8 @@ def _stat_event(task_name: str, path: str, exists: bool) -> dict:
 | S4 | `test_start_restarts_service_when_unit_file_changes` | unit file content differs from on-disk version | `Restart openclaw service if unit file changed` runs with `state: restarted` |
 
 **Python-side parser test (W4):** extend `test_openclaw_skip_detection_matches_fact_and_marker` (in whichever existing file owns it — grep before edit) with two cases:
-- positive: event stream emits `openclaw_discovered_binary` set_fact ⇒ skip detected
-- negative: stream has neither the fact nor the skip-marker task ⇒ skip **not** detected
+- negative: event stream emits the `openclaw_discovered_binary` set_fact **alone** ⇒ skip NOT detected (the resolved-binary fact is metadata, not a skip signal — guards against future regressions where someone adds an over-broad substring match on it)
+- positive: event stream emits the resolved-binary set_fact AND `openclaw_already_installed=True` ⇒ skip detected (the canonical skip path)
 
 ## Steps
 
