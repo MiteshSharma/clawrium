@@ -94,13 +94,37 @@ class TestValidation:
 
 
 class TestConstants:
-    def test_top_level_files_match_workspace_layout(self):
-        assert set(MEMORY_TOP_LEVEL_FILES) == {
+    def test_openclaw_top_level_files_match_workspace_layout(self):
+        assert set(MEMORY_TOP_LEVEL_FILES["openclaw"]) == {
             "SOUL.md",
             "IDENTITY.md",
             "USER.md",
             "TOOLS.md",
         }
+
+    def test_hermes_top_level_files_match_three_file_set(self):
+        # Hermes surfaces three files via memory_info: MEMORY.md, USER.md
+        # (both under ~/.hermes/memories/) and SOUL.md (at ~/.hermes/).
+        assert set(MEMORY_TOP_LEVEL_FILES["hermes"]) == {
+            "MEMORY.md",
+            "USER.md",
+            "SOUL.md",
+        }
+
+    def test_zeroclaw_top_level_files_cover_seven_personality_files(self):
+        # Per issue #358 W8, zeroclaw must surface the seven personality MD
+        # files rendered by configure (BOOTSTRAP.md is runtime-generated +
+        # self-deleting and must NOT appear here).
+        assert set(MEMORY_TOP_LEVEL_FILES["zeroclaw"]) == {
+            "SOUL.md",
+            "IDENTITY.md",
+            "USER.md",
+            "AGENTS.md",
+            "TOOLS.md",
+            "MEMORY.md",
+            "HEARTBEAT.md",
+        }
+        assert "BOOTSTRAP.md" not in MEMORY_TOP_LEVEL_FILES["zeroclaw"]
 
 
 # ----- _resolve_openclaw_agent ---------------------------------------------
@@ -1077,11 +1101,13 @@ class TestCleanupArtifacts:
 
 # ----- Phase 3: cross-claw memory dispatch ---------------------------------
 #
-# These tests cover the manifest-driven dispatch added in #314:
+# These tests cover the manifest-driven dispatch added in #314 and extended
+# in #358:
 #   - _resolve_agent_with_memory selects candidates by features.memory==true
 #   - hermes claw type lists MEMORY.md / USER.md via the hermes playbook dir
 #   - hermes write enforces the per-file character limits client-side
-#   - zeroclaw (features.memory absent) is rejected via claw_supports_memory
+#   - zeroclaw (features.memory true after #358) routes to its own playbooks
+#   - unknown claw types are rejected via claw_supports_memory
 
 
 from clawrium.core.memory import (  # noqa: E402 - imports grouped per-section
@@ -1098,9 +1124,10 @@ class TestClawSupportsMemory:
     def test_hermes_supports_memory(self):
         assert claw_supports_memory("hermes") is True
 
-    def test_zeroclaw_does_not_support_memory(self):
-        # zeroclaw's manifest does not declare features.memory.
-        assert claw_supports_memory("zeroclaw") is False
+    def test_zeroclaw_supports_memory(self):
+        # Issue #358 wires features.memory: true into the zeroclaw manifest
+        # so the memory CLI routes to zeroclaw's playbooks.
+        assert claw_supports_memory("zeroclaw") is True
 
     def test_unknown_claw_returns_false(self):
         # Unknown / unloadable manifest treated as unsupported rather than
@@ -1121,11 +1148,10 @@ class TestGetPlaybookDir:
         assert path.name == "playbooks"
         assert path.parent.name == "hermes"
 
-    def test_zeroclaw_resolves_to_registry_dir_even_if_absent(self):
-        # Resolution is path-only; the dir may not contain memory_*.yaml
-        # because zeroclaw has features.memory=false. The dispatcher checks
-        # support before running, so an absent playbook surfaces as
-        # "Playbook not found" rather than this helper raising.
+    def test_zeroclaw_resolves_to_zeroclaw_playbooks(self):
+        # After #358 the zeroclaw playbook dir ships memory_*.yaml files,
+        # so this test is a structural pin on the registry layout (no
+        # dispatch runs here — see TestZeroclawDispatch for that).
         path = _get_playbook_dir("zeroclaw")
         assert path.name == "playbooks"
         assert path.parent.name == "zeroclaw"
@@ -1191,10 +1217,26 @@ class TestResolveAgentWithMemoryHermes:
         assert result[1] == "hermes-test"
         assert result[2] == "hermes"
 
-    def test_rejects_zeroclaw_as_unsupported(self):
-        host = _host_with_zeroclaw()
+    def test_rejects_unknown_type_as_unsupported(self):
+        # Issue #358 wired memory into zeroclaw, so the unsupported-type
+        # rejection path is exercised with a fictional claw type instead.
+        host = _host(
+            {
+                "future-work": {
+                    "type": "futureclaw",
+                    "agent_name": "future-work",
+                    "name": "future-work",
+                    "status": "installed",
+                }
+            }
+        )
+        host["hostname"] = "192.168.1.36"
+        host["alias"] = "wolf-i"
+        host["key_id"] = "wolf-i"
         with patch("clawrium.core.memory.get_host", return_value=host):
-            h, reason, claw_type = _resolve_agent_with_memory("192.168.1.36", "zc-work")
+            h, reason, claw_type = _resolve_agent_with_memory(
+                "192.168.1.36", "future-work"
+            )
         assert h is None
         assert claw_type is None
         # Reason carries the "memory-capable agent not found" wording so the
@@ -1316,13 +1358,27 @@ class TestWriteMemoryFileHermesLimits:
 
 class TestUnsupportedTypeFriendlyError:
     def test_resolve_unsupported_type_returns_friendly_reason(self):
-        """zeroclaw (features.memory absent) resolution emits a clear
-        'memory-capable agent not found' message rather than a misleading
-        'openclaw agent not found' string."""
-        host = _host_with_zeroclaw()
+        """An agent whose manifest does not declare features.memory emits a
+        clear 'memory-capable agent not found' message rather than a
+        misleading 'openclaw agent not found' string. Issue #358 wired
+        memory into zeroclaw, so the negative case is now exercised with
+        a fictional claw type (no manifest -> unsupported)."""
+        host = _host(
+            {
+                "future-work": {
+                    "type": "futureclaw",
+                    "agent_name": "future-work",
+                    "name": "future-work",
+                    "status": "installed",
+                }
+            }
+        )
+        host["hostname"] = "192.168.1.36"
+        host["alias"] = "wolf-i"
+        host["key_id"] = "wolf-i"
         with patch("clawrium.core.memory.get_host", return_value=host):
             h, reason, claw_type = _resolve_agent_with_memory(
-                "192.168.1.36", "zc-work"
+                "192.168.1.36", "future-work"
             )
         assert h is None
         assert claw_type is None
@@ -1652,3 +1708,386 @@ class TestClawSupportsMemoryFallback:
         # Unexpected errors are logged at WARNING level; expected ones at DEBUG.
         warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any("unexpected error" in r.getMessage() for r in warning_records)
+
+
+# ----- ATX iter 1 B1: zeroclaw dispatch coverage ---------------------------
+
+
+class TestZeroclawDispatch:
+    """B1 (ATX round 1 for #358): exercise the full memory dispatch chain
+    for zeroclaw — resolve → _get_playbook_dir('zeroclaw') → playbook run.
+
+    Without this class, a regression that routes zeroclaw ops through the
+    openclaw _PLAYBOOK_DIR fallback in _get_playbook_dir would slip past
+    every other test in the suite (which either test the helper in
+    isolation or only exercise hermes/openclaw dispatch)."""
+
+    def test_get_memory_info_routes_to_zeroclaw_playbook_dir(self, tmp_path: Path):
+        host = _host_with_zeroclaw()
+        playbook_dir = tmp_path / "zeroclaw-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_info.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+
+        # Emit one stat line per personality file — get_memory_info should
+        # surface all seven plus the workspace path.
+        msgs = [
+            "WORKSPACE_PATH=/home/zc-work/.zeroclaw/workspace",
+            "TOP SOUL.md 100",
+            "TOP IDENTITY.md 50",
+            "TOP USER.md 30",
+            "TOP AGENTS.md 200",
+            "TOP TOOLS.md 80",
+            "TOP MEMORY.md 10",
+            "TOP HEARTBEAT.md 5",
+        ]
+        events = [
+            {"event": "runner_on_ok", "event_data": {"res": {"msg": m}}}
+            for m in msgs
+        ]
+        result = _runner_result("successful", events)
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "zc-work", "zeroclaw"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir",
+            return_value=playbook_dir,
+        ) as get_dir, patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ):
+            stats = get_memory_info("192.168.1.36", "zc-work")
+
+        assert stats is not None
+        get_dir.assert_called_with("zeroclaw")
+        assert stats["workspace_path"] == "/home/zc-work/.zeroclaw/workspace"
+        names = {f["name"] for f in stats["files"]}
+        assert names == {
+            "SOUL.md",
+            "IDENTITY.md",
+            "USER.md",
+            "AGENTS.md",
+            "TOOLS.md",
+            "MEMORY.md",
+            "HEARTBEAT.md",
+        }
+        # BOOTSTRAP.md must not appear in the dispatched output.
+        assert "BOOTSTRAP.md" not in names
+        assert stats["total_bytes"] == 100 + 50 + 30 + 200 + 80 + 10 + 5
+
+    def test_read_routes_to_zeroclaw_playbook_dir(self, tmp_path: Path):
+        host = _host_with_zeroclaw()
+        playbook_dir = tmp_path / "zeroclaw-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_read.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+
+        encoded = base64.b64encode(b"zeroclaw soul content").decode("ascii")
+        events = [
+            {"event": "runner_on_ok", "event_data": {"res": {"content": encoded}}}
+        ]
+        result = _runner_result("successful", events)
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "zc-work", "zeroclaw"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir",
+            return_value=playbook_dir,
+        ) as get_dir, patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ):
+            content = read_memory_file("192.168.1.36", "zc-work", "SOUL.md")
+        assert content == "zeroclaw soul content"
+        get_dir.assert_called_with("zeroclaw")
+
+    def test_write_routes_to_zeroclaw_playbook_dir(self, tmp_path: Path):
+        host = _host_with_zeroclaw()
+        playbook_dir = tmp_path / "zeroclaw-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_write.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+        result = _runner_result("successful", [])
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "zc-work", "zeroclaw"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir",
+            return_value=playbook_dir,
+        ) as get_dir, patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ) as mock_run:
+            ok, err = write_memory_file(
+                "192.168.1.36", "zc-work", "SOUL.md", "new identity content"
+            )
+        assert ok is True
+        assert err is None
+        get_dir.assert_called_with("zeroclaw")
+        # Inventory must carry the content as base64 (so user-supplied bytes
+        # can never be reinterpreted as Jinja2 by the playbook).
+        inv = mock_run.call_args.kwargs["inventory"]
+        b64 = inv["all"]["vars"]["memory_content_b64"]
+        assert base64.b64decode(b64).decode("utf-8") == "new identity content"
+
+    def test_delete_routes_to_zeroclaw_playbook_dir(self, tmp_path: Path):
+        host = _host_with_zeroclaw()
+        playbook_dir = tmp_path / "zeroclaw-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_delete.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+        result = _runner_result("successful", [])
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "zc-work", "zeroclaw"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir",
+            return_value=playbook_dir,
+        ) as get_dir, patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ) as mock_run:
+            ok, err = delete_memory_files(
+                "192.168.1.36", "zc-work", ["AGENTS.md"]
+            )
+        assert ok is True
+        assert err is None
+        get_dir.assert_called_with("zeroclaw")
+        inv = mock_run.call_args.kwargs["inventory"]
+        assert inv["all"]["vars"]["memory_files"] == ["AGENTS.md"]
+
+    def test_write_rejects_bootstrap_md(self):
+        """W3 (ATX): BOOTSTRAP.md is runtime-owned and self-deletes after
+        first boot. The Python write path must reject it before any SSH
+        dispatch — symmetric with memory_info.yaml's exclusion."""
+        host = _host_with_zeroclaw()
+        with patch("clawrium.core.memory.get_host", return_value=host):
+            ok, err = write_memory_file(
+                "192.168.1.36", "zc-work", "BOOTSTRAP.md", "x"
+            )
+        assert ok is False
+        assert err is not None
+        # The rejection must come from the allowlist path specifically
+        # (not a generic resolve / pattern / size failure that would
+        # *also* match for a malformed filename). Anchor on the
+        # `_MEMORY_WRITE_ALLOWED_FILES` rejection text.
+        assert "accepts only" in err, (
+            f"BOOTSTRAP rejection should hit the allowlist path; got: {err!r}"
+        )
+        # Sanity-check: at least one allowed personality file appears in the
+        # error listing so an operator can see what IS writable.
+        assert "SOUL.md" in err
+
+
+# ----- ATX iter 5 W1: openclaw allowlist negative-path coverage ------------
+
+
+class TestOpenclawWriteAllowlist:
+    """W1 (iter 5): Python-side allowlist for openclaw was added in iter 4
+    so the playbook + Python defenses are symmetric. These tests pin the
+    negative path so a future PR that drops 'openclaw' from
+    _MEMORY_WRITE_ALLOWED_FILES fails CI rather than silently reverting
+    to permissive mode."""
+
+    @pytest.mark.parametrize(
+        "bad_filename",
+        ["BOOTSTRAP.md", "CONFIG.md", "RANDOM.txt", "AGENTS.md"],
+    )
+    def test_openclaw_rejects_non_allowlisted_filename(self, bad_filename: str):
+        host = _host(
+            {"opc-work": {"type": "openclaw", "agent_name": "opc-work"}}
+        )
+        with patch("clawrium.core.memory.get_host", return_value=host):
+            ok, err = write_memory_file(
+                "192.168.1.100", "opc-work", bad_filename, "x"
+            )
+        assert ok is False
+        assert err is not None
+        assert "openclaw memory accepts only" in err
+        # The daily-notes suffix is part of the user-facing contract so
+        # operators understand the memory/<file> bypass exists.
+        assert "(or memory/<file>)" in err
+
+
+# ----- ATX iter 5 W2: zeroclaw daily-note write path -----------------------
+
+
+class TestZeroclawDailyNoteWrite:
+    """W2 (iter 5): the _MEMORY_WRITE_DAILY_NOTES bypass for zeroclaw is
+    exercised only for openclaw in TestWriteMemoryFile.
+    test_openclaw_does_not_apply_hermes_allowlist. Pin the zeroclaw daily-
+    note path explicitly so dropping 'zeroclaw' from the daily-notes set
+    fails CI."""
+
+    def test_zeroclaw_accepts_memory_daily_note(self, tmp_path: Path):
+        host = _host_with_zeroclaw()
+        playbook_dir = tmp_path / "zeroclaw-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_write.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+        result = _runner_result("successful", [])
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "zc-work", "zeroclaw"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir",
+            return_value=playbook_dir,
+        ), patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ):
+            ok, err = write_memory_file(
+                "192.168.1.36", "zc-work", "memory/2026-05-15.md", "todo"
+            )
+        assert ok is True, f"zeroclaw must accept daily-note path: {err}"
+        assert err is None
+
+
+# ----- ATX iter 5 S3: MEMORY_TOP_LEVEL_FILES not in __all__ ----------------
+
+
+class TestPublicAPIShape:
+    def test_memory_top_level_files_excluded_from_dunder_all(self):
+        # #358 changed MEMORY_TOP_LEVEL_FILES from tuple to dict; removing
+        # it from __all__ surfaces the shape change to any future external
+        # consumer rather than silently breaking iteration / membership.
+        from clawrium.core import memory as memmod
+
+        assert "MEMORY_TOP_LEVEL_FILES" not in memmod.__all__
+
+
+# ----- ATX iter 5 S4: cross-claw constant parity ---------------------------
+
+
+class TestConstantParity:
+    """S4 (iter 5): the info-playbook file set (MEMORY_TOP_LEVEL_FILES)
+    and the write allowlist (_MEMORY_WRITE_ALLOWED_FILES) must agree for
+    claws that appear in both. A divergence would let memory_info show a
+    file the write path rejects (or vice versa) — confusing for
+    operators."""
+
+    @pytest.mark.parametrize("claw_type", ["openclaw", "hermes", "zeroclaw"])
+    def test_top_level_and_write_allowlist_agree(self, claw_type: str):
+        from clawrium.core.memory import (
+            MEMORY_TOP_LEVEL_FILES,
+            _MEMORY_WRITE_ALLOWED_FILES,
+        )
+
+        info = MEMORY_TOP_LEVEL_FILES.get(claw_type)
+        write = _MEMORY_WRITE_ALLOWED_FILES.get(claw_type)
+        assert info is not None, f"missing MEMORY_TOP_LEVEL_FILES for {claw_type}"
+        assert write is not None, f"missing _MEMORY_WRITE_ALLOWED_FILES for {claw_type}"
+        assert set(info) == set(write), (
+            f"{claw_type}: memory_info file set {set(info)} disagrees with "
+            f"write allowlist {set(write)} — operators will see asymmetric "
+            f"behavior between `memory show` and `memory write`."
+        )
+
+
+# ----- ATX iter 6 W-new-1: YAML ↔ Python parity ----------------------------
+
+
+class TestYamlPythonParity:
+    """W-new-1 (iter 6): TestConstantParity compared two Python dicts but
+    neither is the runtime source of truth. memory_info.yaml's `vars.
+    memory_top_level_files` block is what each claw's runtime actually
+    iterates. A PR that adds a file to the YAML without touching the
+    Python constant would pass every test while breaking the
+    operator-visible invariant. Pin the YAML ↔ Python relationship
+    directly."""
+
+    @pytest.mark.parametrize("claw_type", ["openclaw", "hermes", "zeroclaw"])
+    def test_yaml_top_level_matches_python_constant(self, claw_type: str):
+        from importlib.resources import files
+        import yaml as yamlmod
+
+        from clawrium.core.memory import MEMORY_TOP_LEVEL_FILES
+
+        pkg = files(f"clawrium.platform.registry.{claw_type}")
+        data = yamlmod.safe_load(
+            (pkg / "playbooks" / "memory_info.yaml").read_text()
+        )
+        yaml_vars = data[0]["vars"]["memory_top_level_files"]
+        # Hermes uses dict-of-{name,path} entries; openclaw/zeroclaw use
+        # plain strings. Normalize to filenames.
+        if yaml_vars and isinstance(yaml_vars[0], dict):
+            yaml_names = {entry["name"] for entry in yaml_vars}
+        else:
+            yaml_names = set(yaml_vars)
+
+        python_names = set(MEMORY_TOP_LEVEL_FILES[claw_type])
+        assert yaml_names == python_names, (
+            f"{claw_type}: memory_info.yaml lists {yaml_names} but Python "
+            f"MEMORY_TOP_LEVEL_FILES says {python_names}. The YAML is the "
+            f"runtime source of truth — sync the Python constant."
+        )
+
+
+# ----- ATX iter 6 W-new-3: hermes SOUL.md delete asymmetry -----------------
+
+
+class TestHermesDeleteAsymmetry:
+    """W-new-3 (iter 6): hermes accepts SOUL.md on write (file lands at
+    ~/.hermes/SOUL.md) but never on delete (the file lives outside
+    memories/, and removing it is destructive enough to require manual
+    SSH). The Python-level allowlist surfaces this as a clear message
+    before any Ansible dispatch."""
+
+    def test_hermes_delete_rejects_soul_md(self):
+        host = _host_with_hermes()
+        with patch("clawrium.core.memory.get_host", return_value=host):
+            ok, err = delete_memory_files(
+                "192.168.1.36", "hermes-test", ["SOUL.md"]
+            )
+        assert ok is False
+        assert err is not None
+        assert "hermes memory delete rejects 'SOUL.md'" in err
+        # Operators must see which files ARE deletable.
+        assert "MEMORY.md" in err
+        assert "USER.md" in err
+
+    def test_hermes_delete_accepts_canonical_files(self, tmp_path: Path):
+        host = _host_with_hermes()
+        playbook_dir = tmp_path / "hermes-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_delete.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+        result = _runner_result("successful", [])
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "hermes-test", "hermes"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir", return_value=playbook_dir
+        ), patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ):
+            ok, err = delete_memory_files(
+                "192.168.1.36", "hermes-test", ["MEMORY.md"]
+            )
+        assert ok is True
+        assert err is None

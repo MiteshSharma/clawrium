@@ -1,17 +1,24 @@
 ---
-# Openclaw memory write — drops content into ~/.openclaw/workspace/<filename>.
-# Structural allowlist mirrors _MEMORY_WRITE_ALLOWED_FILES['openclaw']
-# plus memory/<file> daily notes. Defense-in-depth: catches a tampered
-# Ansible inventory that bypasses Python guards.
+# ZeroClaw memory write — drops content into ~/.zeroclaw/workspace/<filename>.
+# The Python dispatcher applies MAX_MEMORY_CONTENT_BYTES and filename
+# validation before this play runs; the validators below are
+# defense-in-depth against a tampered inventory.
+#
+# Structural allowlist mirrors _MEMORY_WRITE_ALLOWED_FILES['zeroclaw']
+# (7 personality files) plus memory/<file> daily notes. BOOTSTRAP.md is
+# intentionally NOT writable from clm — the runtime owns its lifecycle.
 - hosts: all
   become: yes
   gather_facts: false
   vars:
-    openclaw_writable_files:
+    zeroclaw_writable_files:
       - SOUL.md
       - IDENTITY.md
       - USER.md
+      - AGENTS.md
       - TOOLS.md
+      - MEMORY.md
+      - HEARTBEAT.md
   tasks:
     - name: Validate agent_name (defense-in-depth)
       ansible.builtin.fail:
@@ -31,19 +38,19 @@
       when:
         - memory_filename.split('/') | intersect(['', '.', '..']) | length > 0
 
-    - name: Restrict to openclaw personality + daily-notes allowlist
+    - name: Restrict to zeroclaw personality + daily-notes allowlist
       ansible.builtin.fail:
         msg: >-
-          openclaw memory write rejects '{{ memory_filename }}'. Allowed:
-          one of {{ openclaw_writable_files | join(', ') }}
+          zeroclaw memory write rejects '{{ memory_filename }}'. Allowed:
+          one of {{ zeroclaw_writable_files | join(', ') }}
           or memory/<file>.
       when:
-        - memory_filename not in openclaw_writable_files
+        - memory_filename not in zeroclaw_writable_files
         - not (memory_filename is match('^memory/[A-Za-z0-9._-]+$'))
 
     - name: Ensure workspace directory exists
       ansible.builtin.file:
-        path: "/home/{{ agent_name }}/.openclaw/workspace"
+        path: "/home/{{ agent_name }}/.zeroclaw/workspace"
         state: directory
         owner: "{{ agent_name }}"
         group: "{{ agent_name }}"
@@ -51,7 +58,7 @@
 
     - name: Ensure memory subdirectory exists when needed
       ansible.builtin.file:
-        path: "/home/{{ agent_name }}/.openclaw/workspace/memory"
+        path: "/home/{{ agent_name }}/.zeroclaw/workspace/memory"
         state: directory
         owner: "{{ agent_name }}"
         group: "{{ agent_name }}"
@@ -64,7 +71,7 @@
       # produces the literal payload without re-templating.
       ansible.builtin.copy:
         content: "{{ memory_content_b64 | b64decode }}"
-        dest: "/home/{{ agent_name }}/.openclaw/workspace/{{ memory_filename }}"
+        dest: "/home/{{ agent_name }}/.zeroclaw/workspace/{{ memory_filename }}"
         owner: "{{ agent_name }}"
         group: "{{ agent_name }}"
         mode: "0600"

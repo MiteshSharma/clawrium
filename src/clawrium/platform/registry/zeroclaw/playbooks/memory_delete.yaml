@@ -1,18 +1,24 @@
 ---
-# Openclaw memory delete — removes files inside ~/.openclaw/workspace.
-# Structural allowlist mirrors the memory_info file set + the memory/
-# daily-notes naming. Defense-in-depth: Python core/memory.py applies
-# pattern + traversal checks, and this guard catches a tampered Ansible
-# inventory or a future feature that bypasses the dispatcher.
+# ZeroClaw memory delete — removes files inside ~/.zeroclaw/workspace.
+#
+# Allowlist mirrors `_MEMORY_WRITE_ALLOWED_FILES['zeroclaw']` in
+# core/memory.py: the 7 personality files plus `memory/<file>` daily notes.
+# BOOTSTRAP.md is intentionally NOT deletable from clm — the ZeroClaw
+# runtime owns its lifecycle. Defense-in-depth: the Python dispatcher
+# performs the same pattern + traversal checks; this guard catches a
+# tampered Ansible inventory.
 - hosts: all
   become: yes
   gather_facts: false
   vars:
-    openclaw_deletable_files:
+    zeroclaw_deletable_files:
       - SOUL.md
       - IDENTITY.md
       - USER.md
+      - AGENTS.md
       - TOOLS.md
+      - MEMORY.md
+      - HEARTBEAT.md
   tasks:
     - name: Validate agent_name (defense-in-depth)
       ansible.builtin.fail:
@@ -34,20 +40,20 @@
       when:
         - item.split('/') | intersect(['', '.', '..']) | length > 0
 
-    - name: Restrict to openclaw personality + daily-notes allowlist
+    - name: Restrict to zeroclaw personality + daily-notes allowlist
       ansible.builtin.fail:
         msg: >-
-          openclaw memory delete rejects '{{ item }}'. Allowed:
-          one of {{ openclaw_deletable_files | join(', ') }}
+          zeroclaw memory delete rejects '{{ item }}'. Allowed:
+          one of {{ zeroclaw_deletable_files | join(', ') }}
           or memory/<file>.
       loop: "{{ memory_files }}"
       when:
-        - item not in openclaw_deletable_files
+        - item not in zeroclaw_deletable_files
         - not (item is match('^memory/[A-Za-z0-9._-]+$'))
 
     - name: Delete memory files
       ansible.builtin.file:
-        path: "/home/{{ agent_name }}/.openclaw/workspace/{{ item }}"
+        path: "/home/{{ agent_name }}/.zeroclaw/workspace/{{ item }}"
         state: absent
       loop: "{{ memory_files }}"
       no_log: true

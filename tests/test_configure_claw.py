@@ -2764,3 +2764,86 @@ class TestDevicePairingValidation:
 
         assert "setTimeout" in content, "Pairing script should have timeout"
         assert "30000" in content or "timeout" in content.lower()
+
+
+class TestConfigureTimeoutBudget:
+    """ATX iter 2 B_NEW1: pin the configure_timeout selection.
+
+    Hermes (240s) and zeroclaw (180s) each get extended budgets — without
+    explicit tests, a rebase that collapses the elif chain would silently
+    revert zeroclaw to the legacy 60s and break the configure under load.
+    """
+
+    def _setup_paths(self, tmp_path: Path) -> tuple[dict, Path]:
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {"agent-x": {"type": "zeroclaw"}},
+        }
+        key_path = tmp_path / "key"
+        key_path.write_text("key")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+        return host, key_path
+
+    def _run_and_capture(
+        self, host: dict, key_path: Path, playbook: Path, claw_type: str
+    ) -> int | None:
+        config_data = {"gateway": {"host": "0.0.0.0", "port": 40000}}
+        mock_runner = MagicMock()
+        mock_runner.status = "failed"  # don't matter — we just want call_args
+        mock_runner.events = []
+        with patch("clawrium.core.lifecycle.get_host", return_value=host), patch(
+            "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+            return_value=playbook,
+        ), patch(
+            "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+        ), patch(
+            "clawrium.core.lifecycle.ansible_runner.run",
+            return_value=mock_runner,
+        ) as mock_run:
+            configure_agent("test-host", claw_type, config_data)
+        if not mock_run.call_args:
+            return None
+        return mock_run.call_args.kwargs.get("timeout")
+
+    def test_zeroclaw_uses_180s_timeout(self, tmp_path: Path):
+        host, key_path = self._setup_paths(tmp_path)
+        playbook = tmp_path / "configure.yaml"
+        timeout = self._run_and_capture(host, key_path, playbook, "zeroclaw")
+        assert timeout == 180, (
+            f"Zeroclaw configure_timeout regression: expected 180s, got {timeout}. "
+            f"Did the elif branch collapse back to the legacy 60s budget?"
+        )
+
+    def test_hermes_branch_pins_240s_in_source(self):
+        # Hermes also gets an extended budget (240s), but its configure
+        # path short-circuits before ansible-runner when
+        # HERMES_API_SERVER_KEY is missing from secrets.json — wiring
+        # that for a runtime test would essentially re-test the hermes
+        # install flow. Pin the hermes branch of the elif chain by
+        # reading the source with a word-boundary regex so a substring
+        # value like `2400` cannot satisfy the assertion (ATX iter 6
+        # S-new-1).
+        import inspect
+        import re
+
+        from clawrium.core import lifecycle
+
+        src = inspect.getsource(lifecycle.configure_agent)
+        assert 'resolved_type == "hermes"' in src
+        assert re.search(r"configure_timeout\s*=\s*240\b", src), (
+            "Hermes 240s timeout literal must appear with word boundary "
+            "in configure_agent (not as a substring of 2400, 24000, etc.)"
+        )
+
+    def test_openclaw_uses_legacy_60s_timeout(self, tmp_path: Path):
+        host, key_path = self._setup_paths(tmp_path)
+        host["agents"]["agent-x"]["type"] = "openclaw"
+        playbook = tmp_path / "configure.yaml"
+        timeout = self._run_and_capture(host, key_path, playbook, "openclaw")
+        assert timeout == 60, (
+            f"Openclaw must keep the legacy 60s configure budget, got {timeout}"
+        )

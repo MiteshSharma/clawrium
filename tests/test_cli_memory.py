@@ -351,11 +351,12 @@ def test_delete_all_force_refuses_when_stdin_not_tty(hosts_with_installed_claw):
 # ----- routing fix coverage (B7) -------------------------------------------
 
 
-def test_show_rejects_non_openclaw_agent(isolated_config):
+def test_show_rejects_agent_without_memory_feature(isolated_config):
     """Phase 3 manifest-driven gating: agents whose manifest does not
-    declare features.memory:true (e.g. zeroclaw) must be rejected with a
-    clear, type-named message rather than running memory ops against
-    them."""
+    declare features.memory:true (here exercised with the fictional
+    'futureclaw' type since #358 wired memory into zeroclaw) must be
+    rejected with a clear, type-named message rather than running memory
+    ops against them."""
     import json
 
     isolated_config.mkdir(parents=True, exist_ok=True)
@@ -369,7 +370,7 @@ def test_show_rejects_non_openclaw_agent(isolated_config):
                     "agent_name": "xclm",
                     "agents": {
                         "zerowork": {
-                            "type": "zeroclaw",
+                            "type": "futureclaw",
                             "agent_name": "zerowork",
                             "name": "zerowork",
                         }
@@ -383,7 +384,9 @@ def test_show_rejects_non_openclaw_agent(isolated_config):
     assert result.exit_code != 0
     output = result.output.lower()
     assert "memory operations not supported" in output
-    assert "zeroclaw" in output
+    # Issue #358 made zeroclaw memory-capable, so the unsupported-type
+    # path is exercised against a fictional claw type instead.
+    assert "futureclaw" in output
 
 
 def test_delete_rejects_nonexistent_agent(hosts_with_installed_claw):
@@ -799,7 +802,7 @@ def test_edit_rejects_path_traversal(hosts_with_installed_claw):
     mock_editor.assert_not_called()
 
 
-def test_edit_rejects_non_openclaw_agent(isolated_config):
+def test_edit_rejects_agent_without_memory_feature(isolated_config):
     import json
 
     isolated_config.mkdir(parents=True, exist_ok=True)
@@ -813,7 +816,7 @@ def test_edit_rejects_non_openclaw_agent(isolated_config):
                     "agent_name": "xclm",
                     "agents": {
                         "zerowork": {
-                            "type": "zeroclaw",
+                            "type": "futureclaw",
                             "agent_name": "zerowork",
                             "name": "zerowork",
                         }
@@ -831,7 +834,9 @@ def test_edit_rejects_non_openclaw_agent(isolated_config):
     assert result.exit_code != 0
     output = result.output.lower()
     assert "memory operations not supported" in output
-    assert "zeroclaw" in output
+    # Issue #358 made zeroclaw memory-capable, so the unsupported-type
+    # path is exercised against a fictional claw type instead.
+    assert "futureclaw" in output
 
 
 def test_edit_restart_returns_failure_surfaces_error(hosts_with_installed_claw):

@@ -1,18 +1,10 @@
 ---
-# Hermes memory read targets:
-#   - MEMORY.md, USER.md → ~/.hermes/memories/<filename>
-#   - SOUL.md → ~/.hermes/SOUL.md
-# The Python dispatcher rejects unsupported filenames before reaching this
-# playbook, but the same allowlist is enforced here as defense-in-depth.
+# ZeroClaw memory read — slurps a single file out of ~/.zeroclaw/workspace.
+# The Python dispatcher already validates filename + agent_name before
+# scheduling this play; the same checks run here as defense-in-depth.
 - hosts: all
   become: yes
   gather_facts: false
-  vars:
-    # SOUL.md lives at ~/.hermes/SOUL.md; others at ~/.hermes/memories/
-    memory_target_dir: >-
-      {{ '/home/' + agent_name + '/.hermes'
-         if memory_filename == 'SOUL.md'
-         else '/home/' + agent_name + '/.hermes/memories' }}
   tasks:
     - name: Validate agent_name (defense-in-depth)
       ansible.builtin.fail:
@@ -32,15 +24,9 @@
       when:
         - memory_filename.split('/') | intersect(['', '.', '..']) | length > 0
 
-    - name: Restrict to hermes memory allowlist
-      ansible.builtin.fail:
-        msg: "hermes memory accepts only MEMORY.md, USER.md, and SOUL.md"
-      when:
-        - memory_filename not in ['MEMORY.md', 'USER.md', 'SOUL.md']
-
     - name: Resolve memory file path
       ansible.builtin.set_fact:
-        memory_target: "{{ memory_target_dir | trim }}/{{ memory_filename }}"
+        memory_target: "/home/{{ agent_name }}/.zeroclaw/workspace/{{ memory_filename }}"
 
     - name: Verify file exists
       ansible.builtin.stat:

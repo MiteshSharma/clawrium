@@ -15,6 +15,7 @@ template by #357 and tracked as a follow-up outside #112.
 
 from pathlib import Path
 
+import pytest
 from jinja2 import Environment, FileSystemLoader
 
 
@@ -43,7 +44,12 @@ def _ansible_bool(v):
     return bool(v)
 
 
-def _render(provider: dict | None, provider_api_key: str = "") -> str:
+def _render(
+    provider: dict | None,
+    provider_api_key: str = "",
+    personality: dict | None = None,
+    agent_name: str | None = None,
+) -> str:
     """Render `config.toml.j2` with the given provider block."""
     env = Environment(loader=FileSystemLoader(str(ZEROCLAW_TEMPLATES)))
     env.filters["bool"] = _ansible_bool
@@ -51,7 +57,12 @@ def _render(provider: dict | None, provider_api_key: str = "") -> str:
     config = {"gateway": dict(_GATEWAY_DEFAULTS)}
     if provider is not None:
         config["provider"] = provider
-    return template.render(config=config, provider_api_key=provider_api_key)
+    if personality is not None:
+        config["personality"] = personality
+    ctx = {"config": config, "provider_api_key": provider_api_key}
+    if agent_name is not None:
+        ctx["agent_name"] = agent_name
+    return template.render(**ctx)
 
 
 class TestGatewayBlock:
@@ -276,3 +287,73 @@ class TestIntegrationsRemoved:
                 assert token_name not in rendered, (
                     f"{token_name} leaked for provider {provider_type}"
                 )
+
+
+class TestPersonalityBlock:
+    """The [personality] block (#358) seeds the daemon with name/timezone/style."""
+
+    def test_personality_block_defaults_when_unspecified(self):
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "m"},
+            provider_api_key="k",
+        )
+        assert "[personality]" in rendered
+        # No agent_name passed, no personality dict → falls back to 'zeroclaw'.
+        assert 'name = "zeroclaw"' in rendered
+        assert 'timezone = "UTC"' in rendered
+        assert 'communication_style = "direct, concise"' in rendered
+
+    def test_personality_block_uses_agent_name_fallback(self):
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "m"},
+            provider_api_key="k",
+            agent_name="zc-edge",
+        )
+        # name should fall back to agent_name when personality.name is unset.
+        assert 'name = "zc-edge"' in rendered
+
+    def test_personality_overrides_apply(self):
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "m"},
+            provider_api_key="k",
+            personality={
+                "name": "lighthouse",
+                "timezone": "America/Los_Angeles",
+                "communication_style": "verbose",
+            },
+        )
+        assert 'name = "lighthouse"' in rendered
+        assert 'timezone = "America/Los_Angeles"' in rendered
+        assert 'communication_style = "verbose"' in rendered
+
+    @pytest.mark.parametrize(
+        "field",
+        ["name", "timezone", "communication_style"],
+    )
+    def test_personality_values_are_toml_escaped(self, field: str):
+        # ATX iter 1 W8: each personality field must independently pass
+        # through toml_escape. A regression that drops the macro from a
+        # single field would otherwise slip past a name-only test (the
+        # same shape of bug ATX flagged for `api_key` in earlier rounds).
+        payload = (
+            'evil"\n[providers.models.injected]\nkind = "anthropic'
+        )
+        personality = {
+            "name": "ok-name",
+            "timezone": "UTC",
+            "communication_style": "concise",
+        }
+        personality[field] = payload
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "m"},
+            provider_api_key="k",
+            personality=personality,
+        )
+        # The injected text must appear as escape sequences INSIDE the
+        # basic string. What must NOT happen: a line that begins a new
+        # TOML section header.
+        for line in rendered.splitlines():
+            assert line.strip() != "[providers.models.injected]", (
+                f"TOML injection succeeded via personality.{field} — "
+                f"payload broke out of basic string: {line!r}"
+            )
