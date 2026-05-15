@@ -1,65 +1,71 @@
+{# Managed by clawrium (clm). Do not edit by hand — re-render with
+   `clm agent configure {{ agent_name | default('<name>') }}`.
+
+   v0.7.5 schema:
+   - [gateway] binds 0.0.0.0 with require_pairing = true so cross-LAN
+     `clm chat` works and the bearer token captured in configure is the
+     auth boundary. See .itx/357/01_EXECUTION.md "Security Considerations".
+   - [providers.models.<name>] sub-table per provider with a `kind`
+     discriminator. Only the four providers in scope for #112 are emitted:
+     anthropic, openai, ollama, openrouter.
+   - Integrations block intentionally removed per #112 plan; reintroduced
+     under a follow-up issue.
+#}
+{# TOML-safe basic-string escaping. Must cover four character classes that
+   could escape a "…" basic string and inject arbitrary keys:
+     - backslash and double-quote (the basic-string terminators)
+     - CR / LF (split the string across lines, anything past `\n` is parsed
+       as a new TOML statement — classic injection vector)
+     - tab (less dangerous on its own, but TOML treats raw tabs in basic
+       strings inconsistently across parsers)
+   Order matters: backslash must escape first so the literal-`\` produced
+   by every subsequent replacement is itself doubled. ATX Round 1 B1. #}
+{%- macro toml_escape(value) -%}
+{{ value | string
+   | replace('\\', '\\\\')
+   | replace('"', '\\"')
+   | replace('\r', '\\r')
+   | replace('\n', '\\n')
+   | replace('\t', '\\t') }}
+{%- endmacro -%}
+{% set provider = config.provider | default({}) %}
+{% set provider_type = provider.type | default('') %}
+{% set model_id = provider.default_model | default('') %}
+{% set endpoint = provider.endpoint | default('') %}
 [gateway]
-host = "{{ config.gateway.host }}"
-port = {{ config.gateway.port }}
+{# Every variable interpolated into a "…" basic string passes through
+   toml_escape so a hand-edited host (or future provider_type/model_id
+   that picks up user input) cannot break out of the string. ATX
+   Round 1 B2. #}
+host = "{{ toml_escape(config.gateway.host) }}"
+port = {{ config.gateway.port | int }}
 allow_public_bind = {{ config.gateway.allow_public_bind | bool | lower }}
+require_pairing = {{ (config.gateway.require_pairing | default(true)) | bool | lower }}
 
-{% if config.provider is defined and config.provider %}
-{% if config.provider.type == "ollama" %}
-default_provider = "custom:{{ config.provider.endpoint }}"
-{% elif config.provider.type == "anthropic" %}
-default_provider = "anthropic"
-{% elif config.provider.type == "openai" %}
-default_provider = "openai"
-{% elif config.provider.type == "openrouter" %}
-default_provider = "openrouter"
-{% endif %}
-{% if config.provider.default_model %}
-default_model = "{{ config.provider.default_model }}"
-{% endif %}
-{% if lookup('env', 'CLAWRIUM_PROVIDER_API_KEY') %}
-api_key = "{{ lookup('env', 'CLAWRIUM_PROVIDER_API_KEY') | replace('\\', '\\\\') | replace('"', '\\"') }}"
-{% endif %}
+{% if provider_type in ['anthropic', 'openai', 'ollama', 'openrouter'] %}
+default_provider = "{{ toml_escape(provider_type) }}"
+{% if model_id %}
+default_model = "{{ toml_escape(model_id) }}"
 {% endif %}
 
-{% if integrations is defined and integrations %}
-[integrations]
-{# Integrations are keyed by name with type and credentials #}
-{# Multiple integrations of same type are supported #}
-{% for name, integration in integrations.items() %}
-{% if integration.type == 'github' and integration.GITHUB_TOKEN is defined %}
-github_token = "{{ integration.GITHUB_TOKEN | replace('\\', '\\\\') | replace('"', '\\"') }}"
+{# Section header is a bare TOML key; restrict to the allow-list above so
+   no caller-supplied content reaches the header (which has its own
+   escaping rules different from basic strings). The `in [...]` guard
+   above already enforces this. #}
+[providers.models.{{ provider_type }}]
+kind = "{{ toml_escape(provider_type) }}"
+{% if model_id %}
+model = "{{ toml_escape(model_id) }}"
 {% endif %}
-{% if integration.type == 'gitlab' %}
-{% if integration.GITLAB_TOKEN is defined %}
-gitlab_token = "{{ integration.GITLAB_TOKEN | replace('\\', '\\\\') | replace('"', '\\"') }}"
+{% if provider_type == 'ollama' %}
+{# Ollama / OpenAI-compatible local endpoint: base_url, no api_key. #}
+{% if endpoint %}
+base_url = "{{ toml_escape(endpoint) }}"
 {% endif %}
-{% if integration.GITLAB_URL is defined %}
-gitlab_url = "{{ integration.GITLAB_URL }}"
-{% endif %}
-{% endif %}
-{% if integration.type == 'atlassian' %}
-{# Unified Atlassian credentials drive both jira_* and confluence_* TOML keys.
-   CONFLUENCE_URL is derived as ATLASSIAN_URL + '/wiki' (Cloud convention only;
-   Data Center / Server use a different URL layout, out of scope). #}
-{% if integration.ATLASSIAN_URL is defined %}
-{% set atlassian_url = integration.ATLASSIAN_URL.rstrip('/') %}
-jira_url = "{{ atlassian_url }}"
-confluence_url = "{{ atlassian_url }}/wiki"
-{% endif %}
-{% if integration.ATLASSIAN_EMAIL is defined %}
-jira_email = "{{ integration.ATLASSIAN_EMAIL }}"
-confluence_email = "{{ integration.ATLASSIAN_EMAIL }}"
-{% endif %}
-{% if integration.ATLASSIAN_API_TOKEN is defined %}
-jira_api_token = "{{ integration.ATLASSIAN_API_TOKEN | replace('\\', '\\\\') | replace('"', '\\"') }}"
-confluence_api_token = "{{ integration.ATLASSIAN_API_TOKEN | replace('\\', '\\\\') | replace('"', '\\"') }}"
+{% else %}
+{# anthropic / openai / openrouter: api_key from the playbook var. #}
+{% if provider_api_key | default('') %}
+api_key = "{{ toml_escape(provider_api_key) }}"
 {% endif %}
 {% endif %}
-{% if integration.type == 'linear' and integration.LINEAR_API_KEY is defined %}
-linear_api_key = "{{ integration.LINEAR_API_KEY | replace('\\', '\\\\') | replace('"', '\\"') }}"
-{% endif %}
-{% if integration.type == 'notion' and integration.NOTION_API_KEY is defined %}
-notion_api_key = "{{ integration.NOTION_API_KEY | replace('\\', '\\\\') | replace('"', '\\"') }}"
-{% endif %}
-{% endfor %}
 {% endif %}

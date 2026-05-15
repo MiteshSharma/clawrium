@@ -1,8 +1,16 @@
-"""Rendering tests for zeroclaw config.toml.j2.
+"""Rendering tests for the v0.7.5 zeroclaw config.toml.j2 template.
 
-Covers the unified `atlassian` integration branch added in issue #348:
-trailing-slash URL normalization (so CONFLUENCE_URL doesn't double-slash) and
-TOML escape correctness on the api_token fields (which embed secrets).
+Covers issue #357 (Subtask B):
+- gateway block: host, port, allow_public_bind, require_pairing
+- top-level default_provider + default_model
+- per-provider [providers.models.<name>] sub-table with `kind` discriminator
+- api_key for anthropic/openai/openrouter; base_url for ollama
+- TOML escape correctness on api_key (containing quotes / backslashes)
+
+Provider scope is intentionally limited to the four #112 providers:
+anthropic, openai, ollama, openrouter. The legacy integrations block
+(github, gitlab, atlassian, linear, notion) is removed from this
+template by #357 and tracked as a follow-up outside #112.
 """
 
 from pathlib import Path
@@ -20,96 +28,251 @@ ZEROCLAW_TEMPLATES = (
     / "templates"
 )
 
-_BASE_CONFIG = {
-    "gateway": {"host": "localhost", "port": 4080, "allow_public_bind": False},
+_GATEWAY_DEFAULTS = {
+    "host": "0.0.0.0",
+    "port": 4080,
+    "allow_public_bind": True,
+    "require_pairing": True,
 }
 
 
-def _render_config_toml(integrations: dict) -> str:
+def _ansible_bool(v):
+    """Mirror Ansible's string coercion in the `bool` filter."""
+    if isinstance(v, str):
+        return v.lower() not in ("no", "false", "0", "")
+    return bool(v)
+
+
+def _render(provider: dict | None, provider_api_key: str = "") -> str:
+    """Render `config.toml.j2` with the given provider block."""
     env = Environment(loader=FileSystemLoader(str(ZEROCLAW_TEMPLATES)))
-    # The zeroclaw template uses Ansible's `bool` filter for the gateway flag.
-    # Mirror Ansible's string coercion (which treats 'no', 'false', '0', '' as
-    # False) — a plain `bool()` diverges silently for those string inputs.
-    def _ansible_bool(v):
-        if isinstance(v, str):
-            return v.lower() not in ("no", "false", "0", "")
-        return bool(v)
     env.filters["bool"] = _ansible_bool
     template = env.get_template("config.toml.j2")
-    return template.render(config=_BASE_CONFIG, integrations=integrations)
+    config = {"gateway": dict(_GATEWAY_DEFAULTS)}
+    if provider is not None:
+        config["provider"] = provider
+    return template.render(config=config, provider_api_key=provider_api_key)
 
 
-class TestZeroclawAtlassianRendering:
-    """Verify the unified atlassian branch in config.toml.j2 emits correct TOML."""
+class TestGatewayBlock:
+    """The [gateway] header lands the security defaults from issue #357."""
 
-    def test_atlassian_renders_jira_and_confluence_urls(self):
-        rendered = _render_config_toml({
-            "work": {
-                "type": "atlassian",
-                "ATLASSIAN_URL": "https://co.atlassian.net",
-                "ATLASSIAN_EMAIL": "u@co.com",
-                "ATLASSIAN_API_TOKEN": "token",
-            }
-        })
-        assert 'jira_url = "https://co.atlassian.net"' in rendered
-        assert 'confluence_url = "https://co.atlassian.net/wiki"' in rendered
-        assert 'jira_email = "u@co.com"' in rendered
-        assert 'confluence_email = "u@co.com"' in rendered
+    def test_gateway_block_emits_security_defaults(self):
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "claude-sonnet-4-5"},
+            provider_api_key="sk-test",
+        )
+        assert "[gateway]" in rendered
+        assert 'host = "0.0.0.0"' in rendered
+        assert "port = 4080" in rendered
+        assert "allow_public_bind = true" in rendered
+        assert "require_pairing = true" in rendered
 
-    def test_atlassian_trailing_slash_does_not_produce_double_slash(self):
-        """A user-entered URL with trailing slash collapses before /wiki."""
-        rendered = _render_config_toml({
-            "work": {
-                "type": "atlassian",
-                "ATLASSIAN_URL": "https://co.atlassian.net/",
-                "ATLASSIAN_EMAIL": "u@co.com",
-                "ATLASSIAN_API_TOKEN": "token",
-            }
-        })
-        assert 'jira_url = "https://co.atlassian.net"' in rendered
-        assert 'confluence_url = "https://co.atlassian.net/wiki"' in rendered
-        assert "//wiki" not in rendered
+    def test_gateway_require_pairing_defaults_to_true_when_unset(self):
+        """`require_pairing` MUST default to true when the caller doesn't pass
+        it. A silent false default would let the daemon accept unauthenticated
+        requests — the threat model in .itx/357/01_EXECUTION.md rules that
+        out."""
+        env = Environment(loader=FileSystemLoader(str(ZEROCLAW_TEMPLATES)))
+        env.filters["bool"] = _ansible_bool
+        template = env.get_template("config.toml.j2")
+        # Build the config without require_pairing to force the default.
+        config = {
+            "gateway": {"host": "0.0.0.0", "port": 4080, "allow_public_bind": True},
+            "provider": {"type": "anthropic"},
+        }
+        rendered = template.render(config=config, provider_api_key="sk-test")
+        assert "require_pairing = true" in rendered
 
-    def test_atlassian_api_token_toml_escaping(self):
-        """API tokens containing quotes and backslashes must be TOML-escaped on
-        both jira_api_token and confluence_api_token (same value, same macro).
-        """
-        token = 'tok"with"quote\\and\\backslash'
-        rendered = _render_config_toml({
-            "work": {
-                "type": "atlassian",
-                "ATLASSIAN_URL": "https://co.atlassian.net",
-                "ATLASSIAN_EMAIL": "u@co.com",
-                "ATLASSIAN_API_TOKEN": token,
-            }
-        })
-        # Expected after escape: \\ for backslash, \" for quote.
-        expected_escaped = r'tok\"with\"quote\\and\\backslash'
-        assert f'jira_api_token = "{expected_escaped}"' in rendered
-        assert f'confluence_api_token = "{expected_escaped}"' in rendered
 
-    def test_non_atlassian_integrations_do_not_render_atlassian_keys(self):
-        """A github integration must not produce jira_* or confluence_* keys."""
-        rendered = _render_config_toml({
-            "work": {"type": "github", "GITHUB_TOKEN": "ghp_test"}
-        })
-        assert "jira_url" not in rendered
-        assert "confluence_url" not in rendered
-        assert "jira_api_token" not in rendered
-        assert "confluence_api_token" not in rendered
-        assert 'github_token = "ghp_test"' in rendered
+class TestProviderRenderingAnthropic:
+    def test_anthropic_renders_sub_table_with_api_key(self):
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "claude-sonnet-4-5"},
+            provider_api_key="sk-ant-test",
+        )
+        assert 'default_provider = "anthropic"' in rendered
+        assert 'default_model = "claude-sonnet-4-5"' in rendered
+        assert "[providers.models.anthropic]" in rendered
+        assert 'kind = "anthropic"' in rendered
+        assert 'model = "claude-sonnet-4-5"' in rendered
+        assert 'api_key = "sk-ant-test"' in rendered
+        # Anthropic must NOT emit base_url (that's ollama only).
+        assert "base_url" not in rendered
 
-    def test_atlassian_partial_dict_omits_absent_keys(self):
-        """Per-key `is defined` guards in the template must drop unset fields
-        cleanly — never produce stray `= ''` or `= None` lines from the missing
-        ATLASSIAN_EMAIL/ATLASSIAN_API_TOKEN halves.
-        """
-        rendered = _render_config_toml({
-            "work": {"type": "atlassian", "ATLASSIAN_URL": "https://co.atlassian.net"},
-        })
-        assert 'jira_url = "https://co.atlassian.net"' in rendered
-        assert 'confluence_url = "https://co.atlassian.net/wiki"' in rendered
-        assert "jira_email" not in rendered
-        assert "confluence_email" not in rendered
-        assert "jira_api_token" not in rendered
-        assert "confluence_api_token" not in rendered
+    def test_anthropic_api_key_toml_escaped(self):
+        """A key with embedded quotes / backslashes must be TOML-escaped."""
+        key = 'sk"with"quote\\and\\bs'
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "claude-sonnet-4-5"},
+            provider_api_key=key,
+        )
+        # Per TOML basic-string rules: \\ for backslash, \" for quote.
+        assert 'api_key = "sk\\"with\\"quote\\\\and\\\\bs"' in rendered
+
+    def test_api_key_with_control_chars_is_escaped(self):
+        """ATX Round 1 B1: an api_key containing CR/LF/TAB must NOT be
+        able to break out of the TOML basic string and inject keys. The
+        escape macro must encode \\r, \\n, \\t as TOML escape sequences."""
+        key = "leading\ninjected_key = \"evil\"\nokay"
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "claude-sonnet-4-5"},
+            provider_api_key=key,
+        )
+        # The literal newline must be encoded; the rendered file must
+        # have api_key on exactly one line (no break-out).
+        assert 'api_key = "leading\\ninjected_key = \\"evil\\"\\nokay"' in rendered
+        # And no injected `injected_key = "evil"` TOML statement.
+        for line in rendered.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("injected_key"):
+                raise AssertionError(
+                    f"TOML injection succeeded — got bare key line: {stripped!r}"
+                )
+
+    def test_api_key_with_carriage_return_is_escaped(self):
+        """`\\r` alone also splits TOML lines on some parsers; escape it."""
+        key = "abc\rdef"
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "x"},
+            provider_api_key=key,
+        )
+        assert 'api_key = "abc\\rdef"' in rendered
+
+    def test_api_key_with_tab_is_escaped(self):
+        """ATX Round 2 W6: a raw `\\t` in a TOML basic string is
+        permitted by spec but parsed inconsistently across implementations;
+        toml_escape must encode it. This pins the escape behavior so a
+        future refactor can't drop the `\\t` branch from the macro."""
+        key = "abc\tdef"
+        rendered = _render(
+            provider={"type": "anthropic", "default_model": "x"},
+            provider_api_key=key,
+        )
+        assert 'api_key = "abc\\tdef"' in rendered
+
+
+class TestProviderRenderingOpenAI:
+    def test_openai_renders_sub_table_with_api_key(self):
+        rendered = _render(
+            provider={"type": "openai", "default_model": "gpt-4o"},
+            provider_api_key="sk-oa-test",
+        )
+        assert 'default_provider = "openai"' in rendered
+        assert 'default_model = "gpt-4o"' in rendered
+        assert "[providers.models.openai]" in rendered
+        assert 'kind = "openai"' in rendered
+        assert 'model = "gpt-4o"' in rendered
+        assert 'api_key = "sk-oa-test"' in rendered
+        assert "base_url" not in rendered
+
+
+class TestProviderRenderingOpenRouter:
+    def test_openrouter_renders_sub_table_with_api_key(self):
+        rendered = _render(
+            provider={
+                "type": "openrouter",
+                "default_model": "anthropic/claude-3.5-sonnet",
+            },
+            provider_api_key="sk-or-test",
+        )
+        assert 'default_provider = "openrouter"' in rendered
+        assert 'default_model = "anthropic/claude-3.5-sonnet"' in rendered
+        assert "[providers.models.openrouter]" in rendered
+        assert 'kind = "openrouter"' in rendered
+        assert 'model = "anthropic/claude-3.5-sonnet"' in rendered
+        assert 'api_key = "sk-or-test"' in rendered
+        assert "base_url" not in rendered
+
+
+class TestProviderRenderingOllama:
+    def test_ollama_renders_sub_table_with_base_url(self):
+        rendered = _render(
+            provider={
+                "type": "ollama",
+                "default_model": "llama3",
+                "endpoint": "http://192.168.1.50:11434",
+            },
+            # provider_api_key is intentionally NOT used for ollama; pass
+            # something non-empty to verify it does not leak through.
+            provider_api_key="should-not-render-for-ollama",
+        )
+        assert 'default_provider = "ollama"' in rendered
+        assert 'default_model = "llama3"' in rendered
+        assert "[providers.models.ollama]" in rendered
+        assert 'kind = "ollama"' in rendered
+        assert 'model = "llama3"' in rendered
+        assert 'base_url = "http://192.168.1.50:11434"' in rendered
+        # Ollama is unauthenticated; api_key must NEVER render for it.
+        assert "api_key" not in rendered
+        assert "should-not-render-for-ollama" not in rendered
+
+    def test_ollama_base_url_toml_escaped(self):
+        endpoint = 'http://host:11434/v1"path'
+        rendered = _render(
+            provider={
+                "type": "ollama",
+                "default_model": "llama3",
+                "endpoint": endpoint,
+            },
+        )
+        assert 'base_url = "http://host:11434/v1\\"path"' in rendered
+
+
+class TestProviderRenderingUnsupportedProvider:
+    """Unsupported provider types must NOT emit a providers.models block.
+
+    The configure playbook fails-fast on these via its `Validate provider
+    configuration is present` task, so the template's tolerant behavior
+    (render gateway, skip provider) keeps the playbook's failure message
+    as the user-facing error rather than producing malformed TOML.
+    """
+
+    def test_unknown_provider_type_skips_provider_block(self):
+        rendered = _render(
+            provider={"type": "bedrock", "default_model": "anthropic.claude-3"},
+            provider_api_key="aws-sig",
+        )
+        # gateway block is still emitted.
+        assert "[gateway]" in rendered
+        # providers.models block is NOT emitted for unknown types.
+        assert "[providers.models" not in rendered
+        assert "default_provider" not in rendered
+
+    def test_no_provider_dict_skips_provider_block(self):
+        rendered = _render(provider=None)
+        assert "[gateway]" in rendered
+        assert "[providers.models" not in rendered
+        assert "default_provider" not in rendered
+
+
+class TestIntegrationsRemoved:
+    """The legacy `[integrations]` block must NOT render in v0.7.5.
+
+    Integrations (github/gitlab/atlassian/linear/notion) are explicitly
+    out of scope for #112 and will land in a follow-up issue. A regression
+    that re-introduces them would silently leak integration credentials
+    into config.toml on every configure run.
+    """
+
+    def test_no_integrations_block_rendered_for_any_provider(self):
+        for provider_type in ("anthropic", "openai", "openrouter", "ollama"):
+            kwargs = {"type": provider_type, "default_model": "m"}
+            if provider_type == "ollama":
+                kwargs["endpoint"] = "http://localhost:11434"
+            rendered = _render(provider=kwargs, provider_api_key="k")
+            assert "[integrations]" not in rendered, (
+                f"integrations block leaked for provider {provider_type}"
+            )
+            for token_name in (
+                "github_token",
+                "gitlab_token",
+                "jira_url",
+                "jira_api_token",
+                "confluence_url",
+                "linear_api_key",
+                "notion_api_key",
+            ):
+                assert token_name not in rendered, (
+                    f"{token_name} leaked for provider {provider_type}"
+                )

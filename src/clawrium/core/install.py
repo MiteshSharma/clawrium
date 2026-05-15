@@ -433,7 +433,12 @@ def run_installation(
             # but the skip-path warning still reads from `preserved_gateway`.
             # Capture here too so resume+skip+existing-creds doesn't falsely
             # warn "credentials missing" (Round 2 W1).
-            if claw_name == "openclaw":
+            #
+            # Includes zeroclaw — pairing-bearer token lands in
+            # `config.gateway.auth` during `clm agent configure` (issue #357).
+            # Re-running install on a paired zeroclaw must not wipe the token,
+            # so the restore path in set_installed() needs the snapshot.
+            if claw_name in ("openclaw", "zeroclaw"):
                 preserved_gateway[0] = (
                     h["agents"][chosen_name[0]].get("config", {}).get("gateway")
                 )
@@ -447,11 +452,16 @@ def run_installation(
             # UNLESS cleanup_failed=True, then we force a fresh install
             if chosen_name[0] in h.get("agents", {}) and not cleanup_failed:
                 preserved_onboarding[0] = h["agents"][chosen_name[0]].get("onboarding")
-                # Round 2 W4: scope to openclaw — the restore branch in
-                # set_installed() is the only consumer and is openclaw-specific.
-                # Other agent types may have unrelated `config.gateway` shapes
-                # that should NOT be restored under this code path.
-                if claw_name == "openclaw":
+                # Round 2 W4: scope to claws that store credentials in
+                # `config.gateway`. The restore branch in set_installed() is
+                # the only consumer; other agent types may have unrelated
+                # `config.gateway` shapes that should NOT be restored.
+                #
+                # Includes zeroclaw — pairing-bearer token lands in
+                # `config.gateway.auth` during `clm agent configure`
+                # (issue #357). Re-running install on a paired zeroclaw must
+                # not wipe the token.
+                if claw_name in ("openclaw", "zeroclaw"):
                     preserved_gateway[0] = (
                         h["agents"][chosen_name[0]]
                         .get("config", {})
@@ -824,6 +834,16 @@ def run_installation(
                         "warn",
                         "Gateway URL not captured - manual configuration may be needed",
                     )
+        elif claw_name == "zeroclaw" and install_skipped:
+            # ZeroClaw install does NOT pair (pairing lives in configure.yaml),
+            # so a re-install at the same version is a pure binary no-op. The
+            # preserved_gateway capture is purely to keep the bearer token
+            # (set by a prior `clm agent configure`) from being wiped on the
+            # restore path in set_installed(). Emit a status line so a user
+            # re-running install can tell credentials were retained.
+            preserved = preserved_gateway[0] or {}
+            if preserved.get("auth"):
+                emit("claw", "Reusing existing gateway credentials (skip path)")
 
         # Step 10: Update host with success status and gateway auth
         def set_installed(h: dict) -> dict:
@@ -843,11 +863,16 @@ def run_installation(
                 # facts (template-write + pairing block are gated). Restore the
                 # gateway config we captured in set_installing() so re-running
                 # `clm agent install` at the same version does not silently drop
-                # the agent's auth token + device credentials. Scoped to
-                # openclaw (Round 2 W4) — other agent types do not store
-                # gateway credentials in this shape.
+                # the agent's auth token + device credentials. Scoped to claws
+                # that store credentials under `config.gateway`:
+                # - openclaw: token + device credentials, captured during install
+                # - zeroclaw: bearer token, captured during configure (#357)
+                # `gateway_token` is only ever set for openclaw, so the
+                # `and not gateway_token` guard is effectively openclaw-only;
+                # for zeroclaw we always want the restore on skip because
+                # install never minted a fresh token.
                 if (
-                    claw_name == "openclaw"
+                    claw_name in ("openclaw", "zeroclaw")
                     and install_skipped
                     and preserved_gateway[0]
                     and not gateway_token

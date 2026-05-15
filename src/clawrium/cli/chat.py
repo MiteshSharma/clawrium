@@ -4,6 +4,9 @@ Dispatch is driven by `features.chat.type` in the agent manifest:
 
 - ``websocket`` → openclaw gateway over WebSocket (existing behavior).
 - ``openai``    → hermes (and future agents) over OpenAI-compatible HTTP.
+- ``zeroclaw``  → ZeroClaw gateway over WebSocket with bearer-token auth
+                  (tagged-JSON envelope; distinct from openclaw's frame
+                  schema, so it gets a dedicated dispatch value).
 """
 
 from __future__ import annotations
@@ -25,6 +28,10 @@ from clawrium.core.chat import (
     SecretStr,
 )
 from clawrium.core.chat_hermes import HermesOpenAIBackend
+from clawrium.core.chat_zeroclaw import (
+    RECV_TIMEOUT_MSG_PREFIX as ZEROCLAW_RECV_TIMEOUT_MSG_PREFIX,
+    ZeroClawChatBackend,
+)
 from clawrium.core.hosts import get_agent_by_name, HostsFileCorruptedError
 from clawrium.core.registry import (
     ManifestNotFoundError,
@@ -138,6 +145,12 @@ def chat(
                 agent_name=str(canonical_name),
                 response_timeout_seconds=timeout,
             )
+        elif chat_type == "zeroclaw":
+            backend = _build_zeroclaw_backend(
+                agent_record=agent_record,
+                host_record=host_record,
+                response_timeout_seconds=timeout,
+            )
         else:
             console.print(
                 f"[red]Error:[/red] Chat is not supported for agent type "
@@ -150,12 +163,26 @@ def chat(
 
     # Emit the `--session` no-op notice only after backend construction
     # succeeds so the user doesn't see a misleading "chat is about to start"
-    # warning followed by a hard error.
+    # warning followed by a hard error. ATX Round 1 W7: zeroclaw too —
+    # the ZeroClaw gateway owns session state and there is no separate
+    # session-key concept on the wire.
+    #
+    # ATX Round 2 S5: distinct wording per backend — hermes/openai's
+    # history is client-side in-memory; zeroclaw's session state lives
+    # on the gateway daemon for the lifetime of the WebSocket. The old
+    # generic "in-memory only" line was accurate for hermes but
+    # misleading for zeroclaw.
     if chat_type == "openai" and session != "main":
         console.print(
             "[dim]`--session` is accepted but has no effect for this agent type "
             "— conversation history is in-memory only and will not be routed to "
             "a named session.[/dim]"
+        )
+    elif chat_type == "zeroclaw" and session != "main":
+        console.print(
+            "[dim]`--session` is accepted but has no effect for zeroclaw — the "
+            "gateway daemon owns session state for the duration of this "
+            "WebSocket connection.[/dim]"
         )
 
     console.print(
@@ -182,7 +209,7 @@ def chat(
         console.print(
             f"[red]Authentication failed:[/red] {rich_escape(_sanitize_exception_text(exc))}"
         )
-        if chat_type == "openai":
+        if chat_type in ("openai", "zeroclaw"):
             console.print(
                 f"Token mismatch. Re-run 'clm agent configure {rich_escape(str(canonical_name))}'."
             )
@@ -222,6 +249,38 @@ def chat(
                         f"Re-run 'clm agent configure {rich_escape(str(canonical_name))}' "
                         f"to bind a reachable interface."
                     )
+        elif chat_type == "zeroclaw":
+            # ATX Round 1 W6 / Round 2 W8: distinguish three connection
+            # failure modes. `chat_zeroclaw.py` emits three word-stable
+            # ChatConnectionError messages:
+            #
+            #   "Timed out connecting to ZeroClaw gateway at <url>"
+            #       -> TCP handshake never completed; firewall / wrong
+            #          port / host down. A higher --timeout won't help
+            #          because the connect path doesn't honor request
+            #          timeout. Route to a reachability hint.
+            #
+            #   "Timed out waiting for ZeroClaw response after Ns"
+            #       -> Connection succeeded but the agent is slow.
+            #          Route to the --timeout hint.
+            #
+            #   "Failed to reach ZeroClaw gateway at <url>: <reason>"
+            #       -> Connect failed immediately (OSError). Same as
+            #          connect-timeout: reachability hint.
+            # ATX Round 3 W2: use the shared constant exported by the
+            # zeroclaw backend so reworded exception messages can't
+            # silently misroute the hint.
+            msg = str(exc)
+            if msg.startswith(ZEROCLAW_RECV_TIMEOUT_MSG_PREFIX):
+                console.print(
+                    f"Try a higher --timeout value (current: {timeout}s)."
+                )
+            else:
+                console.print(
+                    f"Verify the agent host is reachable and re-run "
+                    f"'clm agent configure {rich_escape(str(canonical_name))}' "
+                    f"if the pairing token is stale."
+                )
         else:
             console.print(
                 "Verify the host is online and the recorded gateway URL/token are current (re-run configure/install if needed)."
@@ -313,6 +372,27 @@ async def _chat_loop(
                     f"[red]Protocol error:[/red] "
                     f"{rich_escape(_sanitize_exception_text(exc))}"
                 )
+                # ATX Round 2 W2 / Round 4 W-A: some protocol errors
+                # (e.g. zeroclaw `approval_request`) tear down the
+                # transport before re-raising. Continuing the REPL
+                # after such an error would send the next message into
+                # a stuck connection and produce a misleading "host
+                # unreachable" error on the *next* user turn. Break
+                # cleanly so the user sees the right remediation up
+                # front.
+                #
+                # `backend.is_connected` is declared in the
+                # `ChatBackend` Protocol; reading the attribute
+                # directly (not via `getattr(..., True)`) makes a
+                # missing-property regression an immediate
+                # AttributeError instead of a silent always-True
+                # fallback.
+                if not backend.is_connected:
+                    console.print(
+                        "[dim]Chat session ended. Reconnect with "
+                        "`clm chat <name>` to start a new session.[/dim]"
+                    )
+                    break
                 console.print("[dim]Continuing chat session.[/dim]")
                 continue
             finally:
@@ -389,6 +469,34 @@ def _build_openclaw_backend(
         auth_token=SecretStr(gateway["auth"]),
         device_id=gateway.get("device_id"),
         device_private_key=gateway.get("device_private_key"),
+        timeout_seconds=response_timeout_seconds,
+    )
+
+
+def _build_zeroclaw_backend(
+    agent_record: dict[str, Any],
+    host_record: dict[str, Any],
+    response_timeout_seconds: float,
+) -> ChatBackend:
+    """Construct a ZeroClawChatBackend from the persisted hosts.json record.
+
+    Reuses `_extract_gateway_config` for shape parity with openclaw — the
+    bearer token and URL live under the same `config.gateway.{auth,url}`
+    keys, written by `clm agent configure` (issue #357).
+
+    The path-suffix `/ws/chat` is appended if the persisted URL was only
+    the gateway origin. ZeroClaw's chat endpoint is `GET /ws/chat`; older
+    persisted records (or hand-edited ones) may omit the path.
+    """
+    gateway = _extract_gateway_config(agent_record, host_record)
+    url = gateway["url"]
+    # Idempotent suffix: append `/ws/chat` only when missing. ZeroClaw's
+    # gateway rejects connections at the bare root path.
+    if "/ws/chat" not in url:
+        url = url.rstrip("/") + "/ws/chat"
+    return ZeroClawChatBackend(
+        gateway_url=url,
+        auth_token=SecretStr(gateway["auth"]),
         timeout_seconds=response_timeout_seconds,
     )
 

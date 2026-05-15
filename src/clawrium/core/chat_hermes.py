@@ -94,6 +94,16 @@ class HermesOpenAIBackend:
                 pass
             self._client = None
 
+    @property
+    def is_connected(self) -> bool:
+        """Whether `send_message` would succeed without a fresh connect.
+
+        See `ChatBackend.is_connected` — optimistic; HTTP has no kept-
+        open transport, so this tracks the lifecycle of the underlying
+        `httpx.AsyncClient` only.
+        """
+        return self._client is not None
+
     async def send_message(
         self,
         message: str,
