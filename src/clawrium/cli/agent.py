@@ -1198,16 +1198,41 @@ def _run_validate_stage(
 ) -> bool:
     """Run the VALIDATE onboarding stage.
 
-    Performs comprehensive validation of agent configuration:
-    1. Verify SOUL.md personality file exists
-    2. Check provider is configured
-    3. Validate API key exists
-    4. Test provider connectivity
+    Step ordering and per-claw-type coverage:
+
+    Always (every claw type):
+      1. validate_agent_installation — agent record exists in hosts.json
+         for `host` / `installed_name or claw_type`.
+      2. validate_provider_config + validate_provider_api_key — onboarding
+         persisted a provider_id and the provider has credentials (or is
+         a no-key provider).
+      3. verify_provider_connectivity — provider URL/endpoint is reachable
+         and answers in a way the connectivity check accepts.
+
+    Claw-specific (added between provider and gateway/health, when present):
+      - openclaw: validate_openclaw_gateway probes the openclaw gateway
+        health endpoint over the configured transport.
+      - hermes:   validate_hermes_health probes `hermes --version`, the
+        agent's `.env` presence, and `GET /health`.
+
+    SOUL.md control-machine check (`validate_soul_md`) is only run for
+    openclaw — both hermes and zeroclaw manage their identity / workspace
+    files on the agent host (their `identity` onboarding stage `auto_skip`s).
+    Running the SOUL.md check on those claw types would always fail because
+    `~/.config/clawrium/agents/<claw>/SOUL.md` is never written.
+
+    For zeroclaw specifically this means three local checks total: install
+    record, provider config + API key, provider connectivity. There is no
+    separate gateway/health step here — the configure playbook owns the
+    `GET /health/providers` probe.
 
     Args:
         host: Host alias
         claw_type: Claw type
         yes: Skip confirmation prompts
+        installed_name: Optional agent name override; defaults to claw_type
+        skip_health: When True, skip the openclaw / hermes gateway / health
+                     check (no-op for zeroclaw)
 
     Returns:
         True if stage completed successfully
@@ -1225,11 +1250,15 @@ def _run_validate_stage(
     all_errors = []
     all_warnings = []
 
-    # Hermes manages SOUL.md/AGENTS.md internally inside ~/.hermes/ on the
-    # agent host — clm does not push identity files for hermes (identity stage
-    # auto_skips). So we skip the SOUL.md check for hermes and replace
-    # openclaw's gateway health probe with the hermes-specific /health check.
-    skip_soul_check = claw_type == "hermes"
+    # Hermes and ZeroClaw both manage their identity / workspace files on
+    # the agent host, not under ~/.config/clawrium/agents/<claw>/. Their
+    # onboarding `identity` stage `auto_skip`s, so the control-machine
+    # SOUL.md the legacy check looks for is never written. Skipping the
+    # check for both keeps the validate stage from blocking onboarding
+    # transitions to READY for these agents. (ATX Round 3 B_new2:
+    # zeroclaw was previously omitted from this list, which left
+    # `_run_validate_stage` permanently failing for it.)
+    skip_soul_check = claw_type in ("hermes", "zeroclaw")
 
     total_checks = 5
     if skip_soul_check:

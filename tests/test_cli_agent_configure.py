@@ -1561,6 +1561,72 @@ class TestRunValidateStage:
         assert result is False
         mock_complete.assert_not_called()
 
+    def test_zeroclaw_skips_soul_md_and_passes_with_local_checks(
+        self, isolated_config: Path
+    ):
+        """Regression guard for ATX Round 3 B_new2.
+
+        zeroclaw's identity stage `auto_skip`s and the workspace MD files
+        live on the agent host under `~/.zeroclaw/workspace/`, not under
+        `~/.config/clawrium/agents/zeroclaw/`. Before B_new2 was fixed,
+        `_run_validate_stage` always called `validate_soul_md('zeroclaw')`
+        which looked for a SOUL.md that no zeroclaw workflow ever writes,
+        making validate fail permanently and blocking onboarding ->
+        READY -> `clm agent start` for every zeroclaw agent.
+
+        After the fix, zeroclaw runs exactly three local checks (install
+        record, provider config + API key, provider connectivity) with
+        SOUL.md skipped. This test asserts that the stage passes for
+        zeroclaw with NO SOUL.md on disk.
+        """
+        from clawrium.cli.agent import _run_validate_stage
+
+        create_test_keypair(isolated_config, "work")
+        create_host_with_claw(
+            isolated_config,
+            claw_type="zeroclaw",
+            onboarding_state="validate",
+        )
+        create_provider(isolated_config)
+
+        hosts_file = isolated_config / "hosts.json"
+        hosts_data = json.loads(hosts_file.read_text())
+        hosts_data[0]["agents"]["zeroclaw"]["onboarding"]["stages"]["providers"][
+            "provider_id"
+        ] = "test-openai"
+        hosts_file.write_text(json.dumps(hosts_data, indent=2))
+
+        secrets_file = isolated_config / "secrets.json"
+        secrets_file.write_text(
+            json.dumps(
+                {
+                    "provider:test-openai": {
+                        "API_KEY": {
+                            "key": "API_KEY",
+                            "value": "sk-test-key",
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "updated_at": "2026-01-01T00:00:00Z",
+                            "description": "",
+                        }
+                    }
+                }
+            )
+        )
+
+        # Intentionally do NOT create ~/.config/clawrium/agents/zeroclaw/SOUL.md
+        # -- pre-fix this path is what made validate fail for zeroclaw.
+
+        with (
+            patch(
+                "clawrium.core.validation._make_request", return_value=(200, {}, None)
+            ),
+            patch("clawrium.cli.agent.complete_stage") as mock_complete,
+        ):
+            result = _run_validate_stage("work", "zeroclaw", True)
+
+        assert result is True
+        mock_complete.assert_called_once()
+
 
 class TestHostsFileCorruptedError:
     """Tests for HostsFileCorruptedError handling."""
