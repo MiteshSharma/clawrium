@@ -1,9 +1,31 @@
 ---
 # ZeroClaw memory delete — removes files inside ~/.zeroclaw/workspace.
+#
+# Allowlist mirrors `_MEMORY_WRITE_ALLOWED_FILES['zeroclaw']` in
+# core/memory.py: the 7 personality files plus `memory/<file>` daily notes.
+# BOOTSTRAP.md is intentionally NOT deletable from clm — the ZeroClaw
+# runtime owns its lifecycle. Defense-in-depth: the Python dispatcher
+# performs the same pattern + traversal checks; this guard catches a
+# tampered Ansible inventory.
 - hosts: all
   become: yes
   gather_facts: false
+  vars:
+    zeroclaw_deletable_files:
+      - SOUL.md
+      - IDENTITY.md
+      - USER.md
+      - AGENTS.md
+      - TOOLS.md
+      - MEMORY.md
+      - HEARTBEAT.md
   tasks:
+    - name: Validate agent_name (defense-in-depth)
+      ansible.builtin.fail:
+        msg: "Invalid agent_name"
+      when:
+        - agent_name is not match('^[a-z][a-z0-9_-]{0,31}$')
+
     - name: Validate memory filenames pattern
       ansible.builtin.fail:
         msg: "Invalid memory filename"
@@ -17,6 +39,17 @@
       loop: "{{ memory_files }}"
       when:
         - item.split('/') | intersect(['', '.', '..']) | length > 0
+
+    - name: Restrict to zeroclaw personality + daily-notes allowlist
+      ansible.builtin.fail:
+        msg: >-
+          zeroclaw memory delete rejects '{{ item }}'. Allowed:
+          one of {{ zeroclaw_deletable_files | join(', ') }}
+          or memory/<file>.
+      loop: "{{ memory_files }}"
+      when:
+        - item not in zeroclaw_deletable_files
+        - not (item is match('^memory/[A-Za-z0-9._-]+$'))
 
     - name: Delete memory files
       ansible.builtin.file:

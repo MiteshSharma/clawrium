@@ -108,14 +108,6 @@ def _resolve_agent_for_memory_cli(claw_name: str) -> tuple[str, str, str]:
     return hostname, name, actual_type
 
 
-# Backward-compatible alias for the rename. Pre-Phase-3 callers received a
-# 2-tuple from ``_resolve_openclaw_for_cli``; that function now lives under
-# ``_resolve_agent_for_memory_cli`` and returns the additional claw_type.
-def _resolve_openclaw_for_cli(claw_name: str) -> tuple[str, str]:
-    hostname, name, _claw_type = _resolve_agent_for_memory_cli(claw_name)
-    return hostname, name
-
-
 def show_cmd(
     claw_name: str = typer.Argument(..., help="Agent instance name"),
 ) -> None:

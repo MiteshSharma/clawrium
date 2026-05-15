@@ -102,7 +102,7 @@ class TestConstants:
             "TOOLS.md",
         }
 
-    def test_hermes_top_level_files_match_two_file_model(self):
+    def test_hermes_top_level_files_match_three_file_set(self):
         # Hermes surfaces three files via memory_info: MEMORY.md, USER.md
         # (both under ~/.hermes/memories/) and SOUL.md (at ~/.hermes/).
         assert set(MEMORY_TOP_LEVEL_FILES["hermes"]) == {
@@ -1883,5 +1883,13 @@ class TestZeroclawDispatch:
             )
         assert ok is False
         assert err is not None
-        # The error must name the disallowed file so the operator knows why.
-        assert "BOOTSTRAP" in err or "zeroclaw memory" in err
+        # The rejection must come from the allowlist path specifically
+        # (not a generic resolve / pattern / size failure that would
+        # *also* match for a malformed filename). Anchor on the
+        # `_MEMORY_WRITE_ALLOWED_FILES` rejection text.
+        assert "accepts only" in err, (
+            f"BOOTSTRAP rejection should hit the allowlist path; got: {err!r}"
+        )
+        # Sanity-check: at least one allowed personality file appears in the
+        # error listing so an operator can see what IS writable.
+        assert "SOUL.md" in err
