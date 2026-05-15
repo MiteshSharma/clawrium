@@ -161,7 +161,6 @@
           [Install]
           WantedBy=multi-user.target
         mode: "0644"
-      notify: Reload systemd
 
     - name: Reload systemd to pick up unit file
       ansible.builtin.systemd:
@@ -172,9 +171,4 @@
         msg: |
           ZeroClaw {{ zeroclaw_target_version }} installed for agent '{{ agent_name }}'.
           Service unit {{ agent_type }}-{{ agent_name }}.service dropped (disabled, stopped).
-          Run `clm agent configure {{ agent_name }}` to render config.toml and start the daemon.
-
-  handlers:
-    - name: Reload systemd
-      ansible.builtin.systemd:
-        daemon_reload: yes
+          Run 'clm agent configure {{ agent_name }}' to render config.toml and start the daemon.

@@ -349,6 +349,8 @@ def check_claw_health(
         # Quote the -f pattern so ansible's command module shlex-splits it into a
         # single argument; otherwise pgrep would treat 'gateway run' as extra args.
         check_cmd = f'pgrep -u {claw_user} -f "hermes gateway run"'
+    elif agent_type == "zeroclaw":
+        check_cmd = f'pgrep -u {claw_user} -f "zeroclaw daemon"'
     else:
         check_cmd = f"pgrep -u {claw_user} node"
 
