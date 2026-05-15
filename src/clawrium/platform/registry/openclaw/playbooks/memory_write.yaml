@@ -1,7 +1,17 @@
 ---
+# Openclaw memory write — drops content into ~/.openclaw/workspace/<filename>.
+# Structural allowlist mirrors _MEMORY_WRITE_ALLOWED_FILES['openclaw']
+# plus memory/<file> daily notes. Defense-in-depth: catches a tampered
+# Ansible inventory that bypasses Python guards.
 - hosts: all
   become: yes
   gather_facts: false
+  vars:
+    openclaw_writable_files:
+      - SOUL.md
+      - IDENTITY.md
+      - USER.md
+      - TOOLS.md
   tasks:
     - name: Validate agent_name (defense-in-depth)
       ansible.builtin.fail:
@@ -20,6 +30,16 @@
         msg: "Invalid memory filename: traversal components not allowed"
       when:
         - memory_filename.split('/') | intersect(['', '.', '..']) | length > 0
+
+    - name: Restrict to openclaw personality + daily-notes allowlist
+      ansible.builtin.fail:
+        msg: >-
+          openclaw memory write rejects '{{ memory_filename }}'. Allowed:
+          one of {{ openclaw_writable_files | join(', ') }}
+          or memory/<file>.
+      when:
+        - memory_filename not in openclaw_writable_files
+        - not (memory_filename is match('^memory/[A-Za-z0-9._-]+$'))
 
     - name: Ensure workspace directory exists
       ansible.builtin.file:

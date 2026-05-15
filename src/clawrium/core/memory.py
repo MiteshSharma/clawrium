@@ -158,6 +158,18 @@ _MEMORY_WRITE_DAILY_NOTES: set[str] = {"openclaw", "zeroclaw"}
 # Pattern for daily-note filenames (memory/<file> with safe components).
 _MEMORY_DAILY_NOTE_PATTERN = re.compile(r"^memory/[A-Za-z0-9._-]+$")
 
+# Per-claw allowlists for memory_delete. Asymmetric with the write
+# allowlists: hermes accepts a SOUL.md write (to ~/.hermes/SOUL.md) but
+# never a SOUL.md delete via clm — the file lives outside ``memories/``
+# and deleting an agent's SOUL.md is treated as destructive enough to
+# require manual SSH intervention. Openclaw + zeroclaw use the same set
+# for both write and delete (their workspaces are flat).
+_MEMORY_DELETE_ALLOWED_FILES: dict[str, tuple[str, ...]] = {
+    "hermes": ("MEMORY.md", "USER.md"),
+    "openclaw": _MEMORY_WRITE_ALLOWED_FILES["openclaw"],
+    "zeroclaw": _MEMORY_WRITE_ALLOWED_FILES["zeroclaw"],
+}
+
 # Workspace-relative path validation: filename or memory/<filename>.
 # Mirrors the pattern enforced in the playbooks.
 _MEMORY_FILENAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)?$")
@@ -859,6 +871,28 @@ def delete_memory_files(
     host, unix_name, claw_type = _resolve_agent_with_memory(hostname, agent_name)
     if host is None:
         return False, unix_name
+
+    # Per-claw delete allowlist. Surfaces a Python-level rejection with a
+    # clear message before any SSH dispatch — without this, hermes' delete
+    # of SOUL.md (write-allowed but delete-rejected, see
+    # _MEMORY_DELETE_ALLOWED_FILES) would land as an opaque Ansible fail.
+    delete_allowed = _MEMORY_DELETE_ALLOWED_FILES.get(claw_type)
+    if delete_allowed is not None:
+        for f in files:
+            if f in delete_allowed:
+                continue
+            if (
+                claw_type in _MEMORY_WRITE_DAILY_NOTES
+                and _MEMORY_DAILY_NOTE_PATTERN.match(f) is not None
+            ):
+                continue
+            base_msg = (
+                f"{claw_type} memory delete rejects '{f}'. Allowed: "
+                f"{' and '.join(delete_allowed)}"
+            )
+            if claw_type in _MEMORY_WRITE_DAILY_NOTES:
+                base_msg = f"{base_msg} (or memory/<file>)"
+            return False, base_msg
 
     try:
         _validate_agent_name(unix_name)

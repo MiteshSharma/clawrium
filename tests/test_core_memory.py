@@ -2002,3 +2002,92 @@ class TestConstantParity:
             f"write allowlist {set(write)} — operators will see asymmetric "
             f"behavior between `memory show` and `memory write`."
         )
+
+
+# ----- ATX iter 6 W-new-1: YAML ↔ Python parity ----------------------------
+
+
+class TestYamlPythonParity:
+    """W-new-1 (iter 6): TestConstantParity compared two Python dicts but
+    neither is the runtime source of truth. memory_info.yaml's `vars.
+    memory_top_level_files` block is what each claw's runtime actually
+    iterates. A PR that adds a file to the YAML without touching the
+    Python constant would pass every test while breaking the
+    operator-visible invariant. Pin the YAML ↔ Python relationship
+    directly."""
+
+    @pytest.mark.parametrize("claw_type", ["openclaw", "hermes", "zeroclaw"])
+    def test_yaml_top_level_matches_python_constant(self, claw_type: str):
+        from importlib.resources import files
+        import yaml as yamlmod
+
+        from clawrium.core.memory import MEMORY_TOP_LEVEL_FILES
+
+        pkg = files(f"clawrium.platform.registry.{claw_type}")
+        data = yamlmod.safe_load(
+            (pkg / "playbooks" / "memory_info.yaml").read_text()
+        )
+        yaml_vars = data[0]["vars"]["memory_top_level_files"]
+        # Hermes uses dict-of-{name,path} entries; openclaw/zeroclaw use
+        # plain strings. Normalize to filenames.
+        if yaml_vars and isinstance(yaml_vars[0], dict):
+            yaml_names = {entry["name"] for entry in yaml_vars}
+        else:
+            yaml_names = set(yaml_vars)
+
+        python_names = set(MEMORY_TOP_LEVEL_FILES[claw_type])
+        assert yaml_names == python_names, (
+            f"{claw_type}: memory_info.yaml lists {yaml_names} but Python "
+            f"MEMORY_TOP_LEVEL_FILES says {python_names}. The YAML is the "
+            f"runtime source of truth — sync the Python constant."
+        )
+
+
+# ----- ATX iter 6 W-new-3: hermes SOUL.md delete asymmetry -----------------
+
+
+class TestHermesDeleteAsymmetry:
+    """W-new-3 (iter 6): hermes accepts SOUL.md on write (file lands at
+    ~/.hermes/SOUL.md) but never on delete (the file lives outside
+    memories/, and removing it is destructive enough to require manual
+    SSH). The Python-level allowlist surfaces this as a clear message
+    before any Ansible dispatch."""
+
+    def test_hermes_delete_rejects_soul_md(self):
+        host = _host_with_hermes()
+        with patch("clawrium.core.memory.get_host", return_value=host):
+            ok, err = delete_memory_files(
+                "192.168.1.36", "hermes-test", ["SOUL.md"]
+            )
+        assert ok is False
+        assert err is not None
+        assert "hermes memory delete rejects 'SOUL.md'" in err
+        # Operators must see which files ARE deletable.
+        assert "MEMORY.md" in err
+        assert "USER.md" in err
+
+    def test_hermes_delete_accepts_canonical_files(self, tmp_path: Path):
+        host = _host_with_hermes()
+        playbook_dir = tmp_path / "hermes-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_delete.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+        result = _runner_result("successful", [])
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "hermes-test", "hermes"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir", return_value=playbook_dir
+        ), patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ):
+            ok, err = delete_memory_files(
+                "192.168.1.36", "hermes-test", ["MEMORY.md"]
+            )
+        assert ok is True
+        assert err is None

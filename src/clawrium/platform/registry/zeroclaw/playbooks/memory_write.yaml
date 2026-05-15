@@ -3,9 +3,22 @@
 # The Python dispatcher applies MAX_MEMORY_CONTENT_BYTES and filename
 # validation before this play runs; the validators below are
 # defense-in-depth against a tampered inventory.
+#
+# Structural allowlist mirrors _MEMORY_WRITE_ALLOWED_FILES['zeroclaw']
+# (7 personality files) plus memory/<file> daily notes. BOOTSTRAP.md is
+# intentionally NOT writable from clm — the runtime owns its lifecycle.
 - hosts: all
   become: yes
   gather_facts: false
+  vars:
+    zeroclaw_writable_files:
+      - SOUL.md
+      - IDENTITY.md
+      - USER.md
+      - AGENTS.md
+      - TOOLS.md
+      - MEMORY.md
+      - HEARTBEAT.md
   tasks:
     - name: Validate agent_name (defense-in-depth)
       ansible.builtin.fail:
@@ -24,6 +37,16 @@
         msg: "Invalid memory filename: traversal components not allowed"
       when:
         - memory_filename.split('/') | intersect(['', '.', '..']) | length > 0
+
+    - name: Restrict to zeroclaw personality + daily-notes allowlist
+      ansible.builtin.fail:
+        msg: >-
+          zeroclaw memory write rejects '{{ memory_filename }}'. Allowed:
+          one of {{ zeroclaw_writable_files | join(', ') }}
+          or memory/<file>.
+      when:
+        - memory_filename not in zeroclaw_writable_files
+        - not (memory_filename is match('^memory/[A-Za-z0-9._-]+$'))
 
     - name: Ensure workspace directory exists
       ansible.builtin.file:

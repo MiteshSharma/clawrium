@@ -2824,15 +2824,20 @@ class TestConfigureTimeoutBudget:
         # HERMES_API_SERVER_KEY is missing from secrets.json — wiring
         # that for a runtime test would essentially re-test the hermes
         # install flow. Pin the hermes branch of the elif chain by
-        # reading the source directly so a regression that swaps the
-        # literal still fails CI.
+        # reading the source with a word-boundary regex so a substring
+        # value like `2400` cannot satisfy the assertion (ATX iter 6
+        # S-new-1).
         import inspect
+        import re
 
         from clawrium.core import lifecycle
 
         src = inspect.getsource(lifecycle.configure_agent)
         assert 'resolved_type == "hermes"' in src
-        assert "configure_timeout = 240" in src
+        assert re.search(r"configure_timeout\s*=\s*240\b", src), (
+            "Hermes 240s timeout literal must appear with word boundary "
+            "in configure_agent (not as a substring of 2400, 24000, etc.)"
+        )
 
     def test_openclaw_uses_legacy_60s_timeout(self, tmp_path: Path):
         host, key_path = self._setup_paths(tmp_path)
