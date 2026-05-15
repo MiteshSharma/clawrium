@@ -93,6 +93,25 @@ class ChatBackend(Protocol):
         """
         ...
 
+    @property
+    def is_connected(self) -> bool:
+        """Whether `send_message` would succeed without a fresh `connect()`.
+
+        Optimistic contract: `True` after a successful `connect()` and
+        before an explicit `close()`. It is NOT a heartbeat — a server-
+        initiated TCP close between turns will leave it `True` until the
+        next failed `send_message`. The REPL uses this to decide
+        between continuing a chat session and breaking after a
+        `ChatProtocolError` that the backend self-tore-down on
+        (e.g. zeroclaw's `approval_request` branch).
+
+        Backends without an explicit lifecycle (HTTP-style hermes) MAY
+        return `True` constantly — `close()` flips it to `False` so the
+        REPL's break-on-disconnect contract is still meaningful when
+        an `approval_request`-shaped path lands in those backends later.
+        """
+        ...
+
 
 class OpenClawChatClient:
     """Minimal WebSocket client for OpenClaw gateway chat RPC."""
@@ -259,6 +278,14 @@ class OpenClawChatClient:
             except Exception:
                 pass
             self._ws = None
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether `send_message` would succeed without a fresh connect.
+
+        See `ChatBackend.is_connected` for the optimistic contract.
+        """
+        return self._ws is not None
 
     def clear_history(self) -> None:
         """No-op: openclaw's gateway owns conversation state, not the client."""

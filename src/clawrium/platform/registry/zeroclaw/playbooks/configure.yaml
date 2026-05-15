@@ -1,6 +1,12 @@
 ---
 - hosts: all
   become: yes
+  vars:
+    # Loopback URLs — the daemon binds 0.0.0.0 but the playbook always talks
+    # to it via 127.0.0.1 so the bearer token never traverses the network
+    # before pairing completes.
+    gateway_port: "{{ config.gateway.port }}"
+    gateway_local_base: "http://127.0.0.1:{{ gateway_port }}"
   tasks:
     - name: Check if agent user exists
       ansible.builtin.getent:
@@ -11,10 +17,21 @@
 
     - name: Fail if agent not installed
       ansible.builtin.fail:
-        msg: "Agent user '{{ agent_name }}' not found. Run 'clm agent install' first."
+        msg: "Agent user '{{ agent_name }}' not found. Run 'clm agent install --type zeroclaw ...' first."
       when: user_check.msg is defined
 
-    - name: Ensure config directory exists
+    - name: Validate provider configuration is present
+      ansible.builtin.fail:
+        msg: >-
+          ZeroClaw configure requires config.provider.type to be one of
+          anthropic|openai|ollama|openrouter. Re-run via
+          `clm agent configure {{ agent_name }} --stage providers`.
+      when:
+        - config.provider is not defined
+          or config.provider.type is not defined
+          or config.provider.type not in ['anthropic','openai','ollama','openrouter']
+
+    - name: Ensure ~/.zeroclaw config directory exists
       ansible.builtin.file:
         path: "/home/{{ agent_name }}/.zeroclaw"
         state: directory
@@ -22,29 +39,220 @@
         group: "{{ agent_name }}"
         mode: "0700"
 
-    - name: Write zeroclaw config from template
+    # Render ~/.zeroclaw/config.toml. no_log because provider_api_key is
+    # embedded verbatim. 0600 with agent ownership so only the service user
+    # (and root) can read. Ansible's default `force: yes` (not set here)
+    # only restarts the daemon when content changes — ATX S1 fix.
+    - name: Render ~/.zeroclaw/config.toml from template
       ansible.builtin.template:
         src: "{{ template_path }}/config.toml.j2"
         dest: "/home/{{ agent_name }}/.zeroclaw/config.toml"
         owner: "{{ agent_name }}"
         group: "{{ agent_name }}"
         mode: "0600"
-      # The rendered config.toml embeds integration secrets (github_token,
-      # jira_api_token, confluence_api_token, etc.); suppress Ansible's default
-      # diff/callback so the rendered file body does not surface in logs.
       no_log: true
       notify: Restart zeroclaw service
 
-    - name: Ensure service is enabled
+    - name: Enable zeroclaw service
       ansible.builtin.systemd:
         name: "{{ agent_type }}-{{ agent_name }}"
         enabled: yes
         daemon_reload: yes
 
+    # Apply pending restart (from the template task) before the readiness
+    # probe so /health is observing the just-rendered config, not the
+    # previous incarnation.
+    - name: Apply pending restart before probing
+      ansible.builtin.meta: flush_handlers
+
+    - name: Start zeroclaw service
+      ansible.builtin.systemd:
+        name: "{{ agent_type }}-{{ agent_name }}"
+        state: started
+
+    # Fail fast if the daemon crashed on startup — better than waiting out
+    # 30×2s of /health retries (ATX W4). ActiveState may be `activating`
+    # momentarily; accept that as in-progress and let the health probe
+    # finish the wait.
+    - name: Verify zeroclaw service did not crash on startup
+      ansible.builtin.command:
+        cmd: "systemctl show -p ActiveState --value {{ agent_type }}-{{ agent_name }}"
+      register: service_state
+      changed_when: false
+      failed_when: service_state.stdout.strip() in ['failed', 'inactive']
+
+    # Wait for the daemon to come up. /health/providers is the canonical
+    # readiness signal — it 200s only after the provider config has been
+    # parsed and the gateway is listening. Accept 401 too because the
+    # endpoint may require pairing-auth before serving — the existence of
+    # a response means the gateway is up.
+    - name: Probe /health/providers
+      ansible.builtin.uri:
+        url: "{{ gateway_local_base }}/health/providers"
+        method: GET
+        status_code: [200, 401]
+        timeout: 5
+      register: health_probe
+      retries: 30
+      delay: 2
+      until: health_probe.status in [200, 401]
+      # ATX Round 3 S1: bring the health probe in line with the rest of
+      # the playbook's `no_log: true` hygiene. The probe body itself is
+      # non-secret but the registered `health_probe` is later used in
+      # `set_fact` branches gated on `status` — suppress to keep the
+      # log surface tight at high verbosity.
+      no_log: true
+
+    # ATX Round 1 W3 + Round 2 W1 + Round 3 W1: surface a non-fatal
+    # warning when /health/providers returns 401. The gateway is up but
+    # the provider credentials probably mismatch the API key supplied in
+    # config.toml — chat calls will fail at request time.
+    #
+    # The fact (not just the debug task) is what configure_agent reads —
+    # `ansible_runner.run(quiet=True)` does not surface `runner_on_debug`
+    # events, so a pure `debug:` task would be silently swallowed at the
+    # CLI layer. Recording it as a cacheable fact ensures the warning
+    # propagates through the same fact-cache path the bearer token uses.
+    #
+    # Round 3 W1: assign the literal boolean unconditionally so a healthy
+    # run (status 200) clears any stale `true` left over from a prior
+    # 401 — `cacheable: true` would otherwise keep the previous value
+    # persisted in Ansible's fact cache and emit a phantom warning on
+    # every subsequent configure.
+    - name: Record provider-health warning state
+      ansible.builtin.set_fact:
+        zeroclaw_provider_health_warning: "{{ health_probe.status == 401 }}"
+        cacheable: true
+
+    - name: Warn when /health/providers returned 401
+      ansible.builtin.debug:
+        msg: >-
+          /health/providers returned 401 — gateway is reachable but
+          provider credentials may be invalid. Verify the API key for
+          provider '{{ config.provider.type }}' and re-run
+          `clm agent configure {{ agent_name }}` if needed.
+      when: health_probe.status == 401
+
+    # ATX B3: skip the pairing handshake when configure_agent already
+    # passed an existing bearer token from hosts.json. The persisted
+    # token remains valid across configure runs unless --force-repair is
+    # supplied, so re-running configure does NOT invalidate live chat
+    # sessions. The token is echoed back as a cacheable fact so
+    # configure_agent's fact-extraction path always finds it (skip and
+    # mint paths emit the same fact).
+    #
+    # `existing_gateway_token` and `force_repair` are top-level Ansible
+    # vars passed in by configure_agent via extra_vars (see
+    # core/lifecycle.py `_zeroclaw_extra_vars`). They are `default('')` /
+    # `default(false)` so a fresh configure (no persisted token) takes
+    # the mint path automatically.
+    - name: Determine whether re-pairing is required
+      ansible.builtin.set_fact:
+        zeroclaw_needs_pairing: >-
+          {{ (force_repair | default(false) | bool)
+             or (existing_gateway_token | default('') | length < 16) }}
+
+    # Pairing handshake (mint path) — two-step:
+    #   1. GET /pair/code     -> daemon emits a one-shot pairing code
+    #   2. POST /pair {code:} -> daemon mints a bearer token bound to that code
+    # Both calls are loopback so the code/token never traverses the LAN.
+    # `no_log: true` on every step so the credentials never reach Ansible
+    # logs even at -vvv (ATX B4 + W8).
+    - name: Request pairing code
+      ansible.builtin.uri:
+        url: "{{ gateway_local_base }}/pair/code"
+        method: GET
+        status_code: 200
+        timeout: 10
+        return_content: yes
+      register: pair_code_response
+      no_log: true
+      when: zeroclaw_needs_pairing
+
+    # ATX B4: validation fails must not echo `pair_code_response.json.keys()`
+    # into logs (registered var from a `no_log: true` task). Keep the
+    # diagnostic generic. Operators can re-run at higher verbosity if needed.
+    - name: Validate pairing code shape
+      ansible.builtin.fail:
+        msg: >-
+          /pair/code did not return a usable code field. Re-run
+          `clm agent configure {{ agent_name }} --force-repair` and
+          check daemon logs at
+          `journalctl --unit {{ agent_type }}-{{ agent_name }}`.
+      when:
+        - zeroclaw_needs_pairing
+        - pair_code_response.json is not defined
+          or pair_code_response.json.code is not defined
+          or pair_code_response.json.code | length < 1
+      no_log: true
+
+    - name: Exchange pairing code for bearer token
+      ansible.builtin.uri:
+        url: "{{ gateway_local_base }}/pair"
+        method: POST
+        status_code: 200
+        timeout: 10
+        body_format: json
+        body:
+          code: "{{ pair_code_response.json.code }}"
+        return_content: yes
+      register: pair_response
+      no_log: true
+      when: zeroclaw_needs_pairing
+
+    - name: Validate bearer token shape
+      ansible.builtin.fail:
+        msg: >-
+          /pair did not return a usable token. Re-run
+          `clm agent configure {{ agent_name }} --force-repair`; check
+          daemon logs at
+          `journalctl --unit {{ agent_type }}-{{ agent_name }}`.
+      when:
+        - zeroclaw_needs_pairing
+        - pair_response.json is not defined
+          or pair_response.json.token is not defined
+          or pair_response.json.token | length < 16
+      no_log: true
+
+    # Resolve the final bearer-token value: freshly minted on the mint
+    # path, echoed-back from hosts.json on the skip path. Surfaced via a
+    # single set_fact below so the fact-emission task is identical for
+    # both branches.
+    - name: Resolve effective gateway bearer token
+      ansible.builtin.set_fact:
+        effective_gateway_token: >-
+          {{ pair_response.json.token if zeroclaw_needs_pairing
+             else existing_gateway_token }}
+      no_log: true
+
+    # Emit gateway token + URL as cacheable host facts. configure_agent()
+    # reads them out of artifacts/<run>/fact_cache and persists them to
+    # hosts.json under agents.<n>.config.gateway.{auth,url}. Mirrors the
+    # OpenClaw fact-emission pattern in install.py:307-316. `no_log: true`
+    # so the value isn't echoed at -vvv (ATX W8).
+    - name: Save gateway credentials as cacheable facts
+      ansible.builtin.set_fact:
+        zeroclaw_gateway_token: "{{ effective_gateway_token }}"
+        zeroclaw_gateway_url: "ws://{{ ansible_host }}:{{ gateway_port }}/ws/chat"
+        cacheable: true
+      no_log: true
+
+    - name: Display configure success
+      ansible.builtin.debug:
+        msg: |
+          ZeroClaw agent '{{ agent_name }}' configured with provider
+          '{{ config.provider.type }}'.
+          Pairing: {{ 'fresh token minted' if zeroclaw_needs_pairing
+                      else 'existing token reused (use --force-repair to rotate)' }}.
+          Service: {{ agent_type }}-{{ agent_name }}.service (active)
+
   handlers:
+    # Single canonical restart handler. daemon_reload covers config-file
+    # changes that don't touch the unit, and the same restart fires once per
+    # configure regardless of how many notify directives match.
     - name: Restart zeroclaw service
       ansible.builtin.systemd:
         name: "{{ agent_type }}-{{ agent_name }}"
         state: restarted
+        enabled: yes
         daemon_reload: yes
-      ignore_errors: yes

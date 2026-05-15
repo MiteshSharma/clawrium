@@ -2,6 +2,15 @@ agent:
   type: zeroclaw
   description: "Lightweight AI assistant for edge devices and Raspberry Pi"
 
+# Capability flags advertised by this manifest.
+features:
+  # Chat dispatch routes to `core/chat_zeroclaw.py` (WebSocket client speaking
+  # ZeroClaw's tagged-JSON envelope). Distinct from openclaw's `websocket`
+  # value because the frame schemas differ (different `type` values, different
+  # auth header, different stream semantics).
+  chat:
+    type: zeroclaw
+
 # Secrets required for this agent (installation fails when missing)
 secrets:
   required:

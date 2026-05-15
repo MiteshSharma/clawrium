@@ -130,7 +130,7 @@ class WorkspaceConfig(TypedDict):
 class ChatFeatureConfig(TypedDict):
     """Chat capability descriptor."""
 
-    type: Literal["openai", "websocket"]
+    type: Literal["openai", "websocket", "zeroclaw"]
 
 
 class FeaturesConfig(TypedDict):
@@ -502,7 +502,7 @@ def _validate_workspace(workspace_value: object, agent_type: str) -> WorkspaceCo
     return validated
 
 
-_ALLOWED_CHAT_TYPES = ("openai", "websocket")
+_ALLOWED_CHAT_TYPES = ("openai", "websocket", "zeroclaw")
 
 
 def _validate_features(features_value: object, agent_type: str) -> FeaturesConfig:

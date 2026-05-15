@@ -182,6 +182,167 @@ def _skip_marker_event(version: str, path: str) -> dict:
     }
 
 
+def _setup_common_zeroclaw(monkeypatch, tmp_path, host_record: dict, version: str = "0.7.5"):
+    """Same as `_setup_common` but pinned to the zeroclaw manifest shape.
+
+    Added for ATX Round 1 W1: re-install on a paired zeroclaw must not
+    wipe `config.gateway.auth`. The B3 regression guard from issue #357
+    needs the same skip-path harness openclaw uses, with a manifest the
+    install code accepts.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    mock_manifest = {
+        "name": "zeroclaw",
+        "entries": [
+            {
+                "version": version,
+                "os": "ubuntu",
+                "os_version": "24.04",
+                "arch": "x86_64",
+                "sha256": "deadbeef",
+                "requirements": {
+                    "min_memory_mb": 1024,
+                    "gpu_required": False,
+                    "dependencies": {"python": ">=3.9"},
+                },
+            }
+        ],
+    }
+
+    import clawrium.core.install
+
+    monkeypatch.setattr(clawrium.core.install, "load_manifest", lambda x: mock_manifest)
+    monkeypatch.setattr(
+        clawrium.core.install,
+        "check_compatibility",
+        lambda *args, **kwargs: {
+            "compatible": True,
+            "matched_entry": mock_manifest["entries"][0],
+            "reasons": [],
+        },
+    )
+
+    host_state = [host_record]
+
+    monkeypatch.setattr(
+        clawrium.core.install, "get_host", lambda _: host_state[0]
+    )
+
+    def mock_update_host(_, updater):
+        host_state[0] = updater(host_state[0])
+        return True
+
+    monkeypatch.setattr(clawrium.core.install, "update_host", mock_update_host)
+
+    key_file = tmp_path / "test_key"
+    key_file.write_text("fake key")
+    monkeypatch.setattr(
+        clawrium.core.install, "get_host_private_key", lambda _: key_file
+    )
+    monkeypatch.setattr(
+        clawrium.core.install, "initialize_onboarding", lambda h, c: True
+    )
+
+    return host_state
+
+
+def _zeroclaw_skip_marker_event(version: str) -> dict:
+    """Emit the playbook task that triggers `_install_was_skipped`."""
+    return {
+        "event": "runner_on_ok",
+        "event_data": {
+            "task": "Mark install as skipped when already installed",
+            "res": {
+                "msg": (
+                    f"ZeroClaw v{version} already installed at "
+                    "/home/zer-test/bin/zeroclaw. Skipping binary install."
+                )
+            },
+        },
+    }
+
+
+def _zeroclaw_skip_fact_event() -> dict:
+    """Emit the playbook task that sets the skip fact."""
+    return {
+        "event": "runner_on_ok",
+        "event_data": {
+            "task": "Set install skip condition",
+            "res": {"ansible_facts": {"zeroclaw_already_installed": True}},
+        },
+    }
+
+
+def test_zeroclaw_reinstall_preserves_paired_gateway_token(monkeypatch, tmp_path):
+    """ATX Round 1 W1: re-installing on an already-paired zeroclaw must
+    preserve the `config.gateway.auth` bearer token in hosts.json.
+
+    Pre-#357 install.py only restored `preserved_gateway` for openclaw.
+    The B3 generalization adds zeroclaw to the restore set; this test
+    pins the contract so a future refactor of the guard doesn't silently
+    drop zeroclaw."""
+    from clawrium.core.install import run_installation
+
+    host = {
+        "hostname": "test-host",
+        "key_id": "test-host",
+        "hardware": {
+            "architecture": "x86_64",
+            "os": "ubuntu",
+            "os_version": "24.04",
+            "memtotal_mb": 4096,
+        },
+        "agents": {
+            "zer-paired": {
+                "type": "zeroclaw",
+                "status": "installed",
+                "installed_at": "2026-05-01T00:00:00+00:00",
+                "error": None,
+                "agent_name": "zer-paired",
+                "version": "0.7.5",
+                "config": {
+                    "gateway": {
+                        "url": "ws://test-host:40000/ws/chat",
+                        "auth": "paired-token-from-prior-configure-abc123",
+                    }
+                },
+            }
+        },
+    }
+
+    host_state = _setup_common_zeroclaw(monkeypatch, tmp_path, host)
+
+    import ansible_runner
+
+    run_side_effect = [
+        _result_with_events(tmp_path, []),
+        _result_with_events(
+            tmp_path,
+            [
+                _zeroclaw_skip_fact_event(),
+                _zeroclaw_skip_marker_event("0.7.5"),
+            ],
+        ),
+    ]
+    mock_run = Mock(side_effect=run_side_effect)
+    monkeypatch.setattr(ansible_runner, "run", mock_run)
+
+    result = run_installation("zeroclaw", "test-host", name="zer-paired")
+
+    assert result["success"] is True
+    assert result["skipped"] is True
+    assert result["skip_reason"] == "already_installed"
+
+    # The bearer token MUST be byte-identical after the skip. Pre-#357
+    # generalization, `claw_name == "openclaw"` excluded zeroclaw from
+    # the restore path and this assertion would fail.
+    agent_record = host_state[0]["agents"]["zer-paired"]
+    gateway = agent_record["config"]["gateway"]
+    assert gateway["auth"] == "paired-token-from-prior-configure-abc123"
+    assert gateway["url"] == "ws://test-host:40000/ws/chat"
+
+
 def test_install_reuses_existing_installed_name_and_reports_skip(monkeypatch, tmp_path):
     """Skip path must preserve the existing agent's gateway credentials.
 

@@ -1045,12 +1045,16 @@ def test_manifest_accepts_workspace_and_features_fields(monkeypatch):
 
 
 def test_manifest_workspace_optional_for_legacy_types():
-    """Legacy zeroclaw manifest (no workspace/features) still validates."""
+    """ZeroClaw manifest now declares features.chat (issue #357 wires the
+    WebSocket chat backend) but still does not declare workspace —
+    workspace files land in Subtask C."""
     manifest = load_manifest("zeroclaw")
-    # zeroclaw does not declare workspace or features in Phase 1; both must be absent
-    # (or empty) without breaking validation.
     assert "workspace" not in manifest
-    assert "features" not in manifest
+    # features.chat.type == "zeroclaw" advertises the new dispatch value
+    # introduced in #357. Other feature flags remain absent until later
+    # subtasks (e.g. features.memory in Subtask C).
+    features = manifest.get("features", {})
+    assert features.get("chat", {}).get("type") == "zeroclaw"
 
 
 def test_manifest_rejects_invalid_workspace_memory_path(monkeypatch):

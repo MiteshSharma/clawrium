@@ -463,12 +463,23 @@ class FakeChatClient:
         self.closed = False
         self.last_kwargs: dict[str, object] = {}
         self.clear_history_calls = 0
+        # ATX Round 4 W-A / Round 5 W-4: implement the `is_connected`
+        # Protocol member explicitly so the REPL can read it directly
+        # (no fallback via `getattr(..., True)`). Lifecycle MUST match
+        # real backends: starts False, flips to True only after
+        # `connect()` succeeds, flips back to False on `close()`.
+        # Without this, a test that checks `is_connected` before
+        # `connect()` inherits a wrong precondition (the real backend
+        # would be False there).
+        self.is_connected: bool = False
 
     async def connect(self):
         self.connected = True
+        self.is_connected = True
 
     async def close(self):
         self.closed = True
+        self.is_connected = False
 
     def clear_history(self) -> None:
         self.clear_history_calls += 1
@@ -622,6 +633,87 @@ def test_chat_loop_surfaces_history_truncation_notice(monkeypatch, capsys):
     captured = capsys.readouterr().out
     assert "dropped 3 oldest turns" in captured
     assert "Use /reset to start fresh" in captured
+
+
+def test_chat_loop_breaks_when_protocol_error_disconnects_backend(
+    monkeypatch, capsys
+):
+    """ATX Round 2 W2 / Round 3 B1: when a ChatProtocolError leaves the
+    backend disconnected (e.g. zeroclaw's approval_request handler
+    closes the socket before raising), the REPL must break immediately,
+    not print 'Continuing chat session.' and loop back to read.
+
+    This test fails if the `if not getattr(backend, 'is_connected', True)
+    : break` branch is removed:
+    - the read counter would exceed 1 (the loop would solicit a 2nd input)
+    - the captured stdout would contain 'Continuing chat session.'
+    - the captured stdout would NOT contain 'Chat session ended'
+    """
+    from clawrium.cli.chat import _chat_loop
+
+    class DisconnectingClient:
+        """Fake backend whose send_message raises ChatProtocolError and
+        marks itself disconnected — mirrors ZeroClawChatBackend's
+        approval_request behavior."""
+
+        def __init__(self):
+            self.is_connected = True
+            self.closed = False
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            self.closed = True
+            self.is_connected = False
+
+        async def send_message(self, message, session_key, on_delta, response_timeout_seconds):
+            self.is_connected = False  # mirrors `await self.close()` in approval_request
+            raise ChatProtocolError("ZeroClaw requested tool approval (tool='shell')")
+
+        def clear_history(self):
+            pass
+
+    client = DisconnectingClient()
+    # Queue TWO inputs so a non-breaking loop has a second user message
+    # to send. The break contract requires read_count == 1; without the
+    # break the loop would consume both.
+    inputs = iter(["please do something", "another message"])
+    read_count = {"n": 0}
+
+    async def fake_read(*_args, **_kwargs):
+        read_count["n"] += 1
+        try:
+            return next(inputs)
+        except StopIteration:
+            raise EOFError
+
+    monkeypatch.setattr(chat_module, "_read_user_input", fake_read)
+
+    asyncio.run(
+        _chat_loop(
+            backend=client,
+            session_key="main",
+            response_timeout_seconds=5.0,
+            idle_timeout_seconds=0.0,
+            chat_type="zeroclaw",
+        )
+    )
+
+    captured = capsys.readouterr()
+
+    # Pin contracts:
+    #  1. Exactly one prompt was issued — the loop broke before re-reading.
+    assert read_count["n"] == 1, (
+        f"Expected the loop to break after 1 read; got {read_count['n']}"
+    )
+    #  2. The session-ended message landed on stdout.
+    assert "Chat session ended" in captured.out, captured.out
+    #  3. The 'continue' branch did NOT fire.
+    assert "Continuing chat session." not in captured.out, captured.out
+    #  4. The backend was closed (idempotent — approval_request already
+    #     closed; the outer finally re-runs close()).
+    assert client.closed is True
 
 
 def test_chat_loop_handles_keyboard_interrupt_and_closes_client(monkeypatch):
@@ -1105,3 +1197,211 @@ def test_hermes_satisfies_chat_backend_protocol():
         auth_token=SecretStr("token"),
     )
     assert isinstance(backend, ChatBackend)
+
+
+def test_zeroclaw_satisfies_chat_backend_protocol():
+    from clawrium.core.chat import ChatBackend, SecretStr
+    from clawrium.core.chat_zeroclaw import ZeroClawChatBackend
+
+    backend = ZeroClawChatBackend(
+        gateway_url="ws://example.test:4080/ws/chat",
+        auth_token=SecretStr("token"),
+    )
+    assert isinstance(backend, ChatBackend)
+
+
+# ---------------------------------------------------------------------------
+# ZeroClaw chat dispatch — agents whose manifest advertises features.chat.type
+# == "zeroclaw" route to ZeroClawChatBackend.
+# ---------------------------------------------------------------------------
+
+
+class TestZeroclawChat:
+    """Dispatch + missing-credential tests for the zeroclaw chat path."""
+
+    HOST = {"hostname": "pi-edge.lan", "alias": "pi-edge"}
+    AGENT = {
+        "agent_name": "zc-test",
+        "config": {
+            "gateway": {
+                "url": "ws://pi-edge.lan:4080/ws/chat",
+                "auth": "paired-bearer-token",
+                "port": 4080,
+            }
+        },
+    }
+
+    def _patch_resolve(self, monkeypatch, agent=None):
+        monkeypatch.setattr(
+            "clawrium.cli.chat.get_agent_by_name",
+            lambda _name: (self.HOST, "zeroclaw", agent or self.AGENT),
+        )
+        monkeypatch.setattr(
+            "clawrium.cli.chat._resolve_chat_type", lambda _agent_type: "zeroclaw"
+        )
+
+    def test_dispatch_to_zeroclaw_backend(self, monkeypatch):
+        """A manifest advertising features.chat.type == zeroclaw routes to
+        ZeroClawChatBackend with the bearer + URL from hosts.json."""
+        self._patch_resolve(monkeypatch)
+
+        captured: dict[str, object] = {}
+
+        async def mock_chat_loop(backend, **_kwargs):
+            captured["backend"] = backend
+
+        monkeypatch.setattr(chat_module, "_chat_loop", mock_chat_loop)
+
+        result = runner.invoke(app, ["chat", "zc-test"])
+
+        assert result.exit_code == 0, result.output
+        backend = captured["backend"]
+        # Must be the ZeroClaw backend, not the openclaw client.
+        from clawrium.core.chat_zeroclaw import ZeroClawChatBackend
+        assert isinstance(backend, ZeroClawChatBackend)
+        # URL ends with /ws/chat (idempotent suffix append).
+        assert backend.gateway_url.endswith("/ws/chat")
+
+    def test_missing_gateway_token_exits_1(self, monkeypatch):
+        """Agent record without gateway.auth surfaces a friendly error."""
+        agent_no_token = {
+            "agent_name": "zc-test",
+            "config": {
+                "gateway": {
+                    "url": "ws://pi-edge.lan:4080/ws/chat",
+                    "port": 4080,
+                }
+            },
+        }
+        self._patch_resolve(monkeypatch, agent=agent_no_token)
+
+        result = runner.invoke(app, ["chat", "zc-test"])
+
+        assert result.exit_code == 1
+        assert "token is missing" in result.output.lower()
+
+    def test_missing_gateway_url_exits_1(self, monkeypatch):
+        """Agent record without gateway.url surfaces a friendly error."""
+        agent_no_url = {
+            "agent_name": "zc-test",
+            "config": {
+                "gateway": {
+                    "auth": "paired-bearer-token",
+                    "port": 4080,
+                }
+            },
+        }
+        self._patch_resolve(monkeypatch, agent=agent_no_url)
+
+        result = runner.invoke(app, ["chat", "zc-test"])
+
+        assert result.exit_code == 1
+        assert "url is missing" in result.output.lower()
+
+    def test_auth_error_surfaces_configure_hint(self, monkeypatch):
+        """A ChatAuthenticationError from the backend surfaces the
+        `clm agent configure <name>` remediation hint — the only path
+        to recover a rotated pairing token."""
+        from clawrium.core.chat import ChatAuthenticationError
+
+        self._patch_resolve(monkeypatch)
+
+        def fake_asyncio_run(_coro):
+            _coro.close()
+            raise ChatAuthenticationError("ZeroClaw gateway rejected the bearer token")
+
+        monkeypatch.setattr("clawrium.cli.chat.asyncio.run", fake_asyncio_run)
+
+        result = runner.invoke(app, ["chat", "zc-test"])
+
+        assert result.exit_code == 1
+        assert "authentication failed" in result.output.lower()
+        assert "clm agent configure zc-test" in result.output
+
+    def test_timeout_surfaces_timeout_hint(self, monkeypatch):
+        """ATX Round 1 W6 / Round 4 W-B: a recv-timeout ChatConnectionError
+        routes to the --timeout hint. Construct the exception text from
+        the same `RECV_TIMEOUT_MSG_PREFIX` constant the CLI imports so a
+        rewording of the prefix cannot break the routing test silently."""
+        from clawrium.core.chat import ChatConnectionError
+        from clawrium.core.chat_zeroclaw import RECV_TIMEOUT_MSG_PREFIX
+
+        self._patch_resolve(monkeypatch)
+
+        def fake_asyncio_run(_coro):
+            _coro.close()
+            raise ChatConnectionError(f"{RECV_TIMEOUT_MSG_PREFIX} after 5s")
+
+        monkeypatch.setattr("clawrium.cli.chat.asyncio.run", fake_asyncio_run)
+
+        result = runner.invoke(app, ["chat", "zc-test"])
+
+        assert result.exit_code == 1
+        assert "Try a higher --timeout" in result.output
+
+    def test_unreachable_surfaces_configure_hint(self, monkeypatch):
+        """ATX Round 1 W6: a non-timeout ChatConnectionError prints the
+        agent-reachability hint pointing at `clm agent configure` (for
+        stale pairing tokens)."""
+        from clawrium.core.chat import ChatConnectionError
+
+        self._patch_resolve(monkeypatch)
+
+        def fake_asyncio_run(_coro):
+            _coro.close()
+            raise ChatConnectionError(
+                "Failed to reach ZeroClaw gateway at ws://pi-edge.lan:4080/ws/chat"
+            )
+
+        monkeypatch.setattr("clawrium.cli.chat.asyncio.run", fake_asyncio_run)
+
+        result = runner.invoke(app, ["chat", "zc-test"])
+
+        assert result.exit_code == 1
+        assert "clm agent configure zc-test" in result.output
+        # The timeout-specific hint must NOT fire on the unreachable path.
+        assert "Try a higher --timeout" not in result.output
+
+    def test_session_flag_no_op_notice_emitted_for_zeroclaw(self, monkeypatch):
+        """ATX Round 1 W7: `--session` is accepted but has no effect on
+        zeroclaw (gateway owns session state). The CLI should print the
+        same no-op notice it prints for openai-typed agents."""
+        self._patch_resolve(monkeypatch)
+
+        async def mock_chat_loop(backend, **_kwargs):  # noqa: ARG001
+            return None
+
+        monkeypatch.setattr(chat_module, "_chat_loop", mock_chat_loop)
+
+        result = runner.invoke(app, ["chat", "zc-test", "--session", "custom"])
+
+        assert result.exit_code == 0, result.output
+        assert "--session" in result.output
+
+    def test_url_appended_with_ws_chat_path_when_missing(self, monkeypatch):
+        """When the persisted URL has no /ws/chat suffix (e.g. host record
+        reconstruction strips it), the backend re-appends it idempotently
+        so the gateway accepts the upgrade."""
+        agent_no_path = {
+            "agent_name": "zc-test",
+            "config": {
+                "gateway": {
+                    "url": "ws://pi-edge.lan:4080",
+                    "auth": "paired-bearer-token",
+                    "port": 4080,
+                }
+            },
+        }
+        self._patch_resolve(monkeypatch, agent=agent_no_path)
+
+        captured: dict[str, object] = {}
+
+        async def mock_chat_loop(backend, **_kwargs):
+            captured["backend"] = backend
+
+        monkeypatch.setattr(chat_module, "_chat_loop", mock_chat_loop)
+
+        result = runner.invoke(app, ["chat", "zc-test"])
+
+        assert result.exit_code == 0, result.output
+        assert captured["backend"].gateway_url.endswith("/ws/chat")

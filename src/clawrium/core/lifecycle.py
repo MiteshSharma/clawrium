@@ -4,6 +4,7 @@ This module handles start, stop, and restart operations for agent instances
 running on remote hosts via systemd service management.
 """
 
+import json
 import logging
 import os
 import re
@@ -980,9 +981,18 @@ def configure_agent(
             host["hostname"], resolved_type, unix_agent_name
         )
         instance_secrets = get_instance_secrets(instance_key)
-        if "DISCORD_BOT_TOKEN" in instance_secrets:
-            discord_bot_token = instance_secrets["DISCORD_BOT_TOKEN"]["value"]
-            emit("configure", "Loaded Discord bot token from secrets")
+        # ATX Round 2 W4: match the safe `.get("value")` pattern used
+        # by the Hermes API-server-key path (line ~762). A malformed
+        # secrets.json entry (truthy dict without a "value" field)
+        # otherwise raises KeyError, which the outer `except Exception`
+        # silently swallows into an empty token and the user can't tell
+        # why Discord/Slack stopped working.
+        discord_entry = instance_secrets.get("DISCORD_BOT_TOKEN")
+        if isinstance(discord_entry, dict):
+            discord_value = discord_entry.get("value")
+            if isinstance(discord_value, str):
+                discord_bot_token = discord_value
+                emit("configure", "Loaded Discord bot token from secrets")
     except Exception as e:
         logger.warning("Failed to load Discord bot token for %s: %s", agent_key, e)
 
@@ -994,12 +1004,19 @@ def configure_agent(
             host["hostname"], resolved_type, unix_agent_name
         )
         instance_secrets = get_instance_secrets(instance_key)
-        if "SLACK_BOT_TOKEN" in instance_secrets:
-            slack_bot_token = instance_secrets["SLACK_BOT_TOKEN"]["value"]
-            emit("configure", "Loaded Slack bot token from secrets")
-        if "SLACK_APP_TOKEN" in instance_secrets:
-            slack_app_token = instance_secrets["SLACK_APP_TOKEN"]["value"]
-            emit("configure", "Loaded Slack app token from secrets")
+        # ATX Round 2 W4: same safe-indexing pattern as Discord above.
+        slack_bot_entry = instance_secrets.get("SLACK_BOT_TOKEN")
+        if isinstance(slack_bot_entry, dict):
+            slack_bot_value = slack_bot_entry.get("value")
+            if isinstance(slack_bot_value, str):
+                slack_bot_token = slack_bot_value
+                emit("configure", "Loaded Slack bot token from secrets")
+        slack_app_entry = instance_secrets.get("SLACK_APP_TOKEN")
+        if isinstance(slack_app_entry, dict):
+            slack_app_value = slack_app_entry.get("value")
+            if isinstance(slack_app_value, str):
+                slack_app_token = slack_app_value
+                emit("configure", "Loaded Slack app token from secrets")
     except Exception as e:
         logger.warning("Failed to load Slack tokens for %s: %s", agent_key, e)
 
@@ -1102,6 +1119,55 @@ def configure_agent(
         "integrations": integrations_data,
     }
 
+    # ZeroClaw idempotent re-configure (ATX Round 1 B3): pass any
+    # existing bearer token in via Ansible vars so the configure playbook
+    # can skip the pairing handshake when already paired. Without this
+    # every configure call would mint a fresh token and silently
+    # invalidate any in-flight `clm chat` WebSocket.
+    if resolved_type == "zeroclaw":
+        existing_gateway = agent_record.get("config", {}).get("gateway") or {}
+        existing_token = existing_gateway.get("auth")
+        # ATX Round 2 W5: keep the Python-side threshold consistent with
+        # the playbook's `length >= 16` check. A 1-15 char hand-edited
+        # token would otherwise be passed in but silently rejected by the
+        # playbook, causing an opaque re-pair.
+        if (
+            isinstance(existing_token, str)
+            and len(existing_token.strip()) >= 16
+        ):
+            ansible_vars["existing_gateway_token"] = existing_token.strip()
+        else:
+            # ATX Round 3 W5 / Round 4 B1: when a too-short token
+            # forces a re-pair, surface that explicitly so the operator
+            # can tell whether any live `clm chat` sessions are about
+            # to break. Suppressed when there is no token at all
+            # (first configure) — that's the normal mint path, not an
+            # unexpected re-pair.
+            #
+            # Must use the `WARNING:` prefix + stage="configure" pattern
+            # (mirrors the integration-type warning at lifecycle.py:1046)
+            # so cli/agent.py's `_print_configure_warnings` callback
+            # routes the message to the user. The callback dispatches
+            # on the `WARNING:` prefix; a `stage="warn"` event with a
+            # different prefix is silently dropped at the terminal.
+            if isinstance(existing_token, str) and existing_token.strip():
+                warning_msg = (
+                    f"WARNING: Existing gateway token for {agent_key} "
+                    f"is shorter than 16 characters — treating as "
+                    f"absent. A new pairing handshake will be performed "
+                    f"and any live `clm chat {agent_key}` session will "
+                    f"need to reconnect."
+                )
+                emit("configure", warning_msg)
+                logger.warning(warning_msg)
+            ansible_vars["existing_gateway_token"] = ""
+        # `force_repair` flows in via extra_vars when the CLI surfaces
+        # an explicit rotation flag; default false so normal reconfigures
+        # are idempotent. ATX Round 2 S1: direct assignment — `setdefault`
+        # on a freshly constructed dict reads as a guard that doesn't
+        # exist in practice.
+        ansible_vars["force_repair"] = False
+
     # Merge extra_vars (not persisted to hosts.json)
     if extra_vars:
         ansible_vars.update(extra_vars)
@@ -1161,6 +1227,127 @@ def configure_agent(
                         error_msg = res["stderr"]
                         break
             return False, error_msg
+
+        # ZeroClaw: extract the bearer token + gateway URL the configure
+        # playbook minted via the pairing handshake. configure.yaml emits
+        # them as cacheable host facts (`zeroclaw_gateway_token` and
+        # `zeroclaw_gateway_url`); we read them out of the fact cache and
+        # surface them via `config_data["gateway"]` so the updater below
+        # persists them to hosts.json under
+        # `agents.<n>.config.gateway.{auth,url}`. Mirrors the OpenClaw fact
+        # extraction in install.py:688-794. Done outside the updater closure
+        # so any read failure surfaces as a configure-time error rather than
+        # corrupting hosts.json silently.
+        zc_gateway_token: str | None = None
+        zc_gateway_url: str | None = None
+        if resolved_type == "zeroclaw":
+            try:
+                artifacts_dir = Path(result.config.artifact_dir)
+                fact_cache_dir = artifacts_dir / "fact_cache"
+                if fact_cache_dir.exists():
+                    for fact_file in fact_cache_dir.glob("*"):
+                        try:
+                            with open(fact_file) as fh:
+                                facts = json.load(fh)
+                        except (json.JSONDecodeError, IOError) as file_err:
+                            logger.debug(
+                                "Skipping fact file %s: %s", fact_file, file_err
+                            )
+                            continue
+                        payload = facts.get("__payload__")
+                        if not isinstance(payload, str) or not payload:
+                            continue
+                        try:
+                            parsed = json.loads(payload)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(parsed, dict):
+                            continue
+
+                        token_raw = parsed.get("zeroclaw_gateway_token")
+                        url_raw = parsed.get("zeroclaw_gateway_url")
+                        health_warn_raw = parsed.get(
+                            "zeroclaw_provider_health_warning"
+                        )
+
+                        # Tolerate Ansible's occasional `{"value": "..."}`
+                        # wrapping for cacheable string facts.
+                        if isinstance(token_raw, dict):
+                            token_raw = token_raw.get("value")
+                        if isinstance(url_raw, dict):
+                            url_raw = url_raw.get("value")
+                        if isinstance(health_warn_raw, dict):
+                            health_warn_raw = health_warn_raw.get("value")
+                        if isinstance(token_raw, str):
+                            token_raw = token_raw.strip()
+                        if isinstance(url_raw, str):
+                            url_raw = url_raw.strip()
+
+                        # ATX Round 2 W1: when the playbook recorded a
+                        # 401 from /health/providers, surface a one-shot
+                        # warning to the CLI event stream. Without this
+                        # the operator finishes configure with exit 0
+                        # and a silently-misconfigured provider — they
+                        # only learn at the next `clm chat` invocation.
+                        if health_warn_raw is True or health_warn_raw == "true":
+                            # ATX Round 4 B1: same "WARNING:" /
+                            # stage="configure" pattern as the
+                            # short-token re-pair warning above —
+                            # ensures `_print_configure_warnings`
+                            # actually surfaces this to the user
+                            # instead of silently emitting at INFO.
+                            health_warning_msg = (
+                                f"WARNING: /health/providers returned "
+                                f"401 — gateway is reachable but "
+                                f"provider "
+                                f"'{config_data.get('provider', {}).get('type', '?')}' "
+                                f"credentials may be invalid. Verify "
+                                f"the API key and re-run "
+                                f"`clm agent configure {agent_key}` "
+                                f"if needed."
+                            )
+                            emit("configure", health_warning_msg)
+                            logger.warning(health_warning_msg)
+
+                        if (
+                            isinstance(token_raw, str) and token_raw
+                            and isinstance(url_raw, str) and url_raw
+                        ):
+                            zc_gateway_token = token_raw
+                            zc_gateway_url = url_raw
+                            emit("configure", "Pairing token captured")
+                            break
+            except Exception as exc:
+                logger.warning(
+                    "Failed to extract zeroclaw gateway facts: %s",
+                    exc,
+                    exc_info=True,
+                )
+
+            if not zc_gateway_token or not zc_gateway_url:
+                # The playbook succeeded but the token did not surface in
+                # the fact cache. Fail fast — without a bearer token, the
+                # later `clm chat` call has nothing to authenticate with
+                # and would dead-end at the gateway.
+                return (
+                    False,
+                    "Configure playbook succeeded but the pairing token "
+                    "was not captured. Re-run `clm agent configure "
+                    f"{agent_key}` and check daemon logs at "
+                    f"`journalctl --unit zeroclaw-{agent_key}` for the "
+                    "pairing handshake.",
+                )
+
+            # Surface to the updater via config_data so the gateway block
+            # round-trips into hosts.json on the same write that persists
+            # everything else from this configure call.
+            existing_gateway = config_data.get("gateway")
+            if not isinstance(existing_gateway, dict):
+                existing_gateway = {}
+            existing_gateway = dict(existing_gateway)
+            existing_gateway["auth"] = zc_gateway_token
+            existing_gateway["url"] = zc_gateway_url
+            config_data["gateway"] = existing_gateway
 
         # B2: Only update hosts.json after Ansible succeeds
         emit("configure", "Saving configuration to hosts.json...")
