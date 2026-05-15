@@ -1,13 +1,203 @@
 ---
 name: itx:execute
 description: Execute the plan for an issue (parent or subtask)
-argument-hint: "<issue-number> [in a subtree|--worktree]"
+argument-hint: "[orchestrate] <issue-number> [in a subtree|--worktree]"
 ---
 name: itx:execute
 
 # Issue Execution
 
 Execute the implementation plan for a GitHub issue.
+
+## Orchestrate Mode
+
+Triggered by `orchestrate` as the **first token** in arguments
+(e.g. `/itx:execute orchestrate 112`). Use when the issue is a **parent
+with linked subtasks** and you want a hands-off, stacked-PR pipeline
+across all subtasks.
+
+### Preconditions
+
+- Parent issue exists and has sub-issues linked (via GitHub
+  `addSubIssue`). Detect via:
+  ```bash
+  gh issue view <parent> --json title,body,labels && \
+  gh api graphql -f query='query($owner: String!, $repo: String!, $num: Int!) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $num) {
+        subIssues(first: 50) { nodes { number title state } }
+      }
+    }
+  }' -f owner="$OWNER" -f repo="$REPO" -F num=<parent>
+  ```
+- `tmux` available on the host. If not, fail with a clear message —
+  orchestrate mode requires tmux.
+- `.claude/itx-config.json` `mcp.review_enabled: true`. If review is
+  not enabled, fail — orchestrate mode requires ATX to gate handoffs.
+- A plan file exists at `.itx/<parent>/00_PLAN.md` (created by
+  `/itx:plan-create`). Refuse to start otherwise.
+
+### Orchestration contract
+
+The orchestrator (the claude session that runs orchestrate mode) does
+**only these things**:
+
+1. Creates worktrees + branches + tmux windows for each subtask.
+2. Spawns a child claude session per subtask via
+   `claude --dangerously-skip-permissions '/itx:execute <N>'` in the
+   subtask's worktree.
+3. Polls subtask PR state every ~5 minutes.
+4. When a subtask's PR appears (signal that ATX cleared inside the
+   child), spawns the **next** subtask with the correct stacked base.
+5. Escalates to the user when a child reports it is stuck after 3 ATX
+   iterations without clearing Rating > 3/5.
+
+The orchestrator does **NOT**:
+
+- Touch source code.
+- Run tests / lint directly.
+- Merge PRs. Merging is the user's decision.
+- Bypass ATX or use `--no-verify`.
+- Spawn all subtask windows up front. Windows are created **on demand**
+  when the predecessor's PR is open with clean ATX.
+
+### Stacked PR layout
+
+Given subtasks A, B, C, D (in dependency order from sub-issue
+metadata), the orchestrator opens each child's PR against the
+**predecessor's branch**, not main:
+
+| Sub | Branch | PR base |
+|---|---|---|
+| A | `issue-<A>-<slug>` | `main` |
+| B | `issue-<B>-<slug>` | `issue-<A>-<slug>` |
+| C | `issue-<C>-<slug>` | `issue-<B>-<slug>` |
+| D | `issue-<D>-<slug>` | `issue-<C>-<slug>` |
+
+As predecessors merge, GitHub auto-updates downstream PR bases to main.
+
+### tmux layout
+
+- Session name: `itx/<parent>` (e.g. `itx/112`).
+- One window per subtask, named `subtask-<letter>` or
+  `issue-<N>` if subtasks have no obvious ordering letter.
+- Created on demand. User attaches with `tmux attach -t itx/<parent>`.
+
+### Step-by-step
+
+1. **Parse args.** Extract `orchestrate` token + parent issue number.
+   Fall through to regular execution mode if `orchestrate` absent.
+
+2. **Verify preconditions** (above). On failure, exit with a clear
+   message citing the missing precondition.
+
+3. **Enumerate subtasks.** Order by sub-issue number (creation order).
+   Treat order as dependency order unless the plan file specifies
+   otherwise.
+
+4. **Create tmux session:**
+   ```bash
+   tmux has-session -t "itx/${PARENT}" 2>/dev/null || \
+     tmux new-session -d -s "itx/${PARENT}"
+   ```
+
+5. **Spawn subtask A:**
+   ```bash
+   REPO_NAME=$(basename $(git rev-parse --show-toplevel))
+   REPO_PARENT=$(dirname $(git rev-parse --show-toplevel))
+   WORKTREE_A="${REPO_PARENT}/${REPO_NAME}-issue-${A_NUM}"
+   BRANCH_A="issue-${A_NUM}-<slug>"
+
+   git worktree add "$WORKTREE_A" -b "$BRANCH_A" main
+
+   tmux new-window -t "itx/${PARENT}" -n "subtask-A" -c "$WORKTREE_A"
+   tmux send-keys -t "itx/${PARENT}:subtask-A" \
+     "claude --dangerously-skip-permissions '/itx:execute ${A_NUM}'" Enter
+   ```
+
+6. **Poll predecessor PR state every 5 minutes:**
+   ```bash
+   gh pr list --repo "$OWNER/$REPO" --head "$BRANCH_A" \
+     --json number,state,reviewDecision,body --jq '.[0]'
+   ```
+   The child claude opens its PR **only after** its internal ATX loop
+   reaches Rating > 3/5 with no blockers. PR existence ⇒ ATX cleared.
+
+   **Do not poll faster than 5 minutes.** ATX iterations take minutes;
+   faster polling burns cache without changing outcomes.
+
+7. **On predecessor PR open, spawn next subtask:**
+   - Create worktree at `${REPO_PARENT}/${REPO_NAME}-issue-${NEXT_NUM}`.
+   - Branch from the predecessor's branch (not main).
+   - Create tmux window, run child claude.
+   - Override the child's default PR base by passing the predecessor's
+     branch name in the prompt:
+     ```bash
+     claude --dangerously-skip-permissions \
+       "/itx:execute ${NEXT_NUM} --pr-base=${PREV_BRANCH}"
+     ```
+     (Child sessions in standard mode must honor `--pr-base` — see
+     "PR base override" below.)
+
+8. **Repeat** until all subtasks have open PRs.
+
+9. **Final state.** Orchestrator reports a summary table with each
+   subtask's PR URL, ATX rating, and base branch. Then stands down.
+   Merging is the user's decision; merging happens bottom-up.
+
+### Escalation: stuck child
+
+A child session that fails to clear Rating > 3/5 after 3 ATX iterations
+writes a marker comment on its own PR (or its issue if no PR exists
+yet) with body starting `[ITX-STUCK]` and pauses.
+
+The orchestrator's polling loop also matches `[ITX-STUCK]` comments on
+the predecessor's issue. On detection:
+
+1. Halt the spawn pipeline (do not start the next subtask).
+2. Surface the blockage to the user with: the subtask number, the ATX
+   feedback summary, and a recommended action.
+3. Wait for user direction (extend iterations, downgrade scope,
+   abandon, or manual takeover).
+
+### PR base override (child contract)
+
+When a child receives `--pr-base=<branch>`, it MUST:
+
+- Open its PR against that branch, not `main`.
+- Include `Stacked on top of <branch>` in the PR body so reviewers know
+  the dependency chain.
+
+If the child's mode does not support `--pr-base`, the orchestrator
+falls back to opening the PR itself after the child finishes:
+
+```bash
+gh pr edit <pr-num> --base "$PREV_BRANCH"
+```
+
+### Failure modes
+
+- **No subtasks found**: fail with "Issue #N has no linked sub-issues.
+  Use `/itx:execute <N>` (without orchestrate) for direct execution."
+- **Subtask already has merged PR**: skip and advance to next.
+- **Subtask already has open PR**: skip the spawn step; treat as
+  "ATX-cleared, advance to next".
+- **Worktree already exists**: re-use if branch matches expected name;
+  fail otherwise (manual cleanup required).
+- **tmux session orphaned**: re-use if exists; do not create duplicate.
+
+### When to use orchestrate mode
+
+- Parent issue with 2+ linked subtasks where order matters.
+- You want hands-off execution across the whole chain.
+- ATX is enabled and tmux is available.
+
+### When NOT to use orchestrate mode
+
+- Single-issue (no subtasks) — use regular mode.
+- ATX disabled in `.claude/itx-config.json` — gating signal missing.
+- You want manual control between every subtask — use regular mode
+  with explicit handoffs.
 
 ## Worktree Mode (Recommended for Parallel Execution)
 
