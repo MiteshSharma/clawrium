@@ -1893,3 +1893,112 @@ class TestZeroclawDispatch:
         # Sanity-check: at least one allowed personality file appears in the
         # error listing so an operator can see what IS writable.
         assert "SOUL.md" in err
+
+
+# ----- ATX iter 5 W1: openclaw allowlist negative-path coverage ------------
+
+
+class TestOpenclawWriteAllowlist:
+    """W1 (iter 5): Python-side allowlist for openclaw was added in iter 4
+    so the playbook + Python defenses are symmetric. These tests pin the
+    negative path so a future PR that drops 'openclaw' from
+    _MEMORY_WRITE_ALLOWED_FILES fails CI rather than silently reverting
+    to permissive mode."""
+
+    @pytest.mark.parametrize(
+        "bad_filename",
+        ["BOOTSTRAP.md", "CONFIG.md", "RANDOM.txt", "AGENTS.md"],
+    )
+    def test_openclaw_rejects_non_allowlisted_filename(self, bad_filename: str):
+        host = _host(
+            {"opc-work": {"type": "openclaw", "agent_name": "opc-work"}}
+        )
+        with patch("clawrium.core.memory.get_host", return_value=host):
+            ok, err = write_memory_file(
+                "192.168.1.100", "opc-work", bad_filename, "x"
+            )
+        assert ok is False
+        assert err is not None
+        assert "openclaw memory accepts only" in err
+        # The daily-notes suffix is part of the user-facing contract so
+        # operators understand the memory/<file> bypass exists.
+        assert "(or memory/<file>)" in err
+
+
+# ----- ATX iter 5 W2: zeroclaw daily-note write path -----------------------
+
+
+class TestZeroclawDailyNoteWrite:
+    """W2 (iter 5): the _MEMORY_WRITE_DAILY_NOTES bypass for zeroclaw is
+    exercised only for openclaw in TestWriteMemoryFile.
+    test_openclaw_does_not_apply_hermes_allowlist. Pin the zeroclaw daily-
+    note path explicitly so dropping 'zeroclaw' from the daily-notes set
+    fails CI."""
+
+    def test_zeroclaw_accepts_memory_daily_note(self, tmp_path: Path):
+        host = _host_with_zeroclaw()
+        playbook_dir = tmp_path / "zeroclaw-pb"
+        playbook_dir.mkdir()
+        (playbook_dir / "memory_write.yaml").write_text("---\n")
+        ssh_key = tmp_path / "id_rsa"
+        ssh_key.write_text("key")
+        result = _runner_result("successful", [])
+
+        with patch(
+            "clawrium.core.memory._resolve_agent_with_memory",
+            return_value=(host, "zc-work", "zeroclaw"),
+        ), patch(
+            "clawrium.core.memory._get_playbook_dir",
+            return_value=playbook_dir,
+        ), patch(
+            "clawrium.core.memory.core_keys.get_host_private_key",
+            return_value=ssh_key,
+        ), patch(
+            "clawrium.core.memory.ansible_runner.run", return_value=result
+        ):
+            ok, err = write_memory_file(
+                "192.168.1.36", "zc-work", "memory/2026-05-15.md", "todo"
+            )
+        assert ok is True, f"zeroclaw must accept daily-note path: {err}"
+        assert err is None
+
+
+# ----- ATX iter 5 S3: MEMORY_TOP_LEVEL_FILES not in __all__ ----------------
+
+
+class TestPublicAPIShape:
+    def test_memory_top_level_files_excluded_from_dunder_all(self):
+        # #358 changed MEMORY_TOP_LEVEL_FILES from tuple to dict; removing
+        # it from __all__ surfaces the shape change to any future external
+        # consumer rather than silently breaking iteration / membership.
+        from clawrium.core import memory as memmod
+
+        assert "MEMORY_TOP_LEVEL_FILES" not in memmod.__all__
+
+
+# ----- ATX iter 5 S4: cross-claw constant parity ---------------------------
+
+
+class TestConstantParity:
+    """S4 (iter 5): the info-playbook file set (MEMORY_TOP_LEVEL_FILES)
+    and the write allowlist (_MEMORY_WRITE_ALLOWED_FILES) must agree for
+    claws that appear in both. A divergence would let memory_info show a
+    file the write path rejects (or vice versa) — confusing for
+    operators."""
+
+    @pytest.mark.parametrize("claw_type", ["openclaw", "hermes", "zeroclaw"])
+    def test_top_level_and_write_allowlist_agree(self, claw_type: str):
+        from clawrium.core.memory import (
+            MEMORY_TOP_LEVEL_FILES,
+            _MEMORY_WRITE_ALLOWED_FILES,
+        )
+
+        info = MEMORY_TOP_LEVEL_FILES.get(claw_type)
+        write = _MEMORY_WRITE_ALLOWED_FILES.get(claw_type)
+        assert info is not None, f"missing MEMORY_TOP_LEVEL_FILES for {claw_type}"
+        assert write is not None, f"missing _MEMORY_WRITE_ALLOWED_FILES for {claw_type}"
+        assert set(info) == set(write), (
+            f"{claw_type}: memory_info file set {set(info)} disagrees with "
+            f"write allowlist {set(write)} — operators will see asymmetric "
+            f"behavior between `memory show` and `memory write`."
+        )

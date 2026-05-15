@@ -432,3 +432,32 @@ def test_zeroclaw_configure_renders_workspace_with_force_no():
         "MEMORY.md",
         "HEARTBEAT.md",
     }
+
+
+# ----- ATX iter 5 W3: no_log on memory_delete across all 3 claws -----------
+
+
+def test_memory_delete_no_log_on_delete_task_across_all_claws():
+    """ATX iter 5 W3: every claw's memory_delete playbook must mark the
+    file-removal task no_log: true so an Ansible run at -vvv does not
+    echo agent_name + per-file path back into runner artifacts. Pin the
+    invariant structurally across all 3 memory-capable claws."""
+    from importlib.resources import files
+    import yaml
+
+    for claw_type in ("zeroclaw", "openclaw", "hermes"):
+        pkg = files(f"clawrium.platform.registry.{claw_type}")
+        data = yaml.safe_load((pkg / "playbooks" / "memory_delete.yaml").read_text())
+        tasks = data[0]["tasks"]
+        delete_tasks = [
+            t for t in tasks
+            if isinstance(t.get("ansible.builtin.file"), dict)
+            and t["ansible.builtin.file"].get("state") == "absent"
+        ]
+        assert delete_tasks, f"{claw_type}/memory_delete.yaml: no delete task found"
+        for task in delete_tasks:
+            assert task.get("no_log") is True, (
+                f"{claw_type}/memory_delete.yaml task '{task.get('name')}' "
+                f"must have no_log: true so secret-bearing paths are not "
+                f"echoed in ansible-runner artifacts."
+            )
