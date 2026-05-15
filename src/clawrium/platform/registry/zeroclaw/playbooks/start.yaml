@@ -30,16 +30,14 @@
 
     - name: Verify process is running
       ansible.builtin.command:
-        cmd: pgrep -u {{ agent_name }} zeroclaw
-      register: process_check
-      changed_when: false
-      failed_when: process_check.rc != 0
-
-    - name: Get process info
-      ansible.builtin.command:
-        cmd: pgrep -u {{ agent_name }} zeroclaw
+        argv:
+          - pgrep
+          - -u
+          - "{{ agent_name }}"
+          - zeroclaw
       register: pid_result
       changed_when: false
+      failed_when: pid_result.rc != 0
 
     - name: Display success message
       ansible.builtin.debug:

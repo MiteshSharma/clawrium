@@ -27,7 +27,11 @@
 
     - name: Verify process is stopped
       ansible.builtin.command:
-        cmd: pgrep -u {{ agent_name }} zeroclaw
+        argv:
+          - pgrep
+          - -u
+          - "{{ agent_name }}"
+          - zeroclaw
       register: process_check
       changed_when: false
       failed_when: process_check.rc == 0

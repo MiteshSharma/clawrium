@@ -1431,8 +1431,12 @@ class TestProcessNameByAgentType:
         module_args = first_call.kwargs.get("module_args", "")
         assert "pgrep -u wolf-i openclaw" == module_args
 
-    def test_zeroclaw_uses_node_process_name(self):
-        """zeroclaw agent type uses 'pgrep -u {user} node'."""
+    def test_zeroclaw_pgrep_returns_stopped_when_no_process(self):
+        """zeroclaw pgrep with `-f "zeroclaw daemon"` returning rc=1 surfaces as STOPPED.
+
+        Negative-path counterpart to test_zeroclaw_uses_zeroclaw_daemon_process_name;
+        mirrors the hermes pattern at test_hermes_pgrep_returns_stopped_when_no_process.
+        """
         host = {
             "hostname": "192.168.1.100",
             "port": 22,
@@ -1442,7 +1446,44 @@ class TestProcessNameByAgentType:
                 "my-zeroclaw": {
                     "type": "zeroclaw",
                     "agent_name": "zc-edge",
-                    "version": "0.1.0",
+                    "version": "0.7.5",
+                    "status": "installed",
+                }
+            },
+        }
+
+        mock_runner = MagicMock()
+        mock_runner.status = "failed"
+        mock_runner.events = [
+            {"event": "runner_on_failed", "event_data": {"res": {"rc": 1}}}
+        ]
+
+        with patch("clawrium.core.health.get_host_private_key", return_value="/fake/key"):
+            with patch("clawrium.core.health.ansible_runner.run", return_value=mock_runner) as mock_run:
+                with patch("clawrium.core.health.get_required_secrets", return_value=[]):
+                    result = check_claw_health("my-zeroclaw", host)
+
+        module_args = mock_run.call_args_list[0].kwargs.get("module_args", "")
+        assert module_args == 'pgrep -u zc-edge -f "zeroclaw daemon"'
+        assert result["process_running"] is False
+        assert result["status"] in (ClawStatus.STOPPED, ClawStatus.PENDING_ONBOARD)
+
+    def test_zeroclaw_uses_zeroclaw_daemon_process_name(self):
+        """zeroclaw agent type uses 'pgrep -u {user} -f "zeroclaw daemon"'.
+
+        Previously zeroclaw fell through to the catch-all `pgrep node`, which
+        meant clm ps reported zeroclaw as STOPPED even when the daemon was
+        healthy. Fixed in ATX review of PR #361 (W1)."""
+        host = {
+            "hostname": "192.168.1.100",
+            "port": 22,
+            "user": "xclm",
+            "key_id": "testhost",
+            "agents": {
+                "my-zeroclaw": {
+                    "type": "zeroclaw",
+                    "agent_name": "zc-edge",
+                    "version": "0.7.5",
                 }
             },
         }
@@ -1456,12 +1497,12 @@ class TestProcessNameByAgentType:
                 with patch("clawrium.core.health.get_required_secrets", return_value=[]):
                     check_claw_health("my-zeroclaw", host)
 
-        # Verify first call (pgrep) uses 'node' process name
+        # Verify first call (pgrep) uses -f "zeroclaw daemon"
         # Second call is for system info (cpu/memory)
         assert len(mock_run.call_args_list) >= 1
         first_call = mock_run.call_args_list[0]
         module_args = first_call.kwargs.get("module_args", "")
-        assert "pgrep -u zc-edge node" == module_args
+        assert 'pgrep -u zc-edge -f "zeroclaw daemon"' == module_args
 
     def test_missing_type_defaults_to_node(self):
         """Agent without type field defaults to 'node' process name."""

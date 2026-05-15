@@ -39,17 +39,6 @@
         state: absent
       when: bin_dir.stat.exists
 
-    - name: Check if workspace directory exists
-      ansible.builtin.stat:
-        path: "/home/{{ agent_name }}/workspace"
-      register: workspace_dir
-
-    - name: Remove workspace directory
-      ansible.builtin.file:
-        path: "/home/{{ agent_name }}/workspace"
-        state: absent
-      when: workspace_dir.stat.exists
-
     - name: Check if config directory exists
       ansible.builtin.stat:
         path: "/home/{{ agent_name }}/.zeroclaw"
