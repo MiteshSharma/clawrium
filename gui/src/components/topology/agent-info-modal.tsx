@@ -26,6 +26,9 @@ export function AgentInfoModal({ agent, hostAlias, onClose }: AgentInfoModalProp
     { label: "Uptime", value: agent.uptime || "—" },
     { label: "Provider", value: agent.provider || "—" },
     { label: "Provider Type", value: agent.provider_type || "—" },
+    ...(agent.provider_endpoint
+      ? [{ label: "Provider Endpoint", value: agent.provider_endpoint }]
+      : []),
   ];
 
   return (
@@ -42,7 +45,9 @@ export function AgentInfoModal({ agent, hostAlias, onClose }: AgentInfoModalProp
             variant="primary"
             size="sm"
             onClick={() => {
-              router.push(`/agents?key=${agent.agent_key}`);
+              router.push(
+                `/agents?key=${encodeURIComponent(agent.agent_key)}`
+              );
             }}
           >
             View Details →
@@ -58,11 +63,14 @@ export function AgentInfoModal({ agent, hostAlias, onClose }: AgentInfoModalProp
               <span className="flex items-center gap-1.5">
                 <StatusDot status={agent.status} size="sm" />
                 <span className="text-xs font-medium text-primary-text capitalize">
-                  {agent.status.replace("_", " ")}
+                  {agent.status.replace(/_/g, " ")}
                 </span>
               </span>
             ) : (
-              <span className="text-xs font-medium text-primary-text">
+              <span
+                className="text-xs font-medium text-primary-text truncate max-w-[220px]"
+                title={typeof value === "string" ? value : undefined}
+              >
                 {value}
               </span>
             )}
