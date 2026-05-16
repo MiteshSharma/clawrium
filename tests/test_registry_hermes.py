@@ -787,12 +787,19 @@ def test_hermes_install_apt_failure_raises(monkeypatch, tmp_path):
         config = Config()
         events = []
 
-    monkeypatch.setattr(
-        ansible_runner, "run", Mock(side_effect=[BaseResult(), AptFailedResult()])
-    )
+    # run() is called twice: base playbook (success) then claw install.yaml
+    # (apt fails). The match= string below matches every claw-side failure,
+    # since the error is status-driven (see core/install.py:677) — this is
+    # intentional and matches test_hermes_install_checksum_failure_raises.
+    mock_run = Mock(side_effect=[BaseResult(), AptFailedResult()])
+    monkeypatch.setattr(ansible_runner, "run", mock_run)
 
     with pytest.raises(InstallationError, match="Agent playbook failed"):
         run_installation("hermes", "test-host", name="hermes-test")
+
+    # Guard against a future short-circuit that skips the claw playbook
+    # entirely — the apt failure can only be reached if both calls fire.
+    assert mock_run.call_count == 2
 
 
 # ---------------------------------------------------------------------------
