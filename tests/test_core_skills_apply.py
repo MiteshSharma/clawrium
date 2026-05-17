@@ -2,7 +2,8 @@
 
 Mocks ansible-runner and host resolution so the tests exercise the
 materialization + dispatch pipeline without touching SSH or a real
-inventory. Phase 2 only wires hermes; openclaw/zeroclaw should raise
+inventory. All three native claws (hermes/openclaw/zeroclaw) are wired
+as of Phase 3 (#382); unknown claw types still raise
 `SkillApplyNotSupported`.
 """
 
@@ -173,18 +174,6 @@ def test_apply_state_ambiguous_agent_name(monkeypatch):
     monkeypatch.setattr(skills_apply, "get_agent_by_name", raise_value_error)
     with pytest.raises(AgentNotFoundError, match="ambiguous"):
         apply_state("tdd-hermes")
-
-
-def test_apply_state_openclaw_not_supported(monkeypatch):
-    _patch_runtime(monkeypatch, agent_type="openclaw")
-    # Anchored to the parametrized claw type so a future reword that
-    # drops `openclaw` from the message (or a third raise site added
-    # elsewhere with the same generic phrase) would still surface as
-    # a real test failure.
-    with pytest.raises(
-        SkillApplyNotSupported, match=r"not yet supported for openclaw"
-    ):
-        apply_state("tdd-openclaw")
 
 
 def test_apply_state_unknown_agent_type(monkeypatch):
@@ -604,6 +593,137 @@ def test_apply_state_drift_recovery_reapplies_same_state(monkeypatch):
 
     assert runner.run.call_count == 2
     # Both invocations carry the same desired list.
+    for call in runner.run.call_args_list:
+        assert call.kwargs["inventory"]["all"]["vars"]["desired_skill_names"] == [
+            "tdd"
+        ]
+
+
+# ---------------------------- openclaw dispatch (Phase 3) -------------------
+
+
+def test_apply_state_openclaw_empty_state_runs_playbook(monkeypatch):
+    runner = _patch_runtime(monkeypatch, agent_type="openclaw")
+    result = apply_state("tdd-openclaw")
+    assert result.agent_type == "openclaw"
+    assert result.applied_skills == []
+    runner.run.assert_called_once()
+    _, kwargs = runner.run.call_args
+    extravars = kwargs["inventory"]["all"]["vars"]
+    assert extravars["agent_type"] == "openclaw"
+    assert extravars["desired_skill_names"] == []
+    # The dispatched playbook path must end at the openclaw registry's
+    # skills_apply.yaml — not hermes', not zeroclaw's.
+    playbook_arg = kwargs["playbook"]
+    assert "/openclaw/playbooks/skills_apply.yaml" in playbook_arg
+
+
+def test_apply_state_openclaw_stages_and_applies_clawrium_tdd(monkeypatch):
+    write_state("tdd-openclaw", ["clawrium/tdd"])
+    runner = _patch_runtime(monkeypatch, agent_type="openclaw")
+
+    result = apply_state("tdd-openclaw")
+
+    assert result.applied_skills == ["clawrium/tdd"]
+    _, kwargs = runner.run.call_args
+    extravars = kwargs["inventory"]["all"]["vars"]
+    assert extravars["agent_type"] == "openclaw"
+    assert extravars["desired_skill_names"] == ["tdd"]
+    staging_dir = Path(extravars["staging_dir"])
+    # apply_state cleans staging in `finally`; the dir should NOT exist
+    # by the time the call returns.
+    assert not staging_dir.exists()
+
+
+def test_apply_state_openclaw_materialized_skill_md_has_no_hermes_overrides(
+    monkeypatch,
+):
+    """When materializing for openclaw, the per-claw override block under
+    `native.hermes` in `_meta.yaml` must NOT bleed into the openclaw
+    frontmatter — only `native.openclaw` (which is `{}` for clawrium/tdd)
+    is lifted. This guards against the materializer applying the wrong
+    claw's overrides."""
+    write_state("tdd-openclaw", ["clawrium/tdd"])
+
+    captured = {}
+
+    def capture_and_succeed(**kwargs):
+        staging = Path(kwargs["inventory"]["all"]["vars"]["staging_dir"])
+        skill_md = staging / "tdd" / "SKILL.md"
+        captured["text"] = skill_md.read_text()
+        return _runner_result()
+
+    runner = _patch_runtime(monkeypatch, agent_type="openclaw")
+    runner.run.side_effect = capture_and_succeed
+
+    apply_state("tdd-openclaw")
+
+    text = captured["text"]
+    frontmatter_block, _ = text.split("\n---\n", 1)
+    frontmatter = yaml.safe_load(frontmatter_block[len("---\n"):])
+    assert frontmatter["name"] == "tdd"
+    # Hermes-specific tags must not be present in the openclaw rendering.
+    assert "metadata" not in frontmatter or "hermes" not in (
+        frontmatter.get("metadata") or {}
+    )
+
+
+# ---------------------------- zeroclaw dispatch (Phase 3) -------------------
+
+
+def test_apply_state_zeroclaw_empty_state_runs_playbook(monkeypatch):
+    runner = _patch_runtime(monkeypatch, agent_type="zeroclaw")
+    result = apply_state("tdd-zeroclaw")
+    assert result.agent_type == "zeroclaw"
+    assert result.applied_skills == []
+    runner.run.assert_called_once()
+    _, kwargs = runner.run.call_args
+    extravars = kwargs["inventory"]["all"]["vars"]
+    assert extravars["agent_type"] == "zeroclaw"
+    assert extravars["desired_skill_names"] == []
+    playbook_arg = kwargs["playbook"]
+    assert "/zeroclaw/playbooks/skills_apply.yaml" in playbook_arg
+
+
+def test_apply_state_zeroclaw_stages_and_applies_clawrium_tdd(monkeypatch):
+    write_state("tdd-zeroclaw", ["clawrium/tdd"])
+    runner = _patch_runtime(monkeypatch, agent_type="zeroclaw")
+
+    result = apply_state("tdd-zeroclaw")
+
+    assert result.applied_skills == ["clawrium/tdd"]
+    _, kwargs = runner.run.call_args
+    extravars = kwargs["inventory"]["all"]["vars"]
+    # Source-dirname == slug per Phase 0 contract — the playbook will
+    # stage under `<remote-staging>/tdd/` and pass that path to
+    # `zeroclaw skills install`.
+    assert extravars["desired_skill_names"] == ["tdd"]
+
+
+def test_apply_state_zeroclaw_dispatches_to_zeroclaw_playbook(monkeypatch):
+    """Regression guard against a future refactor that accidentally
+    points all three claws at the same playbook — we want the zeroclaw
+    invocation routed to the zeroclaw `skills_apply.yaml` so the native
+    `zeroclaw skills install` wrap (not raw file copy) runs."""
+    runner = _patch_runtime(monkeypatch, agent_type="zeroclaw")
+    apply_state("tdd-zeroclaw")
+    _, kwargs = runner.run.call_args
+    assert "/zeroclaw/" in kwargs["playbook"]
+    assert "/hermes/" not in kwargs["playbook"]
+    assert "/openclaw/" not in kwargs["playbook"]
+
+
+def test_apply_state_drift_recovery_zeroclaw(monkeypatch):
+    """Same drift-recovery contract as hermes: re-running install on a
+    state that's already set must re-invoke the playbook so the
+    playbook's idempotent install-if-missing branch runs."""
+    write_state("tdd-zeroclaw", ["clawrium/tdd"])
+    runner = _patch_runtime(monkeypatch, agent_type="zeroclaw")
+
+    apply_state("tdd-zeroclaw")
+    apply_state("tdd-zeroclaw")
+
+    assert runner.run.call_count == 2
     for call in runner.run.call_args_list:
         assert call.kwargs["inventory"]["all"]["vars"]["desired_skill_names"] == [
             "tdd"

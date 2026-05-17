@@ -17,9 +17,11 @@ is intentionally a tight orchestrator:
      clawrium-owned subtree on the host, and idempotency.
   6. Clean up the staging dir in a `finally` block.
 
-Phase 2 only wires up hermes. Other claw types raise
-`SkillApplyNotSupported` — surfaced as a clear CLI message rather than a
-traceback. Phases 3+ extend the dispatch table.
+All three native claw types are wired as of Phase 3 (#382). The
+`_APPLY_PLAYBOOK_BY_CLAW` dispatch maps each `agent_type` to its
+`skills_apply.yaml`; an `agent_type` outside `NATIVE_REGISTRIES` raises
+`SkillApplyNotSupported` so the CLI surfaces a clear "unsupported claw
+type" message rather than a missing-playbook traceback.
 """
 
 from __future__ import annotations
@@ -74,22 +76,24 @@ class SkillApplyError(SkillError):
 
 
 class SkillApplyNotSupported(SkillError):
-    """Raised when the resolved agent type has no skills_apply playbook
-    wired yet. Phase 2 wires hermes only; openclaw + zeroclaw raise this
-    so the CLI surfaces a clear "not yet supported" message instead of
-    silently no-op'ing or breaking on a missing playbook path."""
+    """Raised when the resolved agent type is outside the set of claws
+    with a `skills_apply.yaml` playbook wired into the dispatch table.
+    All three native claws (hermes/openclaw/zeroclaw) are wired as of
+    Phase 3 (#382); this remains as a defensive guard for unknown
+    agent types surfaced by future host records."""
 
 
 class AgentNotFoundError(SkillError):
     """Raised when `agent_name` does not resolve to an installed agent."""
 
 
-# Map of agent_type → per-claw skills_apply playbook name. Phase 2 only
-# wires hermes; later phases add the other two entries. Centralizing the
-# dispatch table here avoids scattering claw-type literals through the
-# CLI layer.
+# Map of agent_type → per-claw skills_apply playbook name. All three
+# native claws are wired as of Phase 3 (#382). Centralizing the dispatch
+# table here avoids scattering claw-type literals through the CLI layer.
 _APPLY_PLAYBOOK_BY_CLAW: dict[str, str] = {
     "hermes": "skills_apply.yaml",
+    "openclaw": "skills_apply.yaml",
+    "zeroclaw": "skills_apply.yaml",
 }
 
 # Same agent_name pattern enforced by every playbook + lifecycle.
