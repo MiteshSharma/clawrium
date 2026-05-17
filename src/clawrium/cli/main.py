@@ -22,6 +22,7 @@ from clawrium.cli.chat import chat as chat_command
 from clawrium.cli.host import host_app
 from clawrium.cli.integration import integration_app
 from clawrium.cli.provider import provider_app
+from clawrium.cli.skill import skill_app
 from clawrium.cli.status import status as status_command
 
 __all__ = ["app"]
@@ -167,6 +168,9 @@ app.add_typer(provider_app, name="provider")
 
 # Register integration subcommands (external service integrations)
 app.add_typer(integration_app, name="integration")
+
+# Register skill subcommands (catalog browsing)
+app.add_typer(skill_app, name="skill")
 
 
 if __name__ == "__main__":
