@@ -381,24 +381,28 @@ def test_install_rollback_path_actually_runs(monkeypatch):
         lambda *a, **kw: (_ for _ in ()).throw(SkillApplyError("ssh down")),
     )
 
-    write_calls: list[list[str]] = []
+    write_calls: list[tuple[str, list[str]]] = []
     real_write = cli_agent_skill.write_state
 
     def spying_write(agent_name, refs):
-        write_calls.append([str(r) for r in refs])
+        write_calls.append((agent_name, [str(r) for r in refs]))
         return real_write(agent_name, refs)
 
     monkeypatch.setattr(cli_agent_skill, "write_state", spying_write)
 
     runner.invoke(agent_skill_app, ["install", "tdd-hermes", "clawrium/tdd"])
 
-    # The rollback path explicitly calls `write_state(agent, prior_state)`
-    # with the empty list (prior_state was empty at the start of the
-    # test). add_skill itself also calls write_state, so we expect
-    # at least two write_state invocations.
-    assert any(call == [] for call in write_calls), (
-        f"rollback write_state(prior_state=[]) never invoked: {write_calls}"
-    )
+    # The rollback path explicitly calls `write_state(agent_name,
+    # prior_state)` with the empty list. `add_skill` itself goes
+    # through `skills_state.write_state` (its module-local
+    # reference), bypassing this spy — so we expect exactly *one*
+    # call here, the rollback. Asserting on the agent_name as well
+    # would catch a hypothetical bug that rolled back the wrong
+    # agent's state file.
+    assert any(
+        agent == "tdd-hermes" and refs == []
+        for agent, refs in write_calls
+    ), f"rollback write_state('tdd-hermes', []) never invoked: {write_calls}"
 
 
 def test_remove_rolls_back_state_on_apply_failure(monkeypatch):
@@ -473,6 +477,33 @@ def test_install_rollback_failure_surfaces_warning_to_user(monkeypatch):
     assert "ssh down" in result.output
     assert "rollback failed" in result.output.lower()
     # Hint should point at the verification command.
+    assert "clm agent skill list" in result.output
+
+
+def test_remove_rollback_failure_surfaces_warning_to_user(monkeypatch):
+    """Symmetric coverage for the remove path: a `write_state` failure
+    during rollback after a failed `apply_state` must surface a yellow
+    Warning + verification hint to stderr, not silently log."""
+    write_state("tdd-hermes", ["clawrium/tdd"])
+    _stub_agent_resolution(monkeypatch)
+    monkeypatch.setattr(
+        cli_agent_skill,
+        "apply_state",
+        lambda *a, **kw: (_ for _ in ()).throw(SkillApplyError("ssh down")),
+    )
+
+    def flaky_write(_agent_name, _refs):
+        raise OSError("simulated rollback failure")
+
+    monkeypatch.setattr(cli_agent_skill, "write_state", flaky_write)
+
+    result = runner.invoke(
+        agent_skill_app, ["remove", "tdd-hermes", "clawrium/tdd"]
+    )
+
+    assert result.exit_code == 1
+    assert "ssh down" in result.output
+    assert "rollback failed" in result.output.lower()
     assert "clm agent skill list" in result.output
 
 

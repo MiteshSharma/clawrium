@@ -177,9 +177,13 @@ def test_apply_state_ambiguous_agent_name(monkeypatch):
 
 def test_apply_state_openclaw_not_supported(monkeypatch):
     _patch_runtime(monkeypatch, agent_type="openclaw")
-    # Tightened from the iter-1 `'not implemented yet|openclaw'` regex
-    # (the left arm was dead after B6 reworded the message).
-    with pytest.raises(SkillApplyNotSupported, match="not yet supported"):
+    # Anchored to the parametrized claw type so a future reword that
+    # drops `openclaw` from the message (or a third raise site added
+    # elsewhere with the same generic phrase) would still surface as
+    # a real test failure.
+    with pytest.raises(
+        SkillApplyNotSupported, match=r"not yet supported for openclaw"
+    ):
         apply_state("tdd-openclaw")
 
 
@@ -545,8 +549,6 @@ def test_stage_skills_cleans_tempdir_on_partial_failure(monkeypatch, tmp_path):
     write_state("tdd-hermes", ["clawrium/tdd"])
     _patch_runtime(monkeypatch)
 
-    real_render = skills_apply._render_skill_md
-
     def boom(_frontmatter, _body):
         # First skill raises; tempdir has already been created.
         raise OSError("simulated disk-full during render")
@@ -562,9 +564,6 @@ def test_stage_skills_cleans_tempdir_on_partial_failure(monkeypatch, tmp_path):
         assert leftovers == [], (
             f"_stage_skills leaked tempdir on partial failure: {leftovers}"
         )
-
-    # Restore so subsequent tests can call _render_skill_md normally.
-    monkeypatch.setattr(skills_apply, "_render_skill_md", real_render)
 
 
 def test_apply_state_staging_cleaned_when_log_dir_creation_fails(monkeypatch, tmp_path):
