@@ -18,7 +18,6 @@ Status mapping for ``SkillError`` subclasses:
 
 import asyncio
 import logging
-import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Path as FastAPIPath
@@ -59,50 +58,24 @@ _DETAIL_METADATA_KEYS: tuple[str, ...] = (
 # future skill that bundles a long appendix.
 _BODY_MAX_BYTES = 64 * 1024
 
-# Unicode control / bidi / zero-width / line-separator characters. A
-# SKILL.md or `_meta.yaml` field that embeds these can render visually
-# misleading content even after HTML escaping (the "Trojan Source"
-# class of attack) — React's text-node escaping passes Unicode bidi
-# chars through unchanged. Strip on the server side so the GUI never
+# Unicode bidi-override characters. A SKILL.md that embeds these can
+# render visually misleading content even after escaping (the "Trojan
+# Source" class of attack). Strip on the server side so the GUI never
 # has to think about it.
-#
-# Coverage matches the canonical sanitizer at
-# `clawrium.core.chat_hermes._ASSISTANT_TEXT_STRIP_RE` — same character
-# class, same `\\uXXXX` escape convention (no invisible chars in
-# source, grep-able, immune to editor auto-fixers). Preserves `\\n`
-# and `\\t` because SKILL.md is markdown content with legitimate
-# newlines and tab-indented code blocks.
-#
-# Adds U+061C (ALM — Arabic Letter Mark), which the canonical sanitizer
-# doesn't list but which is a true bidi-override codepoint flagged by
-# more recent Trojan Source advisories.
-_CONTROL_STRIP_RE = re.compile(
-    r"["
-    r"\x00-\x08\x0b-\x1f\x7f-\x9f"  # C0 (excl. \n, \t) + C1
-    r"\u061c"             # ALM - Arabic Letter Mark
-    r"\u200b-\u200f"     # ZWSP, ZWNJ, ZWJ, LRM, RLM
-    r"\u2028-\u2029"     # LINE / PARAGRAPH SEPARATOR
-    r"\u202a-\u202e"     # LRE, RLE, PDF, LRO, RLO
-    r"\u2060"             # WORD JOINER
-    r"\u2066-\u2069"     # LRI, RLI, FSI, PDI
-    r"\ufeff"             # ZWNBSP / BOM
-    r"]"
+_BIDI_OVERRIDE_CHARS = "".join(
+    [
+        "‪",  # LRE — Left-to-Right Embedding
+        "‫",  # RLE — Right-to-Left Embedding
+        "‬",  # PDF — Pop Directional Formatting
+        "‭",  # LRO — Left-to-Right Override
+        "‮",  # RLO — Right-to-Left Override
+        "⁦",  # LRI — Left-to-Right Isolate
+        "⁧",  # RLI — Right-to-Left Isolate
+        "⁨",  # FSI — First Strong Isolate
+        "⁩",  # PDI — Pop Directional Isolate
+    ]
 )
-
-
-def _strip_control(value: Any) -> Any:
-    """Strip ``_CONTROL_STRIP_RE`` codepoints from a value.
-
-    Strings are scrubbed; lists are scrubbed element-wise (recursively
-    handling string and nested-list children); other types pass
-    through unchanged. Keeps the metadata whitelist's type contract
-    intact — we never coerce numbers to strings or vice versa.
-    """
-    if isinstance(value, str):
-        return _CONTROL_STRIP_RE.sub("", value)
-    if isinstance(value, list):
-        return [_strip_control(item) for item in value]
-    return value
+_BIDI_TRANSLATION = {ord(c): None for c in _BIDI_OVERRIDE_CHARS}
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +117,11 @@ def _summarize(ref: SkillRef) -> dict[str, Any]:
 
     description = skill.metadata.get("description")
     if isinstance(description, str) and description.strip():
-        # Same Trojan-Source strip as the detail endpoint.
-        summary["description"] = _strip_control(" ".join(description.split()))
+        summary["description"] = " ".join(description.split())
 
     version = skill.metadata.get("version")
     if version is not None:
-        summary["version"] = _strip_control(str(version))
+        summary["version"] = str(version)
 
     return summary
 
@@ -175,18 +147,14 @@ def _detail(skill_ref: SkillRef) -> dict[str, Any]:
     # would return a partial-looking 200 to the GUI.
     validate_skill(skill)
 
-    # Strip Trojan-Source bidi / zero-width / line-separator chars from
-    # every user-authored string before it hits the wire. React's
-    # text-node escaping doesn't touch Unicode bidi marks, so a
-    # `description: "normal text<U+202E>tset laicifitra"` would render
-    # visually reversed in the modal without this. Same coverage as
-    # core/chat_hermes._ASSISTANT_TEXT_STRIP_RE.
     metadata = {
-        key: _strip_control(skill.metadata[key])
+        key: skill.metadata[key]
         for key in _DETAIL_METADATA_KEYS
         if key in skill.metadata and skill.metadata[key] not in (None, "", [], {})
     }
-    body = _strip_control(skill.body)
+    # Strip bidi-override chars before sizing/truncation so a malicious
+    # SKILL.md can't smuggle visual-deception sequences past the GUI.
+    body = skill.body.translate(_BIDI_TRANSLATION)
     if len(body.encode("utf-8")) > _BODY_MAX_BYTES:
         # Byte-bounded truncation. The marker line is plain text so a
         # naive consumer (e.g. curl piped to less) sees something

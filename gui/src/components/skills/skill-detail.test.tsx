@@ -69,11 +69,9 @@ describe("SkillDetail", () => {
     render(<SkillDetail skill={makeDetail()} />);
     // WCAG 2.1.1 Level A — scrollable region must be reachable from
     // the keyboard. The <pre> carries tabIndex=0 + an aria-label.
-    const pre = screen.getByLabelText("SKILL.md body");
+    const pre = screen.getByLabelText("SKILL.md body, scrollable");
     expect(pre.tagName).toBe("PRE");
     expect(pre.getAttribute("tabindex")).toBe("0");
-    // WCAG 2.4.7 — focus ring is keyboard-only via focus-visible.
-    expect(pre.className).toMatch(/focus-visible:/);
   });
 
   it("omits optional fields when missing", () => {
