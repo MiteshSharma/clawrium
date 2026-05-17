@@ -180,10 +180,13 @@ def apply_state(agent_name: str, *, timeout: int = 60) -> ApplyResult:
 
     # Both staging and log-dir creation live inside the `try` so the
     # `finally` cleanup runs even when one of them raises mid-flight.
-    # In particular, `_stage_skills` does `mkdtemp` *then* writes
-    # per-skill SKILL.md files; an OSError on `write_text` (disk full,
-    # permissions race) would otherwise leave the tempdir under
-    # ${clawrium_config}/staging/ with no reference to clean it up.
+    # `_stage_skills` does `mkdtemp` then writes per-skill SKILL.md
+    # files; `_make_log_dir` creates the log dir then does a
+    # post-creation path-safety check that can raise. If either creator
+    # raises after creating its dir, the only reference we have is the
+    # return value — so we must capture it before any subsequent failure
+    # point. Initialize to None so the `finally:` can None-guard cleanup.
+    # (Original B-new1 hardening; consolidated with iter 3.)
     staging_dir: Path | None = None
     log_dir: Path | None = None
     try:
@@ -202,8 +205,9 @@ def apply_state(agent_name: str, *, timeout: int = 60) -> ApplyResult:
     finally:
         # Staging dir is always cleaned up — it contains rendered
         # frontmatter only (no secrets) but lingering temp dirs are
-        # noise. May be None if `_stage_skills` raised before
-        # `mkdtemp` returned.
+        # noise. May be None if `_stage_skills` raised before `mkdtemp`
+        # returned. `_cleanup_runner_artifacts` is idempotent-safe so
+        # we call it whenever `log_dir` was created.
         if staging_dir is not None:
             shutil.rmtree(staging_dir, ignore_errors=True)
         if log_dir is not None:
@@ -326,7 +330,9 @@ def _make_log_dir(agent_name: str, agent_type: str, host: dict) -> Path:
         )
         raise SkillApplyError(
             "Log directory construction failed: path safety check rejected "
-            "computed path."
+            "computed path (likely an unsafe alias or hostname in "
+            "hosts.json). Re-register the host via "
+            "`clm host add <address> --alias <safe-name>`."
         )
     log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(log_dir, 0o700)

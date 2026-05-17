@@ -797,6 +797,7 @@ def _write_raw_state(agent_name: str, skills: list[str]) -> None:
         ("clawrium/​tdd", InvalidSkillRef),       # ZERO WIDTH SPACE
         ("clawrium/؜tdd", InvalidSkillRef),       # ARABIC LETTER MARK
         ("clawrium/tdd⁦inject", InvalidSkillRef), # LRI
+        ("clawrium/tdd⁩trailer", InvalidSkillRef), # PDI (W-new5)
         # External-source URL forms
         ("https://evil.example/skill", ExternalSourceBlocked),
         ("file:///etc/passwd", ExternalSourceBlocked),
@@ -884,3 +885,117 @@ def test_dispatch_table_entries_resolve_to_existing_playbooks():
             f"_APPLY_PLAYBOOK_BY_CLAW[{claw!r}]={playbook_name!r} does not "
             f"resolve to an existing file at {playbook}"
         )
+
+
+# ---------------------------- _make_log_dir path-safety guard (ATX iter 3) --
+
+
+class _NoopReModule:
+    """Test double for the `re` module that replaces `re.sub` with a
+    passthrough while keeping every other attribute identical. Lets a
+    test defeat the host_display allowlist sanitization step without
+    breaking other call sites that import `re` from `skills_apply` for
+    pattern matching."""
+
+    def __init__(self, real_re):
+        self._real = real_re
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    @staticmethod
+    def sub(_pattern, _repl, value, *_args, **_kwargs):
+        # Identity — returns the raw hostile string so the allowlist
+        # cannot strip the `/` and `..` segments.
+        return str(value)
+
+
+def test_make_log_dir_rejects_path_traversal_in_host_alias(monkeypatch):
+    """W-new3: the belt-and-suspenders guard is the last defense against
+    a regression that loosens the host_display sanitizer. Bypass the
+    allowlist by replacing `re.sub` (only inside the `skills_apply`
+    module) so the raw hostile alias survives, then confirm the
+    resolve()-based containment check still fires.
+
+    Called directly against `_make_log_dir` (not through `apply_state`)
+    so the test exercises only the guard surface, not the full
+    validate→stage→dispatch pipeline.
+    """
+    monkeypatch.setattr(
+        skills_apply, "re", _NoopReModule(skills_apply.re)
+    )
+    hostile_host = {
+        "hostname": "wolf-i",
+        "alias": "../../../etc/passwd",
+        "user": "wolf-i",
+        "port": 22,
+        "key_id": "wolf-i",
+    }
+    with pytest.raises(SkillApplyError, match="path safety check rejected"):
+        skills_apply._make_log_dir("tdd-hermes", "hermes", hostile_host)
+
+
+def test_make_log_dir_error_does_not_leak_computed_path(monkeypatch, tmp_path):
+    """W-new4: regression test for the non-leaking-path invariant
+    established in ATX iter 2 W2-residual. The user-facing
+    SkillApplyError must NOT include the computed log_dir, the
+    resolved variant, or the logs root — leaking these would tell an
+    attacker how their traversal payload was reshaped."""
+    monkeypatch.setattr(
+        skills_apply, "re", _NoopReModule(skills_apply.re)
+    )
+    hostile_host = {
+        "hostname": "wolf-i",
+        "alias": "../../../etc/passwd",
+        "user": "wolf-i",
+        "port": 22,
+        "key_id": "wolf-i",
+    }
+    with pytest.raises(SkillApplyError) as exc_info:
+        skills_apply._make_log_dir("tdd-hermes", "hermes", hostile_host)
+    error_text = str(exc_info.value)
+    # The known-revealing tokens MUST be absent from the user-facing
+    # message. They land at logger.debug only.
+    assert "/etc/passwd" not in error_text
+    assert "../" not in error_text
+    assert str(tmp_path) not in error_text
+    assert "resolved" not in error_text.lower()
+    # The friendly remediation hint still surfaces.
+    assert "clm host add" in error_text
+
+
+def test_make_log_dir_failure_cleans_up_staging_dir(monkeypatch, tmp_path):
+    """B-new1: regression test for the tempdir-leak fix.
+
+    `_stage_skills` creates a staging directory; if `_make_log_dir`
+    raises right after, the staging dir must still be cleaned up.
+    Without the None-sentinel guard, the staging dir is materialized
+    but never reaches the `try:` block so `finally:` doesn't run.
+    """
+    write_state("tdd-hermes", ["clawrium/tdd"])
+    runner = _patch_runtime(monkeypatch)
+
+    captured: dict[str, Path] = {}
+    original_stage = skills_apply._stage_skills
+
+    def capture_stage(agent_name, agent_type, skills):
+        path = original_stage(agent_name, agent_type, skills)
+        captured["staging"] = path
+        return path
+
+    def boom_log_dir(*_args, **_kwargs):
+        raise SkillApplyError("forced log_dir failure for regression test")
+
+    monkeypatch.setattr(skills_apply, "_stage_skills", capture_stage)
+    monkeypatch.setattr(skills_apply, "_make_log_dir", boom_log_dir)
+
+    with pytest.raises(SkillApplyError, match="forced log_dir failure"):
+        apply_state("tdd-hermes")
+
+    staging = captured.get("staging")
+    assert staging is not None, "_stage_skills was never called"
+    assert not staging.exists(), (
+        f"staging dir leaked at {staging} when _make_log_dir raised — "
+        "None-sentinel cleanup guard regression"
+    )
+    runner.run.assert_not_called()
