@@ -200,6 +200,51 @@ def test_zeroclaw_playbook_removes_via_native_cli():
     assert argv[2] == "remove"
 
 
+def test_zeroclaw_playbook_preremoves_desired_and_installed_slugs():
+    """zeroclaw v0.7.5's `skills install` is NOT overwrite-idempotent:
+    if the destination dir under `~/.zeroclaw/workspace/skills/` already
+    exists, the install errors with "Destination skill already exists".
+
+    The playbook works around this by removing slugs that are present
+    in BOTH desired_skill_names AND installed_slugs before the install
+    loop runs — so the install always lands on a clean destination
+    while preserving the "audit on every apply" intent.
+
+    Regression guard: E2E validation of #364 against tdd-zeroclaw on
+    wolf-i caught the bug; the second apply for an unchanged desired
+    state failed before this pre-remove was added."""
+    _, play = _load_playbook("zeroclaw")
+    preremove = next(
+        t
+        for t in play["tasks"]
+        if t.get("name")
+        == "Pre-remove desired-and-installed slugs for clean re-install"
+    )
+    argv = preremove["ansible.builtin.command"]["argv"]
+    assert argv[1:3] == ["skills", "remove"], argv
+    # Loop must be the intersection of desired and installed — not
+    # all desired (would error on first-install for new slugs) and
+    # not all installed (that's the prune step's job).
+    assert "desired_skill_names | intersect(installed_slugs)" in preremove["loop"]
+
+
+def test_zeroclaw_playbook_preremove_runs_before_install_loop():
+    """Pre-remove must execute BEFORE the stage+install block —
+    otherwise the install would still error on already-present slugs."""
+    _, play = _load_playbook("zeroclaw")
+    task_names = [t.get("name") for t in play["tasks"] if t.get("name")]
+    preremove_idx = task_names.index(
+        "Pre-remove desired-and-installed slugs for clean re-install"
+    )
+    stage_block_idx = task_names.index(
+        "Stage + install + cleanup (always cleans up on failure)"
+    )
+    assert preremove_idx < stage_block_idx, (
+        "Pre-remove must run before the stage+install block, "
+        f"got preremove_idx={preremove_idx} stage_block_idx={stage_block_idx}"
+    )
+
+
 def test_zeroclaw_playbook_uses_workspace_skills_path():
     """Phase 0 confirmed the on-disk install path is
     `~/.zeroclaw/workspace/skills/` (workspace-scoped), not the
