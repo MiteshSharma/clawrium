@@ -1,9 +1,64 @@
 # Issue #364 — Phase 0 Findings (Research + Test-Fleet Stand-Up)
 
-Empirical verification of the four assumptions in `00_PLAN.md` before
-implementing phases 1–6 of the Skills Registry. Numbers below come from
-`ansible-playbook` probes against the shared test fleet on host `wolf-i`
-(192.168.1.36), not from documentation.
+Empirical verification of plan-table items **Q2** (openclaw discovery)
+and **Q5** (zeroclaw idempotency) from `00_PLAN.md`, plus a worked
+proposal for the normalized `_meta.yaml` shape (Q1 / Q3 / Q4 remain
+locked as the plan states). Section 1 ("Openclaw") and section 2
+("Zeroclaw") are empirical — `ansible-playbook` output against host
+`wolf-i` (192.168.1.36). Section 3 (`_meta.yaml`) is a **design
+proposal**: no `_meta.yaml` files exist in the codebase yet; the shape
+will be validated at Phase 1 schema-implementation time.
+
+## Executive summary — net plan adjustments for Phase 1+
+
+Pulled to the top because every Phase-1 reader needs these.
+
+1. **Drop `openclaw.json` re-rendering** from openclaw's
+   `skills_apply.yaml`. Plain file copy to `~/.openclaw/skills/<name>/`
+   is sufficient. Leave the `{% if config.skills … %}` conditional in
+   `openclaw.json.j2` lines 28–32 **in place** — it's an optional
+   enablement gate, not part of the discovery path — only the planned
+   playbook re-render task is removed.
+2. **Use `~/.zeroclaw/workspace/skills/` everywhere** the plan currently
+   says `~/.zeroclaw/skills/`. This PR patches three stale path
+   references in `00_PLAN.md`: the mermaid `ZeHost` box, the ASCII
+   apply-flow rendering box, and the Phase-0 row of the *Phased
+   execution* table.
+3. **Adopt source-dirname == registry slug == `_meta.yaml.name`** as a
+   hard invariant enforced at `core/skills.py` validation time.
+   `zeroclaw skills list` returns the internal `name:` field, but
+   `zeroclaw skills remove` takes the *source directory name* — these
+   two strings only coincide when the invariant holds. Without it, the
+   idempotency algorithm in Phase 3 silently mis-removes skills.
+4. **Q5 (zeroclaw idempotency)** — resolve as: query `zeroclaw skills
+   list`, parse the slug column, install only on diff; remove only when
+   the slug is present. No probe via `--check-installed` style — the
+   v0.7.5 CLI doesn't expose one. Openclaw and Hermes don't need an
+   equivalent guard — both materialize via Ansible's `copy` module
+   (declarative; same source ⇒ no-op), so the list-first diff is a
+   zeroclaw-only concern driven by the native CLI's side-effects.
+5. **`skills_remove.yaml` cross-claw asymmetry**: zeroclaw removes
+   take the source-dirname, while openclaw/hermes remove by deleting
+   the directory at `<scan-path>/<name>/`. With the invariant in (3),
+   these are the same string; **without** it, a native skill's
+   on-disk dir name and `name:` frontmatter could diverge and the
+   remove playbook must not assume they match for non-`clawrium/`
+   skills.
+6. **Phase 1 prerequisites the plan didn't surface**: extend
+   `core/registry.py` `AgentManifest` TypedDict with an optional
+   `skills` field (currently has `agent`, `platforms`, `secrets`,
+   `onboarding`, `workspace`, `features` — no `skills`), and
+   create-on-first-use `~/.zeroclaw/workspace/skills/` (zeroclaw's
+   `install.yaml` scaffolds `workspace/` but not the `skills/`
+   subdirectory). On first reconcile against an agent with no prior
+   `skills.json` desired-state, the playbook must run **add-only** —
+   pruning activates only after the first reconciled state file exists,
+   so pre-existing user-authored skills on `zc-test`-style agents are
+   never silently wiped.
+7. **`nemoclaw` is out of Phase 1 scope.** The proposed `_meta.yaml`
+   `compatibility` map intentionally lists only openclaw, hermes,
+   zeroclaw — `nemoclaw` exists in the registry but is not part of the
+   #364 v1. Add it in a follow-up issue if/when needed.
 
 ## Openclaw discovery mode
 
@@ -52,6 +107,13 @@ Source-code references:
   automatically`) — bundled-skill side, not user skills
 
 ## Zeroclaw on-host path + CLI
+
+All zeroclaw probes below ran against the **pre-existing `zc-test`
+agent** (zeroclaw v0.7.5, same binary as the newly-installed
+`tdd-zeroclaw`). `zc-test` was chosen because its daemon was already
+up and the `skills` subcommand operates against the on-disk workspace,
+which is independent of gateway state — running the probe on the
+degraded `tdd-zeroclaw` would have produced identical results.
 
 **Answer (one correction to the plan):**
 
@@ -120,15 +182,114 @@ Installed skills (1):
 4. **`audit` is a separate subcommand.** `zeroclaw skills audit <path>`
    runs the security check without installing. The plan's "native audit
    gate" is enforced on every `install` (per the success line above), so
-   no separate audit step is needed in the apply playbook.
+   no separate audit *invocation* is needed in the apply playbook —
+   **but** the zeroclaw audit scope is opaque to clawrium (the v0.7.5
+   CLI exposes no audit-rules documentation; the probe output reports
+   only "Security audit completed successfully"). `core/skills.py
+   validate_skill()` must therefore enforce slug format (e.g.
+   `^[a-zA-Z0-9_-]+$`), path-traversal rejection, and the
+   `prerequisites.commands` allow-list **independently** at catalog
+   load time, mirroring the path-traversal check called out at
+   `00_PLAN.md:203`. The native audit is a defense-in-depth layer at
+   the zeroclaw boundary, not a substitute for clawrium-side
+   validation.
 
-5. **Idempotency check (Q5 in plan)**: `zeroclaw skills list` returns
-   the internal `name:` field, so the playbook should:
+5. **Idempotency check (Q5 in plan) — list-first guard is MANDATORY,
+   not optional.** Empirical probe:
+
+   ```
+   # First install
+   $ zeroclaw skills install /tmp/clawrium-phase0-dupprobe
+     ✓ Skill installed and audited:
+       /home/zc-test/.zeroclaw/workspace/skills/clawrium-phase0-dupprobe
+
+   # Second install (same source path)
+   $ zeroclaw skills install /tmp/clawrium-phase0-dupprobe
+     ✗ rc=1
+     stderr: Destination skill already exists:
+             /home/zc-test/.zeroclaw/workspace/skills/clawrium-phase0-dupprobe
+   ```
+
+   Duplicate install **fails** with rc=1 — the native CLI does not
+   silently overwrite. So the playbook **must**:
    - run `zeroclaw skills list` first
-   - skip `install` if the slug appears in the list
+   - skip `install` if the slug appears in the list (avoid the rc=1)
    - call `remove <slug>` (slug == source-dirname) on uninstall
 
-## Locked `_meta.yaml` shape for `clawrium/tdd`
+   The algorithm above is **only correct when** the invariant
+   `slug == source-dirname == _meta.yaml.name` holds. `list` reports
+   the internal name; `remove` accepts the source-dirname; these two
+   strings are forced equal by adjustment (3) in the executive summary
+   and enforced at `core/skills.py` validation. A `clawrium/<name>`
+   skill whose `_meta.yaml.name` differs from `<name>` must be rejected
+   at load time, otherwise the install/skip/remove cycle silently
+   corrupts the desired-state file. State this invariant explicitly in
+   `validate_skill()` error messages.
+
+## Phase 1 prerequisites (codebase + arch-decision derived)
+
+Three Phase-1 prerequisites. Items 1 and 2 are visible in the current
+codebase at the cited line ranges; item 3 is *implied by* (not visible
+in) the locked architecture decisions in `00_PLAN.md`.
+
+1. **`AgentManifest` TypedDict has no `skills` field.**
+   `src/clawrium/core/registry.py` defines `AgentManifest` (lines
+   143–151) with keys `agent`, `platforms`, `secrets`, `onboarding`,
+   `workspace`, `features` — no `skills`. Phase 1 must either (a)
+   extend `AgentManifest` with an optional `skills` field, or (b) keep
+   agent manifests untouched and load skill catalog state via a
+   parallel `_meta.yaml`-driven path under `core/skills.py`. Plan
+   section *Files to add / modify → Core* implies (b); call the choice
+   explicitly when Phase 1 opens.
+2. **`~/.zeroclaw/workspace/skills/` is not scaffolded by any current
+   playbook.** Zeroclaw's `install.yaml` creates only `workspace/`
+   (lines 125–131) and `state/` (lines 133–139). The seven personality
+   templates (SOUL/IDENTITY/USER/AGENTS/TOOLS/MEMORY/HEARTBEAT) are
+   rendered by `configure.yaml` (lines 56–71) via an Ansible
+   `template` loop. Neither playbook creates `workspace/skills/`; the
+   `skills/` subdirectory is created on demand by `zeroclaw skills
+   install` on first use (probe in §2 above: no `skills/` existed
+   under `zc-test` workspace pre-install, was present post-install).
+   Phase 3's `zeroclaw/playbooks/skills_apply.yaml` must therefore
+   tolerate the missing-directory state and not assume the dir exists
+   before the first skill is staged.
+3. **First reconcile against an agent with no `skills.json`
+   desired-state must be add-only.** This item is **derived from**
+   `00_PLAN.md` arch decisions 3 ("Local desired-state is truth") and
+   5 ("Pruning is bounded to a clawrium-owned subtree per claw") — it
+   does not surface as code today because the desired-state machinery
+   doesn't exist yet. A naive Phase-3 implementation would treat a
+   missing desired-state file as "desired = []" and **prune
+   everything** in the clawrium-owned subtree on first run. Agents
+   like `zc-test` (or any agent the user managed pre-registry) may
+   carry skill files inside paths the registry will later claim. The
+   mitigation: distinguish *first reconcile* (no `skills.json` exists
+   yet) from *subsequent reconciles*; first reconcile writes the
+   desired-state file from a scan of what's already on disk in
+   clawrium-owned paths, then exits without pruning. Phase 3 design
+   must include this branch, and "clawrium-owned" must be a positive
+   signal (e.g., a `.clawrium-managed` marker file written at
+   `skills_apply.yaml` install time, or a catalog cross-reference) —
+   not a path-prefix heuristic, which would silently absorb any
+   user-authored directory whose name happens to match a future
+   registry slug.
+
+## Proposed `_meta.yaml` shape for all `clawrium/` skills
+
+**This section is a design proposal, not an empirical finding.** No
+`_meta.yaml` files exist anywhere in the codebase yet. The shape below
+is grounded in observed native-frontmatter requirements (probed
+empirically and tabulated below), but its final validation lands at
+Phase 1 schema implementation. Treat the YAML at the end of this
+section as the *starting point* for Phase 1, not a frozen contract.
+
+The Hermes column in the table below comes from **runtime observation**
+of an installed Hermes skill (`/home/espresso/.hermes/skills/social-media/xurl/SKILL.md`),
+not from registry source — there is currently no skill-related
+infrastructure under `src/clawrium/platform/registry/hermes/`. The
+frontmatter shape there is the de-facto Hermes convention; Phase 1
+should re-confirm against the Hermes runtime if the materializer
+output drifts.
 
 Goal: one normalized cross-agent file the clawrium core reads
 (`load_skill` / `validate_skill`), which is then materialized into each
@@ -162,8 +323,9 @@ license: MIT
 author: clawrium
 platforms: [linux, macos]
 
-# Cross-agent compatibility flags consumed by core/skills.py
-# check_agent_compatibility. Per the plan, clawrium/* is installable on
+# Cross-agent compatibility flags. To be consumed by a Phase 1
+# `check_agent_compatibility()` function in core/skills.py — not yet
+# implemented; Phase 1 introduces it. Per the plan, clawrium/* is installable on
 # any agent type; the flags below let a normalized skill opt out of a
 # specific claw if it can't fulfill that claw's runtime contract.
 compatibility:
@@ -242,34 +404,48 @@ scope for this issue and not shown.)
 **`tdd-zeroclaw` partial-degradation note (downstream-fixable, not a
 Phase 0 blocker):**
 
-`systemctl status zeroclaw-tdd-zeroclaw.service` shows `active (running)`
-— the daemon process is up. The `degraded` label in `clm ps` reflects
-the manifest's required-secret check (`LLM_PROVIDER_URL`, `LLM_MODEL`):
-the daemon log emits `ERROR zeroclaw_runtime::daemon: Daemon component
-'gateway' failed: Unknown provider: default. Check README for supported
-providers or run zeroclaw onboard to reconfigure.` This is the same
-configure-time schema mismatch that affects the pre-existing `zc-test`
-agent and is **independent of the skills-registry work**: `zeroclaw
-skills install / list / audit / remove` operate against the on-disk
-workspace and were verified working on the same v0.7.5 binary above,
-regardless of gateway state. The zeroclaw configure-playbook ↔ v0.7.5
-TOML-schema fix is a separate platform issue.
+`systemctl status zeroclaw-tdd-zeroclaw.service` shows
+`active (running)` — the daemon process is up. The `degraded` label in
+`clm ps` comes from the manifest's required-secret check
+(`secrets.required: [LLM_PROVIDER_URL, LLM_MODEL]` in
+`zeroclaw/manifest.yaml`); the daemon log separately emits
+`ERROR zeroclaw_runtime::daemon: Daemon component 'gateway' failed:
+Unknown provider: default.` There are **two distinct issues** mashed
+together by `clm ps` here:
 
-## Net plan adjustments for Phase 1+
+- **Secret contract mismatch (the cause of the `degraded` label):**
+  the manifest declares `LLM_PROVIDER_URL` and `LLM_MODEL` as required
+  secrets, but the configure playbook writes provider values into
+  `~/.zeroclaw/config.toml` via the `[providers.models.<type>]` TOML
+  block. The systemd unit emits no `EnvironmentFile` for the agent
+  account, so those keys never reach the daemon as env vars. The
+  manifest's required-secrets contract and the configure playbook's
+  TOML-output contract are unaligned.
+- **Daemon-side schema mismatch (the cause of the daemon-log `ERROR`):**
+  the configure playbook writes `default_provider = "ollama"` and a
+  `[providers.models.ollama]` block, but zeroclaw v0.7.5's runtime
+  looks up `[providers.models.default]` (literal `default`). So even
+  if the secret contract is fixed, the daemon would still fail.
 
-1. **Drop `openclaw.json` re-rendering** from openclaw's
-   `skills_apply.yaml`. Plain file copy to `~/.openclaw/skills/<name>/`
-   is sufficient. (Plan section *Architecture decisions (locked) — 4*
-   bullet for openclaw can be replaced with `copy` only.)
-2. **Use `~/.zeroclaw/workspace/skills/` everywhere** the plan currently
-   says `~/.zeroclaw/skills/`: tables in *Per-claw mechanism* and
-   *Workflow → Remote hosts*, and the ASCII rendering box for zeroclaw.
-3. **Adopt source-dirname == registry slug** as a hard rule, so
-   zeroclaw `remove` arguments match the same string the playbook stages
-   and the same string in the `<registry>/<name>` ref. Surface this in
-   `core/skills.py` validation: reject a `clawrium/<name>` skill if its
-   `_meta.yaml.name` does not equal `<name>`.
-4. **Q5 (zeroclaw idempotency)** — resolve as: query `zeroclaw skills
-   list`, parse the slug column, install only on diff; remove only when
-   the slug is present. No probe via `--check-installed` style — the
-   v0.7.5 CLI doesn't expose one.
+Both are pre-existing platform issues (same failure on `zc-test`),
+**independent of the skills-registry work**. `zeroclaw skills install
+/ list / audit / remove` operate against the on-disk workspace and
+were verified working on the same v0.7.5 binary above, regardless of
+gateway state. **Implication for Phase 1 testing:** route the
+end-to-end skill-install integration tests against `tdd-zeroclaw` using
+the skills CLI directly (workspace path is reachable); end-to-end
+*agent-uses-skill* tests must wait until the configure ↔ v0.7.5
+alignment lands. Track the underlying fix as a separate issue.
+
+## Where Phase 1 picks this up
+
+`00_PLAN.md` in this same PR has been patched for the two stale
+zeroclaw path references (mermaid + ASCII boxes). The seven-point
+executive summary at the top of this document is the canonical
+Phase-1 hand-off list — open it side-by-side with `00_PLAN.md` § *Files
+to add / modify* when the Phase 1 issue opens.
+
+**Phase 1 integration tests** should target `wolf-i` (alias unchanged)
+with `tdd-{hermes,openclaw}` for end-to-end install/list/remove flows;
+`tdd-zeroclaw` covers the skills-CLI path only until the configure ↔
+v0.7.5 alignment fix lands separately.
