@@ -213,6 +213,11 @@ export const api = {
   // Agent Logs
   getAgentLogs: (key: string, lines = 100) =>
     request<LogsResponse>(`/agents/${key}/logs?lines=${lines}`),
+
+  // Skills catalog (read-only browse — Phase 4)
+  getSkills: () => request<SkillsCatalog>("/skills"),
+  getSkill: (registry: string, name: string) =>
+    request<SkillDetail>(`/skills/${registry}/${name}`),
 };
 
 // Type imports (re-exported from types.ts for convenience)
@@ -240,4 +245,6 @@ import type {
   IntegrationTypesMap,
   IntegrationCreate,
   IntegrationCredentialsUpdate,
+  SkillsCatalog,
+  SkillDetail,
 } from "./types";

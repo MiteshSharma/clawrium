@@ -298,3 +298,33 @@ export interface LogsResponse {
   logs: LogEntry[];
   error?: string;
 }
+
+// Skills catalog types
+export type SkillRegistry = "clawrium" | "openclaw" | "hermes" | "zeroclaw";
+
+export type SkillCompatibility = Record<
+  "openclaw" | "hermes" | "zeroclaw",
+  boolean
+>;
+
+export interface SkillSummary {
+  ref: string;
+  registry: SkillRegistry;
+  name: string;
+  description: string | null;
+  version: string | null;
+}
+
+export interface SkillsCatalog {
+  registries: SkillRegistry[];
+  skills: Record<SkillRegistry, SkillSummary[]>;
+}
+
+export interface SkillDetail {
+  ref: string;
+  registry: SkillRegistry;
+  name: string;
+  metadata: Record<string, unknown>;
+  body: string;
+  compatibility: SkillCompatibility;
+}
