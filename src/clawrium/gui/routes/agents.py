@@ -328,11 +328,19 @@ def _is_compatible_for_agent_type(reg: str, name: str, agent_type: str) -> bool:
     semantics (e.g. how missing keys are treated) now applies to both
     the CLI and GUI from one place.
 
-    Fast paths kept for the picker's perf budget:
-      - Unknown source registry → false without loading anything.
-      - Native registry whose name doesn't match the claw → false
-        without loading (a native skill can never run on another claw,
-        no need to read SKILL.md to decide).
+    Short-circuits (no I/O) for two cases that cannot ever be
+    compatible:
+      - Unknown source registry → false.
+      - Native registry whose name doesn't match the claw → false (a
+        native skill can never run on another claw).
+
+    Everything else — `clawrium/*` and `<claw>/*` matching the claw —
+    falls through to ``load_skill`` + ``check_agent_compatibility``.
+    The picker scan is therefore O(n) ``load_skill`` calls bounded by
+    the catalog size for compatible registries; a follow-up could
+    cache loaded skills per request if catalogs grow large (ATX-2 W4
+    flagged the cost but the present picker scans <10 skills, so the
+    cache is deferred).
 
     Loader failures swallow to false so a single bad catalog row
     cannot widen the install picker on the user's screen.

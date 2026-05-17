@@ -245,26 +245,49 @@ def test_install_422_on_unsupported_claw_type(monkeypatch):
 
     Without this, the route could silently regress to 500 on an unknown
     claw type and the existing 200/422/502 tests would still pass.
+    ATX-2 W6 also requires asserting the detail string is the original
+    message, not the redacted ``Check server logs…`` text — that path
+    is reserved for the genuine apply-failure class.
     """
     _stub_resolved(monkeypatch)
-    _stub_apply(
-        monkeypatch,
-        raises=SkillApplyNotSupported("Skills apply for 'nemoclaw' has no playbook"),
-    )
+    detail = "Skills apply for 'nemoclaw' has no playbook"
+    _stub_apply(monkeypatch, raises=SkillApplyNotSupported(detail))
     with pytest.raises(HTTPException) as exc:
         _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
     assert exc.value.status_code == 422
+    assert detail in str(exc.value.detail)
+    assert "Check server logs" not in str(exc.value.detail)
 
 
 def test_remove_422_on_unsupported_claw_type(monkeypatch):
     _stub_resolved(monkeypatch)
-    _stub_apply(
-        monkeypatch,
-        raises=SkillApplyNotSupported("Skills apply for 'nemoclaw' has no playbook"),
-    )
+    detail = "Skills apply for 'nemoclaw' has no playbook"
+    _stub_apply(monkeypatch, raises=SkillApplyNotSupported(detail))
     with pytest.raises(HTTPException) as exc:
         _run(agents_route.remove_agent_skill("tdd-hermes", "clawrium", "tdd"))
     assert exc.value.status_code == 422
+    assert detail in str(exc.value.detail)
+    assert "Check server logs" not in str(exc.value.detail)
+
+
+def test_remove_502_on_apply_error(monkeypatch):
+    """ATX-2 W7: mirror the install-side path-scrubbing assertion on
+    the DELETE side so the redaction can't regress only for removes.
+    """
+    _stub_resolved(monkeypatch)
+    write_state("tdd-hermes", ["clawrium/tdd"])
+    raw_msg = (
+        "Skills apply failed (status=failed): host unreachable "
+        "(log: /home/op/.config/clawrium/logs/skills_apply-x)."
+    )
+    _stub_apply(monkeypatch, raises=SkillApplyError(raw_msg))
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.remove_agent_skill("tdd-hermes", "clawrium", "tdd"))
+    assert exc.value.status_code == 502
+    assert "/home/op/.config/clawrium/logs" not in str(exc.value.detail)
+    assert "Check server logs" in str(exc.value.detail)
+    # Desired state mutation is preserved on failure (W3 contract).
+    assert read_state("tdd-hermes") == []
 
 
 def test_install_422_on_incompatible_claw(monkeypatch):

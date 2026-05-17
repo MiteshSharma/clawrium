@@ -79,10 +79,17 @@ describe("SkillsTab", () => {
     removeMutation.isPending = false;
   });
 
-  it("renders the loading skeleton while fetching", () => {
+  it("renders the loading skeleton with assistive-tech attributes", () => {
+    // ATX-2 W1: assert the a11y attributes themselves, not just the
+    // presence of the testid — a regression that dropped role=status
+    // or aria-busy would still pass a presence-only check.
     agentSkillsState.isLoading = true;
     render(<SkillsTab agentKey="tdd-hermes" />);
-    expect(screen.getByTestId("skills-loading")).toBeInTheDocument();
+    const node = screen.getByTestId("skills-loading");
+    expect(node).toHaveAttribute("role", "status");
+    expect(node).toHaveAttribute("aria-busy", "true");
+    expect(node).toHaveAttribute("aria-live", "polite");
+    expect(node).toHaveAttribute("aria-label", "Loading skills");
   });
 
   it("renders an error state with a retry control", () => {
@@ -247,9 +254,12 @@ describe("SkillsTab", () => {
     });
   });
 
-  it("surfaces remove errors inline", async () => {
-    // ATX-1 W9: handleRemove has the same catch path as handleInstall;
-    // assert the error banner fires for the destructive path too.
+  it("surfaces remove errors inline and resets confirming state", async () => {
+    // ATX-1 W9 + ATX-2 W9: handleRemove has the same catch path as
+    // handleInstall, AND after a failed mutation the row must drop
+    // back to the un-armed state — otherwise the user is stuck staring
+    // at Confirm/Cancel with no way to retry the Remove from the
+    // resting state.
     agentSkillsState.data = makeAgentSkills({
       installed: [
         {
@@ -274,6 +284,63 @@ describe("SkillsTab", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert")).toHaveTextContent(/ansible timeout/);
     });
+    // The mutation handler clears `confirming` synchronously when the
+    // Confirm button fires, so the resting "Remove" button is back.
+    expect(
+      screen.getByRole("button", { name: /^Remove clawrium\/tdd$/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("dismisses the confirm group on Escape", () => {
+    // ATX-2 B2b: Escape on the inline confirm group must cancel.
+    agentSkillsState.data = makeAgentSkills({
+      installed: [
+        {
+          ref: "clawrium/tdd",
+          registry: "clawrium",
+          name: "tdd",
+          description: "TDD discipline.",
+          version: "0.1.0",
+        },
+      ],
+    });
+    render(<SkillsTab agentKey="tdd-hermes" />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Remove clawrium\/tdd$/ }),
+    );
+    const group = screen.getByRole("group", {
+      name: /Confirm removal of clawrium\/tdd/,
+    });
+    fireEvent.keyDown(group, { key: "Escape" });
+    expect(
+      screen.queryByRole("group", {
+        name: /Confirm removal of clawrium\/tdd/,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("focuses the Confirm button on Remove→confirming transition", () => {
+    // ATX-2 B2a: focus must move so keyboard / SR users notice the
+    // state change.
+    agentSkillsState.data = makeAgentSkills({
+      installed: [
+        {
+          ref: "clawrium/tdd",
+          registry: "clawrium",
+          name: "tdd",
+          description: "TDD discipline.",
+          version: "0.1.0",
+        },
+      ],
+    });
+    render(<SkillsTab agentKey="tdd-hermes" />);
+    fireEvent.click(
+      screen.getByRole("button", { name: /^Remove clawrium\/tdd$/ }),
+    );
+    const confirmBtn = screen.getByRole("button", {
+      name: /Confirm remove clawrium\/tdd/,
+    });
+    expect(confirmBtn).toHaveFocus();
   });
 
   it("closes the install picker after a successful install", async () => {

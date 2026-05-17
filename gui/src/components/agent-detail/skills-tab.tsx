@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -56,23 +56,7 @@ export function SkillsTab({ agentKey }: SkillsTabProps) {
   );
 
   if (isLoading) {
-    // ATX-1 B1: skeleton must announce itself to assistive tech.
-    // role=status + aria-live=polite makes screen readers report
-    // "Loading skills…" when the tab becomes active; the sr-only span
-    // gives them text to read since the pulsing divs carry no content.
-    return (
-      <div
-        className="space-y-3 p-4"
-        data-testid="skills-loading"
-        role="status"
-        aria-live="polite"
-        aria-label="Loading skills"
-      >
-        <span className="sr-only">Loading skills…</span>
-        <div className="bg-surface rounded-xl border border-default h-20 animate-pulse" />
-        <div className="bg-surface rounded-xl border border-default h-20 animate-pulse" />
-      </div>
-    );
+    return <SkillsLoading />;
   }
 
   if (error || !data) {
@@ -194,6 +178,33 @@ export function SkillsTab({ agentKey }: SkillsTabProps) {
   );
 }
 
+function SkillsLoading() {
+  // ATX-2 B1: live-region timing — NVDA / JAWS / VoiceOver only
+  // announce live-region content on DOM *mutations*, not initial
+  // paint. Mount the announcement text in a useEffect so it lands as
+  // a mutation after first render. aria-busy="true" lets ATs that
+  // honor it suppress reads of the still-loading subtree.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  return (
+    <div
+      className="space-y-3 p-4"
+      data-testid="skills-loading"
+      role="status"
+      aria-busy="true"
+      aria-live="polite"
+      aria-label="Loading skills"
+    >
+      {mounted ? <span className="sr-only">Loading skills…</span> : null}
+      <div className="bg-surface rounded-xl border border-default h-20 animate-pulse" />
+      <div className="bg-surface rounded-xl border border-default h-20 animate-pulse" />
+    </div>
+  );
+}
+
+
 function InstalledRow({
   row,
   onRemove,
@@ -210,6 +221,20 @@ function InstalledRow({
   // accessible name so a screen-reader scan can't conflate two rows.
   const [confirming, setConfirming] = useState(false);
   const canRemove = !!row.registry && !!row.name;
+  // ATX-2 B2a: focus the Confirm button when the row enters the
+  // confirming state — without this a keyboard user has no indication
+  // that anything happened on the first click.
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirming) confirmRef.current?.focus();
+  }, [confirming]);
+  // ATX-2 W3: if a concurrent install/remove disables the row while a
+  // confirm is open, drop back to the un-armed state so the user
+  // doesn't see a stuck/disabled Confirm button.
+  useEffect(() => {
+    if (disabled && confirming) setConfirming(false);
+  }, [disabled, confirming]);
+
   return (
     <li className="flex items-start gap-3 px-4 py-3">
       <RegistryBadge registry={row.registry} />
@@ -229,9 +254,23 @@ function InstalledRow({
         ) : null}
       </div>
       {confirming ? (
-        <div className="flex items-center gap-2" role="group" aria-label={`Confirm removal of ${row.ref}`}>
+        <div
+          className="flex items-center gap-2"
+          role="group"
+          aria-label={`Confirm removal of ${row.ref}`}
+          // ATX-2 B2b: ARIA APG requires confirm patterns to support
+          // Escape. The native <dialog> handles this for the picker
+          // modal; this inline group needs an explicit handler.
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.stopPropagation();
+              setConfirming(false);
+            }
+          }}
+        >
           <span className="text-xs text-secondary">Remove {row.ref}?</span>
           <Button
+            ref={confirmRef}
             variant="danger"
             size="sm"
             onClick={() => {

@@ -43,6 +43,11 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
     <dialog
       ref={dialogRef}
       aria-labelledby={titleId}
+      // ATX-2 B3: VoiceOver / older JAWS use virtual-cursor navigation
+      // that ignores <dialog>'s native focus trap, so background DOM
+      // is still readable. aria-modal="true" is the explicit signal
+      // those assistive techs honor.
+      aria-modal="true"
       className="backdrop:bg-black/40 rounded-xl border border-default shadow-xl p-0 max-w-lg w-full"
       onClick={(e) => {
         if (e.target === dialogRef.current) onClose();
