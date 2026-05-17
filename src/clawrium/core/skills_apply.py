@@ -213,6 +213,14 @@ def apply_state(agent_name: str, *, timeout: int = 60) -> ApplyResult:
         if log_dir is not None:
             _cleanup_runner_artifacts(log_dir)
 
+    # Both assignments inside the `try:` succeeded — we wouldn't reach
+    # this line otherwise (an early raise would have propagated past
+    # the `finally:` block). Asserting narrows `log_dir`'s type from
+    # `Path | None` to `Path` for the ApplyResult construction below
+    # AND documents the control-flow invariant for readers. (ATX
+    # #382 iter 4 W-new9.)
+    assert staging_dir is not None
+    assert log_dir is not None
     return ApplyResult(
         agent_name=agent_name,
         agent_type=agent_type,
@@ -256,6 +264,7 @@ def _stage_skills(agent_name: str, agent_type: str, skills: list[Skill]) -> Path
     # tempdir into `${clawrium_config}/staging/skills/`. The caller's
     # `finally` cleanup uses the return value, so a raise-before-return
     # would otherwise leave the tempdir un-referenced and un-cleaned.
+    # (ATX #382 iter 4 W-new6.)
     try:
         for skill in skills:
             frontmatter, body = materialize_for_claw(skill, agent_type)
@@ -329,10 +338,10 @@ def _make_log_dir(agent_name: str, agent_type: str, host: dict) -> Path:
             logs_dir.resolve(),
         )
         raise SkillApplyError(
-            "Log directory construction failed: path safety check rejected "
-            "computed path (likely an unsafe alias or hostname in "
-            "hosts.json). Re-register the host via "
-            "`clm host add <address> --alias <safe-name>`."
+            "Host alias or hostname contains unsafe characters that would "
+            "escape the clawrium logs directory. Update the host alias: "
+            "`clm host update <alias-or-address> --alias <safe-name>`, "
+            "then retry."
         )
     log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(log_dir, 0o700)

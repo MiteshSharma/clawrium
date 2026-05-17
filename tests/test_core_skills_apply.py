@@ -931,7 +931,7 @@ def test_make_log_dir_rejects_path_traversal_in_host_alias(monkeypatch):
         "port": 22,
         "key_id": "wolf-i",
     }
-    with pytest.raises(SkillApplyError, match="path safety check rejected"):
+    with pytest.raises(SkillApplyError, match="unsafe characters"):
         skills_apply._make_log_dir("tdd-hermes", "hermes", hostile_host)
 
 
@@ -960,8 +960,51 @@ def test_make_log_dir_error_does_not_leak_computed_path(monkeypatch, tmp_path):
     assert "../" not in error_text
     assert str(tmp_path) not in error_text
     assert "resolved" not in error_text.lower()
-    # The friendly remediation hint still surfaces.
-    assert "clm host add" in error_text
+    # The friendly remediation hint still surfaces. Points at
+    # `clm host update` (the right command for alias mutation per
+    # ATX iter 4 W-new7), not `clm host add` (would fail with
+    # "alias already in use" since the user reached _make_log_dir,
+    # meaning the host record already exists).
+    assert "clm host update" in error_text
+
+
+def test_stage_skills_internal_failure_cleans_tempdir(monkeypatch):
+    """W-new6: `_stage_skills` materializes the staging dir via
+    `tempfile.mkdtemp` BEFORE populating it. If `materialize_for_claw`
+    or any subsequent file operation raises mid-loop, the staging dir
+    would leak — `apply_state`'s None-sentinel guard doesn't help
+    because `_stage_skills` hasn't returned yet, so `staging_dir`
+    is still None.
+
+    The fix wraps the populate loop in try/except so the dir is rmtree'd
+    before the exception propagates."""
+    captured: list[Path] = []
+    original_mkdtemp = skills_apply.tempfile.mkdtemp
+
+    def capture_mkdtemp(*args, **kwargs):
+        path = original_mkdtemp(*args, **kwargs)
+        captured.append(Path(path))
+        return path
+
+    monkeypatch.setattr(skills_apply.tempfile, "mkdtemp", capture_mkdtemp)
+
+    def boom(_skill, _claw):
+        raise RuntimeError("forced materialize failure")
+
+    monkeypatch.setattr(skills_apply, "materialize_for_claw", boom)
+
+    from clawrium.core.skills import load_skill, parse_skill_ref
+
+    skill = load_skill(parse_skill_ref("clawrium/tdd"))
+    with pytest.raises(RuntimeError, match="forced materialize failure"):
+        skills_apply._stage_skills("tdd-hermes", "hermes", [skill])
+
+    assert captured, "mkdtemp was never called"
+    staging = captured[0]
+    assert not staging.exists(), (
+        f"staging tempdir leaked at {staging} when materialize raised — "
+        "_stage_skills cleanup-on-raise regression"
+    )
 
 
 def test_make_log_dir_failure_cleans_up_staging_dir(monkeypatch, tmp_path):
