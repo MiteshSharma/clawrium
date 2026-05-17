@@ -13,12 +13,17 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import json
+
 import pytest
 import yaml
 
 from clawrium.core import skills_apply
 from clawrium.core.skills import (
+    ExternalSourceBlocked,
     IncompatibleSkillRegistry,
+    InvalidSkillRef,
+    MissingRegistryPrefix,
     NATIVE_REGISTRIES,
 )
 from clawrium.core.skills_apply import (
@@ -28,7 +33,7 @@ from clawrium.core.skills_apply import (
     apply_state,
     materialize_for_claw,
 )
-from clawrium.core.skills_state import write_state
+from clawrium.core.skills_state import state_file_path, write_state
 
 
 @pytest.fixture(autouse=True)
@@ -728,3 +733,146 @@ def test_apply_state_drift_recovery_zeroclaw(monkeypatch):
         assert call.kwargs["inventory"]["all"]["vars"]["desired_skill_names"] == [
             "tdd"
         ]
+
+
+def test_apply_state_drift_recovery_openclaw(monkeypatch):
+    """W8: parity gap fix — drift recovery must work on openclaw too,
+    not just hermes/zeroclaw. The playbook is responsible for restoring
+    SKILL.md if it was manually deleted on host; apply_state's job is
+    just to invoke it idempotently on every install/remove call."""
+    write_state("tdd-openclaw", ["clawrium/tdd"])
+    runner = _patch_runtime(monkeypatch, agent_type="openclaw")
+
+    apply_state("tdd-openclaw")
+    apply_state("tdd-openclaw")
+
+    assert runner.run.call_count == 2
+    for call in runner.run.call_args_list:
+        assert call.kwargs["inventory"]["all"]["vars"]["desired_skill_names"] == [
+            "tdd"
+        ]
+        # Drift recovery means the SAME playbook is invoked again —
+        # specifically the openclaw one, not a refactor that punts to
+        # a different claw's apply.
+        assert "/openclaw/" in call.kwargs["playbook"]
+
+
+# ---------------------------- malicious-input rejection (ATX B3) ------------
+
+
+def _write_raw_state(agent_name: str, skills: list[str]) -> None:
+    """Bypass write_state's parse_skill_ref normalization to plant a
+    hostile state file directly. Simulates a hand-edited
+    `~/.config/clawrium/agents/<agent>/skills.json` carrying entries
+    that should never have made it past `write_state`."""
+    path = state_file_path(agent_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"skills": skills}))
+
+
+@pytest.mark.parametrize(
+    "malicious_ref,expected_error",
+    [
+        # Path traversal in name component
+        ("clawrium/..", InvalidSkillRef),
+        # Path traversal across separator
+        ("../etc/passwd", (InvalidSkillRef, MissingRegistryPrefix)),
+        # Path-segment-in-name
+        ("clawrium/sub/dir", InvalidSkillRef),
+        # Shell metacharacters in name
+        ("clawrium/tdd;rm", InvalidSkillRef),
+        ("clawrium/tdd|cat", InvalidSkillRef),
+        ("clawrium/tdd&id", InvalidSkillRef),
+        ("clawrium/tdd`id`", InvalidSkillRef),
+        ("clawrium/tdd$(id)", InvalidSkillRef),
+        # Backslash / Windows-style path
+        ("clawrium\\tdd", (InvalidSkillRef, MissingRegistryPrefix)),
+        # Null byte
+        ("clawrium/tdd\x00", InvalidSkillRef),
+        # External-source URL forms
+        ("https://evil.example/skill", ExternalSourceBlocked),
+        ("file:///etc/passwd", ExternalSourceBlocked),
+        ("git+ssh://attacker.example/repo.git", ExternalSourceBlocked),
+    ],
+)
+def test_apply_state_rejects_malicious_slugs_before_dispatch(
+    monkeypatch, malicious_ref, expected_error
+):
+    """Defense-in-depth contract: hostile slugs in a hand-edited state
+    file MUST be rejected by the Python validate-before-dispatch step
+    in apply_state, not relied on the in-playbook regex re-check.
+    `runner.run` must not be invoked — any exception thrown after the
+    runner fires means the host already saw the bad input."""
+    _write_raw_state("tdd-hermes", [malicious_ref])
+    runner = _patch_runtime(monkeypatch)
+    with pytest.raises(expected_error):
+        apply_state("tdd-hermes")
+    runner.run.assert_not_called()
+
+
+def test_apply_state_rejects_malicious_slug_on_openclaw_before_dispatch(monkeypatch):
+    """Same contract as the hermes parametrized case, but routed
+    through the openclaw dispatch path so a future refactor that
+    short-circuits openclaw's compatibility check can't quietly skip
+    the slug rejection step."""
+    _write_raw_state("tdd-openclaw", ["clawrium/../etc/passwd"])
+    runner = _patch_runtime(monkeypatch, agent_type="openclaw")
+    with pytest.raises(InvalidSkillRef):
+        apply_state("tdd-openclaw")
+    runner.run.assert_not_called()
+
+
+def test_apply_state_rejects_malicious_slug_on_zeroclaw_before_dispatch(monkeypatch):
+    """Zeroclaw arm of the B3 rejection contract. Zeroclaw is the most
+    sensitive of the three because the slug is later passed to
+    `zeroclaw skills install <path>` and `zeroclaw skills remove <slug>`
+    on the host — any escape from the slug regex is reachable as a
+    command argument."""
+    _write_raw_state("tdd-zeroclaw", ["clawrium/tdd; rm -rf /"])
+    runner = _patch_runtime(monkeypatch, agent_type="zeroclaw")
+    with pytest.raises(InvalidSkillRef):
+        apply_state("tdd-zeroclaw")
+    runner.run.assert_not_called()
+
+
+# ---------------------------- dispatch-table guard (ATX B4) -----------------
+
+
+def test_apply_state_dispatch_table_miss_raises_not_supported(monkeypatch):
+    """Defensive Guard 2 (`_APPLY_PLAYBOOK_BY_CLAW.get()` → None for a
+    claw that's in `NATIVE_REGISTRIES` but missing from the dispatch
+    table). This fires in the "future claw" scenario where a developer
+    adds a claw to `NATIVE_REGISTRIES` but forgets to wire the playbook.
+    Without this test, the message and code path are dead under
+    normal config and would only surface as a confusing error after a
+    real bug ships."""
+    _patch_runtime(monkeypatch, agent_type="hermes")
+    monkeypatch.setattr(skills_apply, "_APPLY_PLAYBOOK_BY_CLAW", {})
+    with pytest.raises(SkillApplyNotSupported, match="has no playbook registered"):
+        apply_state("tdd-hermes")
+
+
+def test_dispatch_table_covers_every_native_registry():
+    """Symmetry invariant: every claw in `NATIVE_REGISTRIES` MUST have
+    an entry in `_APPLY_PLAYBOOK_BY_CLAW`. Catches the
+    "added to NATIVE_REGISTRIES but forgot the playbook" mistake at
+    development time instead of at the user's first
+    `clm agent skill install <new-claw-agent> ...`."""
+    missing = NATIVE_REGISTRIES - set(skills_apply._APPLY_PLAYBOOK_BY_CLAW)
+    assert not missing, (
+        f"NATIVE_REGISTRIES claws missing from _APPLY_PLAYBOOK_BY_CLAW: "
+        f"{sorted(missing)}"
+    )
+
+
+def test_dispatch_table_entries_resolve_to_existing_playbooks():
+    """W11: bind the Python dispatch table to the on-disk YAML files.
+    A typo in a value (`skills_apply.yml` instead of `.yaml`, or a
+    rename that misses the constant) is otherwise only caught when a
+    real apply runs — which in CI never happens."""
+    for claw, playbook_name in skills_apply._APPLY_PLAYBOOK_BY_CLAW.items():
+        playbook = skills_apply._registry_playbook_dir(claw) / playbook_name
+        assert playbook.is_file(), (
+            f"_APPLY_PLAYBOOK_BY_CLAW[{claw!r}]={playbook_name!r} does not "
+            f"resolve to an existing file at {playbook}"
+        )

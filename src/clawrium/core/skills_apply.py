@@ -293,6 +293,11 @@ def _make_log_dir(agent_name: str, agent_type: str, host: dict) -> Path:
     e.g. `../escape` cannot traverse outside the clawrium logs dir.
     The agent_name + agent_type fields are already regex-validated
     upstream, but we still sanitize for symmetry.
+
+    Belt-and-suspenders: even after the allowlist sanitization, the
+    resolved log_dir is asserted to stay inside logs_dir. Catches
+    future regressions (e.g. if `_sanitize_for_path` is loosened)
+    before they can reach `shutil.rmtree` in the cleanup step.
     """
     logs_dir = get_config_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -304,6 +309,11 @@ def _make_log_dir(agent_name: str, agent_type: str, host: dict) -> Path:
         logs_dir
         / f"skills_apply-{safe_agent_type}-{host_display}-{timestamp}"
     )
+    resolved = log_dir.resolve()
+    if not str(resolved).startswith(str(logs_dir.resolve()) + os.sep):
+        raise SkillApplyError(
+            f"Log directory path escaped logs root: {log_dir}"
+        )
     log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(log_dir, 0o700)
     return log_dir

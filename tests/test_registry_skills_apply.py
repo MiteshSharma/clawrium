@@ -49,8 +49,39 @@ def test_zeroclaw_skills_apply_playbook_exists():
 # ---------------------------- shared invariants -----------------------------
 
 
+def _flatten_tasks(tasks: list[dict]) -> list[dict]:
+    """Flatten a tasks list, descending into `block:` / `rescue:` /
+    `always:` so structural assertions can reach tasks defined inside
+    a block/always wrapper. Order is preserved: block body first, then
+    rescue, then always — matching ansible's runtime contract for
+    "before / on error / cleanup".
+    """
+    flat: list[dict] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        # A block task can be a parent (no module key, only block/always)
+        # or a regular task. If it has block/always, descend; either way
+        # also include the wrapper so its `name:` shows up in ordering.
+        if "block" in task or "always" in task or "rescue" in task:
+            flat.append(task)
+            for child in task.get("block", []) or []:
+                flat.extend(_flatten_tasks([child]))
+            for child in task.get("rescue", []) or []:
+                flat.extend(_flatten_tasks([child]))
+            for child in task.get("always", []) or []:
+                flat.extend(_flatten_tasks([child]))
+        else:
+            flat.append(task)
+    return flat
+
+
+def _all_tasks(play: dict) -> list[dict]:
+    return _flatten_tasks(play.get("tasks", []))
+
+
 def _task_names(play: dict) -> list[str]:
-    return [t.get("name", "") for t in play.get("tasks", [])]
+    return [t.get("name", "") for t in _all_tasks(play)]
 
 
 def test_openclaw_playbook_validates_inputs_before_touching_host():
@@ -75,7 +106,7 @@ def test_zeroclaw_playbook_validates_inputs_before_touching_host():
     assert "Validate every desired skill name" in names
     validate_idx = names.index("Validate every desired skill name")
     install_idx = names.index(
-        "Install each new skill via native `zeroclaw skills install`"
+        "Install each desired skill via native `zeroclaw skills install`"
     )
     assert validate_idx < install_idx
 
@@ -141,11 +172,13 @@ def test_zeroclaw_playbook_wraps_native_install_cli():
     (not raw file copies into `~/.zeroclaw/workspace/skills/`) so the
     audit runs on every install."""
     _, play = _load_playbook("zeroclaw")
+    # The install task lives inside a block/always wrapper (ATX W3) —
+    # walk the flattened list to find it.
     install_task = next(
         t
-        for t in play["tasks"]
+        for t in _all_tasks(play)
         if t.get("name")
-        == "Install each new skill via native `zeroclaw skills install`"
+        == "Install each desired skill via native `zeroclaw skills install`"
     )
     argv = install_task["ansible.builtin.command"]["argv"]
     # `argv` form prevents shell-injection through the slug; the slug
@@ -210,21 +243,54 @@ def test_zeroclaw_playbook_prune_set_intersects_installed():
     assert "desired_skill_names" in skills_to_prune
 
 
-def test_zeroclaw_playbook_install_set_skips_already_installed():
-    """Idempotency: re-running install on a slug that's already in the
-    workspace must be a no-op so the audit gate isn't re-paid every
-    apply (it's slow) and the install timestamp doesn't churn."""
+def test_zeroclaw_playbook_audit_gate_runs_for_every_desired_skill():
+    """Security contract (ATX #382 B2): `zeroclaw skills install` must
+    fire for EVERY entry in `desired_skill_names`, with no
+    `difference(installed_slugs)` filter that would skip already-present
+    slugs. Skipping would bypass the native audit gate, defeating the
+    whole reason the playbook wraps the CLI instead of doing raw file
+    copies into `~/.zeroclaw/workspace/skills/`."""
+    text, play = _load_playbook("zeroclaw")
+    install_task = next(
+        t
+        for t in _all_tasks(play)
+        if t.get("name")
+        == "Install each desired skill via native `zeroclaw skills install`"
+    )
+    # The install task must loop over the FULL desired list, not a
+    # filtered subset.
+    assert install_task["loop"] == "{{ desired_skill_names }}"
+    # Regression guard: the explicit anti-pattern that ATX B2 flagged.
+    # If a future refactor reintroduces `difference(installed_slugs)`
+    # in EXECUTABLE yaml (set_fact / when / loop), the test fails. We
+    # strip line comments (`#...`) first so the explainer comments
+    # documenting *why* we removed the filter don't false-positive.
+    non_comment = "\n".join(
+        line.split("#", 1)[0] for line in text.splitlines()
+    )
+    assert "difference(installed_slugs)" not in non_comment
+
+
+def test_zeroclaw_playbook_install_wrapped_in_block_always():
+    """Failure-mode hygiene (ATX #382 W3): stage + install must run
+    inside a `block:` with an `always:` cleanup so a rejected-by-audit
+    install never leaves the rendered SKILL.md on disk at a predictable
+    path. Mirrors the existing `configure.yaml` cleanup pattern."""
     _, play = _load_playbook("zeroclaw")
-    compute_install = next(
+    # Find the wrapper block by its name. Wrapper has `block:` and
+    # `always:` keys, no module key of its own.
+    wrapper = next(
         t
         for t in play["tasks"]
-        if t.get("name") == "Compute install set (desired but not installed)"
+        if "block" in t and "always" in t
     )
-    skills_to_install = compute_install["ansible.builtin.set_fact"][
-        "skills_to_install"
-    ]
-    assert "desired_skill_names" in skills_to_install
-    assert "difference(installed_slugs)" in skills_to_install
+    block_names = [t.get("name", "") for t in wrapper["block"]]
+    always_names = [t.get("name", "") for t in wrapper["always"]]
+    assert (
+        "Install each desired skill via native `zeroclaw skills install`"
+        in block_names
+    )
+    assert "Clean up remote staging directory" in always_names
 
 
 def test_zeroclaw_playbook_writes_tracking_file_last():
@@ -236,7 +302,7 @@ def test_zeroclaw_playbook_writes_tracking_file_last():
     names = _task_names(play)
     tracking_idx = names.index("Update tracking file with current desired state")
     install_idx = names.index(
-        "Install each new skill via native `zeroclaw skills install`"
+        "Install each desired skill via native `zeroclaw skills install`"
     )
     remove_idx = names.index(
         "Uninstall clawrium-managed skills no longer in desired state"
@@ -251,7 +317,9 @@ def test_zeroclaw_playbook_install_uses_argv_form_not_shell():
     validated, passing arguments through a shell parser is an
     unnecessary risk surface."""
     _, play = _load_playbook("zeroclaw")
-    for task in play["tasks"]:
+    # Walk the flattened task list so block/always-nested tasks are
+    # included — the install task lives inside a `block:` wrapper.
+    for task in _all_tasks(play):
         cmd = task.get("ansible.builtin.command")
         if cmd is None:
             continue
