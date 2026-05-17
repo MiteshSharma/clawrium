@@ -605,13 +605,9 @@ __all__ = [
     "check_agent_compatibility",
     "clear_schema_cache",
     "materialize_for_claw",
-    # The four names below are private (leading underscore) but
-    # intentionally exported as a stable surface for
-    # `scripts/validate_skills.py` to reuse the loader's parsing /
-    # schema-validation primitives. Renaming any of them requires
-    # updating that script in lockstep.
-    "_NAME_RE",
-    "_load_schema",
-    "_split_frontmatter",
-    "_validate_against_schema",
 ]
+# Note: `scripts/validate_skills.py` imports a handful of underscored
+# helpers from this module by explicit name (`_NAME_RE`, `_load_schema`,
+# `_split_frontmatter`, `_validate_against_schema`). They stay private
+# (no `__all__` entry — adding underscored names there would falsely
+# signal a public API), but renames must touch that script in lockstep.

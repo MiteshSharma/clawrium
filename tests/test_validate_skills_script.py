@@ -636,6 +636,32 @@ def test_main_exit_2_on_missing_schema_file(tmp_path, capsys):
     assert "schema for registry" in captured.err
 
 
+def test_main_exit_2_on_permission_error_reading_schema(
+    tmp_path, monkeypatch, capsys
+):
+    """A `PermissionError` (or any `OSError`) bubbling out of
+    `_load_schema` during `schema_path.read_text()` is contractually
+    an *internal* failure (exit 2), not a contributor-fixable skill
+    error (exit 1). Pin that by patching `_load_schema` to raise
+    `PermissionError` directly."""
+    _build_fixture(tmp_path)
+    skill = tmp_path / "clawrium" / "tdd"
+    skill.mkdir()
+    (skill / "_meta.yaml").write_text(_VALID_META)
+    (skill / "SKILL.md").write_text(_VALID_SKILL_MD)
+
+    def _raise_permission(_registry: str):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(validate_skills_mod, "_load_schema", _raise_permission)
+
+    rc = validate_skills_mod.main([str(tmp_path)])
+    captured = capsys.readouterr()
+    assert rc == 2, captured.err
+    assert "internal validation failure" in captured.err
+    assert "Permission denied" in captured.err
+
+
 def test_native_skill_invalid_yaml_syntax_rejected(tmp_path):
     """A SKILL.md with frontmatter that fails YAML parse (not just a
     non-mapping shape) must surface as a normal failure entry — the

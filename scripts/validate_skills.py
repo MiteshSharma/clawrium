@@ -74,11 +74,19 @@ from clawrium.core.skills import (
     REGISTRIES,
     SchemaValidationError,
     SkillRef,
+    clear_schema_cache,
+)
+
+# The four names below are intentionally underscored — they're private
+# to `clawrium.core.skills` and don't appear in its `__all__`. We reuse
+# them here as a cross-module contract so this script and the runtime
+# loader stay in lockstep on parsing/schema semantics. Any rename in
+# `skills.py` must touch this import block too.
+from clawrium.core.skills import (  # noqa: PLC2701  (private import is deliberate)
     _NAME_RE,
     _load_schema,
     _split_frontmatter,
     _validate_against_schema,
-    clear_schema_cache,
 )
 
 
@@ -123,15 +131,22 @@ class ValidationFailure:
 
 
 def _safe_load_schema(registry: str) -> dict:
-    """Wrap `_load_schema` so a missing or corrupt schema file becomes an
-    `_InternalValidationError` (exit code 2) instead of leaking
-    `SchemaValidationError` (which is the contributor-fixable, exit-1
-    surface). Without this wrap a partial install or a deleted
-    `_schema/*.json` would crash the validator with an uncaught
-    exception."""
+    """Wrap `_load_schema` so any schema-side failure surfaces as an
+    `_InternalValidationError` (exit code 2) instead of leaking through
+    as `SchemaValidationError` (exit 1, contributor-fixable) or as a
+    raw `OSError` (Python's default exit 1).
+
+    Catches:
+    - `SchemaValidationError`: missing file *or* corrupt JSON, raised
+      explicitly by the core loader.
+    - `OSError` and subclasses (`PermissionError`, `FileNotFoundError`):
+      raceable between the loader's `is_file()` probe and the
+      `read_text()` call, or surfaceable on partial installs / chroot
+      mounts. Without this we'd exit 1 with an unhandled traceback.
+    """
     try:
         return _load_schema(registry)
-    except SchemaValidationError as error:
+    except (SchemaValidationError, OSError) as error:
         raise _InternalValidationError(
             f"schema for registry {registry!r} could not be loaded: {error}"
         ) from error
