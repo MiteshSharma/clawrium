@@ -89,8 +89,10 @@ export function SkillDetail({ skill }: SkillDetailProps) {
               users can't scroll the body when it overflows max-h-96. */}
           <pre
             tabIndex={0}
-            aria-label="SKILL.md body, scrollable"
-            className="text-xs text-secondary whitespace-pre-wrap font-mono max-h-96 overflow-auto focus:outline-none focus:ring-2 focus:ring-primary"
+            aria-label="SKILL.md body"
+            // `focus-visible:` so mouse-click doesn't paint the focus
+            // ring — only keyboard focus shows it (WCAG 2.4.7).
+            className="text-xs text-secondary whitespace-pre-wrap font-mono max-h-96 overflow-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             {skill.body}
           </pre>
