@@ -107,6 +107,10 @@ function CompatibilityBadges({
       {entries.map(([claw, ok]) => (
         <span
           key={claw}
+          // line-through carries the same signal as the aria-label so
+          // sighted and screen-reader users agree on compatibility.
+          // WCAG 1.4.1 — never rely on visual presentation alone.
+          aria-label={ok ? `${claw} — compatible` : `${claw} — incompatible`}
           className={`px-1.5 py-0.5 rounded text-xs ${
             ok
               ? "bg-emerald-50 text-emerald-700"

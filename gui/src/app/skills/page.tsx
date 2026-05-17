@@ -37,7 +37,7 @@ export default function SkillsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Skills"
-        description="Browse the clawrium-managed skills catalog. Install via the CLI: clm agent skill install."
+        description="Browse the clawrium-managed skills catalog. Install from the CLI: clm agent skill install <agent> <registry>/<name>."
       />
 
       {error ? (
@@ -53,8 +53,7 @@ export default function SkillsPage() {
         </div>
       ) : catalog ? (
         <>
-          <div
-            role="tablist"
+          <nav
             aria-label="Skill registries"
             className="flex gap-1 border-b border-default"
           >
@@ -63,9 +62,8 @@ export default function SkillsPage() {
               return (
                 <button
                   key={registry}
-                  role="tab"
                   type="button"
-                  aria-selected={isActive}
+                  aria-current={isActive ? "page" : undefined}
                   onClick={() => setActiveRegistry(registry)}
                   className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
                     isActive
@@ -80,7 +78,7 @@ export default function SkillsPage() {
                 </button>
               );
             })}
-          </div>
+          </nav>
 
           {visibleSkills.length > 0 ? (
             <div className="space-y-3">

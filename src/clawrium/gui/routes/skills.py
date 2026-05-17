@@ -20,9 +20,10 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Path as FastAPIPath
 
 from clawrium.core.skills import (
+    NATIVE_REGISTRIES,
     REGISTRIES,
     ExternalSourceBlocked,
     InvalidSkillRef,
@@ -37,6 +38,26 @@ from clawrium.core.skills import (
     validate_skill,
 )
 
+# Keys lifted from a skill's raw _meta.yaml (or native SKILL.md
+# frontmatter) into the GUI detail response. Anything outside this set —
+# `native.*` materialization blocks, `prerequisites.env`, future
+# free-form fields — is deliberately dropped so the HTTP body never
+# becomes a backdoor exfil path for catalog-author-supplied data.
+_DETAIL_METADATA_KEYS: tuple[str, ...] = (
+    "name",
+    "description",
+    "version",
+    "license",
+    "author",
+    "platforms",
+)
+
+# Cap SKILL.md body bytes sent to the browser. The CLI renders the raw
+# file; the GUI shows a preview. 64 KiB is ~30 pages of markdown — well
+# past anything a TDD-style skill should ship — but bounded against a
+# future skill that bundles a long appendix.
+_BODY_MAX_BYTES = 64 * 1024
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -49,6 +70,12 @@ def _summarize(ref: SkillRef) -> dict[str, Any]:
     rather than blowing up the whole list — same UX rule the CLI uses in
     ``cli/skill.py::_short_description``. A single bad ``_meta.yaml``
     should not blank the GUI catalog tab.
+
+    Catches OSError (e.g. permission glitch on _meta.yaml) in addition
+    to SkillError so a flaky filesystem entry can't crash the whole
+    /api/skills response. The full error is surfaced at WARNING — DEBUG
+    is too quiet to spot when the catalog tab silently shows missing
+    descriptions.
     """
     summary: dict[str, Any] = {
         "ref": str(ref),
@@ -59,8 +86,8 @@ def _summarize(ref: SkillRef) -> dict[str, Any]:
     }
     try:
         skill = load_skill(ref)
-    except SkillError as error:
-        logger.debug("skipping summary for %s: %s", ref, error)
+    except (SkillError, OSError) as error:
+        logger.warning("skipping summary for %s: %s", ref, error)
         return summary
 
     description = skill.metadata.get("description")
@@ -77,11 +104,17 @@ def _summarize(ref: SkillRef) -> dict[str, Any]:
 def _detail(skill_ref: SkillRef) -> dict[str, Any]:
     """Full skill payload for the detail endpoint.
 
-    Exposes the parsed metadata, the SKILL.md body, and a derived
+    Exposes a filtered metadata view, the SKILL.md body, and a derived
     ``compatibility`` map so the frontend doesn't need to know whether
     the source registry was ``clawrium`` (compatibility lives in
     ``_meta.yaml``) or a native claw (compatibility is implicit: only the
     claw whose registry name matches the ref).
+
+    Metadata is **whitelisted** to ``_DETAIL_METADATA_KEYS`` — raw
+    ``native.*`` materialization blocks and any future free-form fields
+    in ``_meta.yaml`` never reach the wire. The GUI only renders the
+    whitelisted fields, so anything else is dead weight with a live
+    leak surface.
     """
     skill = load_skill(skill_ref)
     # Validate so malformed catalog files surface as 422 (caller maps the
@@ -89,13 +122,28 @@ def _detail(skill_ref: SkillRef) -> dict[str, Any]:
     # would return a partial-looking 200 to the GUI.
     validate_skill(skill)
 
+    metadata = {
+        key: skill.metadata[key]
+        for key in _DETAIL_METADATA_KEYS
+        if key in skill.metadata and skill.metadata[key] not in (None, "", [], {})
+    }
+    body = skill.body
+    if len(body.encode("utf-8")) > _BODY_MAX_BYTES:
+        # Byte-bounded truncation. The marker line is plain text so a
+        # naive consumer (e.g. curl piped to less) sees something
+        # obvious instead of a silently shortened document.
+        body = body.encode("utf-8")[:_BODY_MAX_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+        body += "\n\n... [truncated by GUI — fetch via `clm skill show` for full]\n"
+
     compatibility = _compatibility_map(skill_ref, skill.metadata)
     return {
         "ref": str(skill.ref),
         "registry": skill.ref.registry,
         "name": skill.ref.name,
-        "metadata": skill.metadata,
-        "body": skill.body,
+        "metadata": metadata,
+        "body": body,
         "compatibility": compatibility,
     }
 
@@ -109,34 +157,51 @@ def _compatibility_map(ref: SkillRef, metadata: dict[str, Any]) -> dict[str, boo
 
     For ``<claw>/*`` we synthesize ``{<claw>: True, <other>: False}`` so
     the GUI doesn't have to special-case native skills.
+
+    Claw list comes from ``NATIVE_REGISTRIES`` so any future claw
+    (e.g. ``nemoclaw``) added to ``core.skills`` automatically appears
+    in the compatibility map. ``sorted()`` for stable JSON ordering.
     """
+    claws = sorted(NATIVE_REGISTRIES)
     if ref.registry == "clawrium":
         raw = metadata.get("compatibility") or {}
         if not isinstance(raw, dict):
             raw = {}
-        return {
-            claw: bool(raw.get(claw, False))
-            for claw in ("openclaw", "hermes", "zeroclaw")
-        }
-    return {
-        claw: (claw == ref.registry)
-        for claw in ("openclaw", "hermes", "zeroclaw")
-    }
+        return {claw: bool(raw.get(claw, False)) for claw in claws}
+    return {claw: (claw == ref.registry) for claw in claws}
 
 
-def _map_error(error: SkillError) -> HTTPException:
-    """Translate a ``SkillError`` into an HTTP exception with stable codes."""
+def _map_error(error: SkillError, ref_str: str) -> HTTPException:
+    """Translate a ``SkillError`` into an HTTP exception with stable codes.
+
+    Bodies are split between **safe-to-echo** errors (user-supplied refs
+    like a bad registry name) and **path-bearing** errors (catalog
+    validation messages that include absolute filesystem paths). The
+    latter are logged server-side at WARNING and replaced with a
+    generic message — clients shouldn't have to know about disk
+    layout to debug a malformed `_meta.yaml`.
+    """
     if isinstance(error, SkillNotFound):
         return HTTPException(status_code=404, detail=str(error))
     if isinstance(
         error,
         (MissingRegistryPrefix, ExternalSourceBlocked, InvalidSkillRef),
     ):
+        # User-supplied ref strings only — no filesystem paths leak here.
         return HTTPException(status_code=422, detail=str(error))
     if isinstance(error, SchemaValidationError):
-        return HTTPException(status_code=422, detail=str(error))
-    # Defensive: a future SkillError subclass should not become a 500.
-    return HTTPException(status_code=500, detail=str(error))
+        # `str(error)` includes absolute paths to the offending file and
+        # the full jsonschema validation trace. Keep that in the server
+        # log; ship a stable generic message to the wire.
+        logger.warning("catalog schema validation failed for %s: %s", ref_str, error)
+        return HTTPException(
+            status_code=422,
+            detail=f"Catalog metadata for {ref_str!r} failed validation.",
+        )
+    # Defensive: a future SkillError subclass should not become a 500
+    # whose body echoes a path or stack-encoded internal detail.
+    logger.exception("unhandled SkillError for %s: %s", ref_str, error)
+    return HTTPException(status_code=500, detail="Internal error.")
 
 
 @router.get("")
@@ -182,8 +247,16 @@ async def list_skills_route() -> dict[str, Any]:
 
 
 @router.get("/{registry}/{name}")
-async def get_skill_route(registry: str, name: str) -> dict[str, Any]:
-    """Detail view for a single ``<registry>/<name>`` skill."""
+async def get_skill_route(
+    registry: str = FastAPIPath(..., max_length=64),
+    name: str = FastAPIPath(..., max_length=128),
+) -> dict[str, Any]:
+    """Detail view for a single ``<registry>/<name>`` skill.
+
+    Path-param length caps are a framework-layer guard against absurdly
+    long inputs that would otherwise reach `parse_skill_ref` and bloat
+    error messages. Real refs are way under these caps.
+    """
     raw_ref = f"{registry}/{name}"
 
     def _resolve() -> dict[str, Any]:
@@ -191,7 +264,7 @@ async def get_skill_route(registry: str, name: str) -> dict[str, Any]:
             ref = parse_skill_ref(raw_ref)
             return _detail(ref)
         except SkillError as error:
-            raise _map_error(error) from error
+            raise _map_error(error, raw_ref) from error
 
     try:
         return await asyncio.to_thread(_resolve)

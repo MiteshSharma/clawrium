@@ -65,7 +65,21 @@ def test_list_does_not_leak_skill_md_body():
     # served by the detail endpoint. Catch this if the summary shape
     # accidentally absorbs the body field later.
     assert "Red → Green → Refactor" not in blob
-    assert "skill.md" not in blob.lower() or "SKILL.md" not in blob
+    # Explicit field-shape guard: no per-summary entry should carry a
+    # `body` or `metadata` key. Previously this assertion was a vacuous
+    # OR — the literal `"skill.md"` never appears in JSON keys so the
+    # short-circuit made the test pass regardless of leaks.
+    for registry_entries in result["skills"].values():
+        for entry in registry_entries:
+            assert "body" not in entry, entry
+            assert "metadata" not in entry, entry
+            assert set(entry.keys()) <= {
+                "ref",
+                "registry",
+                "name",
+                "description",
+                "version",
+            }, entry
 
 
 def test_list_returns_empty_catalog_when_missing(monkeypatch, tmp_path):
@@ -103,6 +117,26 @@ def test_detail_returns_metadata_and_body_for_clawrium_tdd():
     assert result["compatibility"]["openclaw"] is True
     assert result["compatibility"]["hermes"] is True
     assert result["compatibility"]["zeroclaw"] is True
+
+
+def test_detail_metadata_is_whitelisted():
+    """The detail endpoint must only ship presentation-layer fields —
+    no `native.*` blocks, no `compatibility` mirror, no future
+    free-form `_meta.yaml` additions."""
+    result = _run(skills_route.get_skill_route("clawrium", "tdd"))
+    metadata_keys = set(result["metadata"].keys())
+    assert metadata_keys <= {
+        "name",
+        "description",
+        "version",
+        "license",
+        "author",
+        "platforms",
+    }, metadata_keys
+    # Specifically: `native` and `compatibility` are present in the
+    # source _meta.yaml but must not leak to the wire.
+    assert "native" not in result["metadata"]
+    assert "compatibility" not in result["metadata"]
 
 
 def test_detail_unknown_registry_returns_422():
@@ -153,6 +187,15 @@ def test_detail_schema_error_returns_422(monkeypatch, tmp_path):
     with pytest.raises(HTTPException) as exc:
         _run(skills_route.get_skill_route("clawrium", "badmeta"))
     assert exc.value.status_code == 422
+    # The 422 body must not contain absolute filesystem paths — those
+    # are logged server-side, not echoed to the client.
+    detail = str(exc.value.detail)
+    assert str(tmp_path) not in detail
+    assert "/_meta.yaml" not in detail
+    assert "/SKILL.md" not in detail
+    # And it must still identify which skill failed — generic enough
+    # not to leak paths, specific enough to be actionable.
+    assert "clawrium/badmeta" in detail
 
 
 # ---------- Helpers ------------------------------------------------------------

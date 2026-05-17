@@ -93,11 +93,12 @@ describe("SkillsPage", () => {
   it("renders a tab per registry with counts", () => {
     skillsState.data = makeCatalog();
     render(<SkillsPage />);
-    const tabs = screen.getAllByRole("tab");
+    const nav = screen.getByRole("navigation", { name: "Skill registries" });
+    const tabs = nav.querySelectorAll("button");
     expect(tabs).toHaveLength(4);
     // The clawrium tab starts active and shows count 1.
-    const clawriumTab = screen.getByRole("tab", { name: /Clawrium/ });
-    expect(clawriumTab).toHaveAttribute("aria-selected", "true");
+    const clawriumTab = screen.getByRole("button", { name: /Clawrium/ });
+    expect(clawriumTab).toHaveAttribute("aria-current", "page");
     expect(clawriumTab.textContent).toMatch(/1/);
   });
 
@@ -110,7 +111,7 @@ describe("SkillsPage", () => {
   it("renders the empty-state hint when a tab has no skills", () => {
     skillsState.data = makeCatalog();
     render(<SkillsPage />);
-    fireEvent.click(screen.getByRole("tab", { name: /Hermes/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Hermes/ }));
     expect(
       screen.getByText((_, node) => node?.textContent === "skills/hermes/<name>/"),
     ).toBeInTheDocument();
