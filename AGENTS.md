@@ -42,6 +42,10 @@ clm agent install --type openclaw --host mybox
 clm agent configure <agent-name>
 clm agent start <agent-name>
 
+# Install a skill onto the agent (catalog: skills/)
+clm skill list
+clm agent skill install <agent-name> clawrium/tdd
+
 # Check fleet status
 clm ps
 ```

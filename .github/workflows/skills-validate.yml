@@ -1,0 +1,52 @@
+name: Skills Validate
+
+# Phase 6 contributor safety net (issue #385). A new contributor drops a
+# skill into skills/<registry>/<name>/, opens a PR, and this workflow
+# catches schema mistakes (path traversal, schema mismatch, missing
+# required fields) before maintainer review.
+#
+# The job is intentionally narrow: it only runs the dual-schema catalog
+# validator (scripts/validate_skills.py) plus the fixture-based unit
+# tests for it. The full test suite still runs in test.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "skills/**"
+      - "scripts/validate_skills.py"
+      - "src/clawrium/core/skills.py"
+      - "tests/test_validate_skills_script.py"
+      - ".github/workflows/skills-validate.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "skills/**"
+      - "scripts/validate_skills.py"
+      - "src/clawrium/core/skills.py"
+      - "tests/test_validate_skills_script.py"
+      - ".github/workflows/skills-validate.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Validate skills catalog
+        run: uv run python scripts/validate_skills.py
+
+      - name: Run validator fixture tests
+        run: uv run pytest tests/test_validate_skills_script.py -v
