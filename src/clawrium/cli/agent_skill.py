@@ -9,15 +9,19 @@ Wired into the existing `agent` sub-app via
   - `clm agent skill install <agent> <registry>/<name>`
   - `clm agent skill remove  <agent> <registry>/<name>`
 
-`install` and `remove` both mutate the desired-state file *first* and
-then unconditionally invoke `apply_state(agent)`. That gives us:
+Install order is **preflight → mutate → apply**:
 
-  - **Idempotent installs** — re-running install on an already-installed
-    skill is a no-op state mutation but still reconciles the host
-    (drift recovery: re-run install after manual `rm -rf` on the
-    agent's skill dir).
-  - **Single chokepoint for I/O** — the per-claw playbook is the only
-    code that touches the host.
+  1. Parse the ref, load+validate the skill, resolve the agent's claw
+     type, and run `check_agent_compatibility`. All of this happens
+     before `add_skill` mutates the desired-state file — so an
+     incompatible install request cannot contaminate the state file.
+  2. Mutate the state file.
+  3. Run `apply_state` (which re-validates and reconciles the host).
+
+Remove is symmetric: state is only mutated after the ref parses (it
+does not require the skill to still exist in the catalog). If
+`apply_state` fails mid-flight for either operation, the prior state
+is restored so the user-visible state file matches what the host has.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
+from clawrium.cli.chat import _sanitize_exception_text
+from clawrium.core.hosts import get_agent_by_name
 from clawrium.core.skills import (
     ExternalSourceBlocked,
     IncompatibleSkillRegistry,
@@ -37,7 +43,10 @@ from clawrium.core.skills import (
     SchemaValidationError,
     SkillError,
     SkillNotFound,
+    check_agent_compatibility,
+    load_skill,
     parse_skill_ref,
+    validate_skill,
 )
 from clawrium.core.skills_apply import (
     AgentNotFoundError,
@@ -49,6 +58,7 @@ from clawrium.core.skills_state import (
     add_skill,
     read_state,
     remove_skill,
+    write_state,
 )
 
 __all__ = ["agent_skill_app"]
@@ -83,9 +93,38 @@ agent_skill_app = typer.Typer(
 
 
 def _exit_with_error(error: SkillError) -> None:
-    """Render a skill error to stderr and exit non-zero."""
-    err_console.print(f"[red]Error:[/red] {escape(str(error))}")
+    """Render a skill error to stderr and exit non-zero.
+
+    Routes the error text through `_sanitize_exception_text` (same
+    helper used by `cli/chat.py` and `cli/tui/widgets/chat_panel.py`)
+    so a remote-supplied playbook message containing U+202E (RTLO),
+    other bidi-format codepoints, or C0/C1 control bytes cannot spoof
+    terminal output via the `[red]Error: ...[/red]` channel.
+    """
+    err_console.print(
+        f"[red]Error:[/red] {escape(_sanitize_exception_text(error))}"
+    )
     raise typer.Exit(code=1)
+
+
+def _resolve_agent_type(agent_name: str) -> str:
+    """Resolve `agent_name` to its claw type for preflight checks.
+
+    Raises:
+        AgentNotFoundError: name does not match any installed agent,
+            or matches more than one (ambiguous across hosts).
+    """
+    try:
+        resolved = get_agent_by_name(agent_name)
+    except ValueError as error:
+        # Ambiguous name across hosts (see core.hosts.get_agent_by_name).
+        raise AgentNotFoundError(str(error)) from error
+    if resolved is None:
+        raise AgentNotFoundError(
+            f"Agent {agent_name!r} not found. Run `clm agent ps`."
+        )
+    _host, agent_type, _agent_record = resolved
+    return agent_type
 
 
 @agent_skill_app.command(name="list")
@@ -97,8 +136,8 @@ def list_command(
     """List skills currently in the agent's desired state.
 
     Reads `${XDG_CONFIG_HOME:-~/.config}/clawrium/agents/<agent>/skills.json`.
-    Does not query the remote host; for that, install/remove which run
-    `apply_state` and reconcile.
+    Does not query the remote host — run `install` or `remove` to
+    reconcile on-host content with desired state.
     """
     try:
         refs = read_state(agent_name)
@@ -114,13 +153,13 @@ def list_command(
         )
         return
 
-    table = Table(title=f"Skills on {agent_name}")
+    table = Table(title=f"Skills on {escape(agent_name)}")
     table.add_column("Ref", style="cyan", no_wrap=True)
     table.add_column("Registry", style="green")
     table.add_column("Name")
     for ref_str in refs:
         # Already-validated on write — but parse again so the table is
-        # consistent if a Phase 3 change ever loosens the writer.
+        # consistent if a future change ever loosens the writer.
         ref = parse_skill_ref(ref_str)
         table.add_row(escape(ref_str), escape(ref.registry), escape(ref.name))
     console.print(table)
@@ -139,15 +178,46 @@ def install(
 ) -> None:
     """Install `<registry>/<name>` on `<agent>`.
 
-    Always re-runs the per-claw apply playbook even if the skill was
-    already in the state file. Re-running is the documented way to
-    recover from drift (e.g. someone manually removed the on-host
-    SKILL.md).
+    Preflight (parse + load + validate + compatibility) runs before
+    the state file is touched so an incompatible install request never
+    leaves the state file in a contaminated state. The per-claw apply
+    playbook is then invoked unconditionally — re-running install on
+    an already-installed skill is the documented drift-recovery path.
     """
     try:
-        new_state, added = add_skill(agent_name, skill_ref)
+        # Preflight — no state mutation yet.
+        ref = parse_skill_ref(skill_ref)
+        skill = load_skill(ref)
+        validate_skill(skill)
+        agent_type = _resolve_agent_type(agent_name)
+        check_agent_compatibility(skill, agent_type)
+    except _USER_FACING_ERRORS as error:
+        _exit_with_error(error)
+        return
+
+    # Snapshot the prior state so we can roll back if `apply_state`
+    # fails on the host. This is what keeps a transient SSH outage
+    # from leaving the state file claiming a skill is installed when
+    # it isn't.
+    try:
+        prior_state = read_state(agent_name)
+        _new_state, added = add_skill(agent_name, ref)
+    except _USER_FACING_ERRORS as error:
+        _exit_with_error(error)
+        return
+
+    try:
         result = apply_state(agent_name)
     except _USER_FACING_ERRORS as error:
+        # Roll back the state mutation; the host did not converge.
+        try:
+            write_state(agent_name, prior_state)
+        except Exception as rollback_error:
+            logger.warning(
+                "Rollback of %s state failed: %s",
+                agent_name,
+                rollback_error,
+            )
         _exit_with_error(error)
         return
 
@@ -175,19 +245,40 @@ def remove(
     skill_ref: str = typer.Argument(
         ...,
         metavar="REGISTRY/NAME",
-        help="Skill reference (e.g. `clawrium/tdd`).",
+        help="Skill reference (e.g. `clawrium/tdd`). Bare names are rejected.",
     ),
 ) -> None:
     """Remove `<registry>/<name>` from `<agent>`.
 
     Removing a skill that isn't currently in the state file is treated
     as idempotent — the playbook still runs and prunes any orphan
-    directory on the host that matches the ref.
+    directory on the host that matches the ref. If the playbook fails,
+    the prior state is restored so the state file always tracks what
+    the host has.
     """
     try:
-        _new_state, removed = remove_skill(agent_name, skill_ref)
+        # Validate the ref *before* mutating state. We deliberately do
+        # NOT call `load_skill` here — a remove should still work even
+        # if the catalog entry has been deleted upstream (the on-host
+        # SKILL.md may still exist and need pruning).
+        ref = parse_skill_ref(skill_ref)
+        prior_state = read_state(agent_name)
+        _new_state, removed = remove_skill(agent_name, ref)
+    except _USER_FACING_ERRORS as error:
+        _exit_with_error(error)
+        return
+
+    try:
         _result = apply_state(agent_name)
     except _USER_FACING_ERRORS as error:
+        try:
+            write_state(agent_name, prior_state)
+        except Exception as rollback_error:
+            logger.warning(
+                "Rollback of %s state failed: %s",
+                agent_name,
+                rollback_error,
+            )
         _exit_with_error(error)
         return
 

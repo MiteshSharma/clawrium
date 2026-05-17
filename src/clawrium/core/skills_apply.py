@@ -39,6 +39,7 @@ import yaml
 from clawrium.core.config import get_config_dir
 from clawrium.core.hosts import get_agent_by_name
 from clawrium.core.keys import get_host_private_key
+from clawrium.core.reset import _sanitize_for_path
 from clawrium.core.skills import (
     NATIVE_REGISTRIES,
     Skill,
@@ -145,13 +146,19 @@ def apply_state(agent_name: str, *, timeout: int = 60) -> ApplyResult:
     host, agent_type, _agent_record = resolved
     if agent_type not in NATIVE_REGISTRIES:
         raise SkillApplyNotSupported(
-            f"Agent {agent_name!r} has unsupported claw type {agent_type!r}."
+            f"Agent {agent_name!r} has unsupported claw type {agent_type!r}. "
+            f"Supported: {', '.join(sorted(NATIVE_REGISTRIES))}."
         )
     playbook_name = _APPLY_PLAYBOOK_BY_CLAW.get(agent_type)
     if not playbook_name:
+        # Operator-facing error text — no plan/phase jargon. Lists the
+        # claw types that currently support skills so the user can
+        # `clm agent ps | grep <supported>` for a target.
+        supported = ", ".join(sorted(_APPLY_PLAYBOOK_BY_CLAW)) or "none"
         raise SkillApplyNotSupported(
-            f"Skills apply for {agent_type!r} is not implemented yet "
-            "(Phase 2 wires hermes; Phase 3 adds openclaw/zeroclaw)."
+            f"Skills install is not yet supported for {agent_type} agents. "
+            f"Currently supported claw types: {supported}. "
+            "Run `clm agent ps` to find a compatible agent."
         )
 
     # Validate everything in the desired state BEFORE touching the
@@ -167,10 +174,15 @@ def apply_state(agent_name: str, *, timeout: int = 60) -> ApplyResult:
         check_agent_compatibility(skill, agent_type)
         loaded.append(skill)
 
+    # Stage first so the cleanup `finally` covers the log-dir creation,
+    # the playbook invocation, and any exception in between. Without
+    # this ordering, an exception thrown by `_make_log_dir` (e.g.
+    # tampered XDG_CONFIG_HOME, no disk space) would leak the staging
+    # tempdir into ${clawrium_config}/staging/.
     staging_dir = _stage_skills(agent_name, agent_type, loaded)
-    log_dir = _make_log_dir(agent_name, agent_type, host)
-
+    log_dir: Path | None = None
     try:
+        log_dir = _make_log_dir(agent_name, agent_type, host)
         _run_apply_playbook(
             host=host,
             agent_name=agent_name,
@@ -186,14 +198,17 @@ def apply_state(agent_name: str, *, timeout: int = 60) -> ApplyResult:
         # frontmatter only (no secrets) but lingering temp dirs are
         # noise.
         shutil.rmtree(staging_dir, ignore_errors=True)
-        _cleanup_runner_artifacts(log_dir)
+        if log_dir is not None:
+            _cleanup_runner_artifacts(log_dir)
 
     return ApplyResult(
         agent_name=agent_name,
         agent_type=agent_type,
         hostname=host.get("hostname", "<unknown>"),
         applied_skills=[str(skill.ref) for skill in loaded],
-        log_dir=log_dir,
+        # log_dir was assigned before _run_apply_playbook ran; on the
+        # successful-return path it is always populated.
+        log_dir=log_dir if log_dir is not None else Path(""),
     )
 
 
@@ -254,12 +269,24 @@ def _render_skill_md(frontmatter: dict[str, Any], body: str) -> str:
 
 
 def _make_log_dir(agent_name: str, agent_type: str, host: dict) -> Path:
-    """Create an ansible-runner private_data_dir for this apply run."""
+    """Create an ansible-runner private_data_dir for this apply run.
+
+    Path components sourced from the host record are routed through
+    `_sanitize_for_path` so a tampered hosts.json `alias` containing
+    e.g. `../escape` cannot traverse outside the clawrium logs dir.
+    The agent_name + agent_type fields are already regex-validated
+    upstream, but we still sanitize for symmetry.
+    """
     logs_dir = get_config_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    host_display = host.get("alias") or host.get("hostname", "unknown")
-    log_dir = logs_dir / f"skills_apply-{agent_type}-{host_display}-{timestamp}"
+    raw_host_display = host.get("alias") or host.get("hostname", "unknown")
+    host_display = _sanitize_for_path(str(raw_host_display)) or "unknown"
+    safe_agent_type = _sanitize_for_path(agent_type)
+    log_dir = (
+        logs_dir
+        / f"skills_apply-{safe_agent_type}-{host_display}-{timestamp}"
+    )
     log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(log_dir, 0o700)
     return log_dir

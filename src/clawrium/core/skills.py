@@ -396,11 +396,14 @@ def check_agent_compatibility(skill: Skill, agent_type: str) -> None:
                 f"Skill {skill.ref}: `compatibility` must be a mapping, "
                 f"got {type(compat).__name__}."
             )
-        if not compat.get(agent_type, False):
+        # Default-true if the claw key is absent (a normalized skill is
+        # meant to run anywhere unless it opts out). Only an explicit
+        # `false` value fails closed. Mirrors the docstring contract.
+        flag = compat.get(agent_type, True)
+        if not flag:
             raise IncompatibleSkillRegistry(
                 f"Skill {skill.ref} is not compatible with agent type "
-                f"{agent_type!r} (compatibility flag is "
-                f"{compat.get(agent_type)!r})."
+                f"{agent_type!r} (compatibility flag is {flag!r})."
             )
         return
 

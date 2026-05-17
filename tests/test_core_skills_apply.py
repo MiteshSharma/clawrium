@@ -242,13 +242,31 @@ def test_apply_state_runner_unreachable(monkeypatch):
 
 
 def test_apply_state_cleans_log_artifacts_on_success(monkeypatch, tmp_path):
-    _patch_runtime(monkeypatch)
+    """The cleanup test only proves something if the directories
+    actually exist at the moment cleanup runs — a MagicMock that
+    never creates them makes the assertion vacuously pass. The
+    side_effect below pre-creates `artifacts/`, `env/`, `inventory/`
+    inside the runner's private_data_dir (with a real-looking
+    inventory file mimicking what ansible-runner writes) so the
+    cleanup pass has something to clean.
+    """
+
+    def create_artifacts_and_succeed(**kwargs):
+        pd = Path(kwargs["private_data_dir"])
+        for sub in ("artifacts", "env", "inventory"):
+            (pd / sub).mkdir(parents=True, exist_ok=True)
+            (pd / sub / "evidence.txt").write_text("would leak SSH key path")
+        return _runner_result()
+
+    runner = _patch_runtime(monkeypatch)
+    runner.run.side_effect = create_artifacts_and_succeed
+
     apply_state("tdd-hermes")
-    # `inventory/` would contain the SSH key path + extravars; the
-    # cleanup pass at the end of apply_state must remove it (matches
-    # memory.py / lifecycle.py policy).
+
     logs_dir = tmp_path / "clawrium" / "logs"
-    for log_dir in logs_dir.iterdir():
+    log_dirs = list(logs_dir.iterdir())
+    assert log_dirs, "expected at least one log dir on disk"
+    for log_dir in log_dirs:
         for leaked in ("artifacts", "env", "inventory"):
             assert not (log_dir / leaked).exists(), (
                 f"{log_dir / leaked} should have been cleaned"
@@ -291,6 +309,72 @@ def test_check_agent_compatibility_clawrium_default_true():
     skill = load_skill(parse_skill_ref("clawrium/tdd"))
     for claw in NATIVE_REGISTRIES:
         check_agent_compatibility(skill, claw)  # no raise
+
+
+def test_check_agent_compatibility_empty_compat_map_defaults_true():
+    """Per the docstring contract: a normalized clawrium skill with
+    no `compatibility` keys for a given claw should default to
+    *compatible*, not blocked. Catches the regression where the
+    `.get(claw, default)` default was `False` instead of `True`.
+    """
+    from clawrium.core.skills import (
+        Skill,
+        SkillRef,
+        check_agent_compatibility,
+    )
+
+    skill = Skill(
+        ref=SkillRef("clawrium", "tdd"),
+        path=Path("/dev/null"),
+        metadata={"name": "tdd", "description": "fake", "compatibility": {}},
+        body="",
+    )
+    for claw in NATIVE_REGISTRIES:
+        check_agent_compatibility(skill, claw)  # no raise
+
+
+def test_check_agent_compatibility_missing_key_defaults_true():
+    """Same default-true contract when the entire `compatibility` key
+    is absent from `_meta.yaml`. A skill that doesn't opt out should
+    install on any claw."""
+    from clawrium.core.skills import (
+        Skill,
+        SkillRef,
+        check_agent_compatibility,
+    )
+
+    skill = Skill(
+        ref=SkillRef("clawrium", "tdd"),
+        path=Path("/dev/null"),
+        metadata={"name": "tdd", "description": "fake"},
+        body="",
+    )
+    for claw in NATIVE_REGISTRIES:
+        check_agent_compatibility(skill, claw)  # no raise
+
+
+def test_check_agent_compatibility_partial_map_only_blocks_explicit_false():
+    """`{hermes: false}` blocks hermes only; openclaw/zeroclaw default-true."""
+    from clawrium.core.skills import (
+        Skill,
+        SkillRef,
+        check_agent_compatibility,
+    )
+
+    skill = Skill(
+        ref=SkillRef("clawrium", "tdd"),
+        path=Path("/dev/null"),
+        metadata={
+            "name": "tdd",
+            "description": "fake",
+            "compatibility": {"hermes": False},
+        },
+        body="",
+    )
+    with pytest.raises(IncompatibleSkillRegistry, match="not compatible"):
+        check_agent_compatibility(skill, "hermes")
+    check_agent_compatibility(skill, "openclaw")  # default-true
+    check_agent_compatibility(skill, "zeroclaw")  # default-true
 
 
 def test_check_agent_compatibility_clawrium_explicit_false_blocks(monkeypatch):
@@ -350,6 +434,99 @@ def test_check_agent_compatibility_unknown_claw_fails_closed():
 
 
 # ---------------------------- drift recovery --------------------------------
+
+
+def test_apply_state_openclaw_message_has_no_phase_jargon(monkeypatch):
+    """`SkillApplyNotSupported` must not leak implementation-plan phase
+    numbers into user-facing CLI output. The replacement message
+    points the user at `clm agent ps` to find a supported agent."""
+    _patch_runtime(monkeypatch, agent_type="openclaw")
+    with pytest.raises(SkillApplyNotSupported) as excinfo:
+        apply_state("tdd-openclaw")
+    message = str(excinfo.value).lower()
+    assert "phase" not in message
+    assert "wires" not in message
+    assert "clm agent ps" in str(excinfo.value)
+
+
+def test_apply_state_runner_startup_failure_raises_skill_apply_error(monkeypatch):
+    """Cover the previously-untested branch where `ansible_runner.run`
+    itself raises during startup (e.g. missing executable, bad
+    private_data_dir). The wrapper must translate the bare exception
+    into a `SkillApplyError` instead of leaking the underlying class."""
+    runner = _patch_runtime(monkeypatch)
+    runner.run.side_effect = RuntimeError("ansible binary not found")
+    with pytest.raises(SkillApplyError, match="ansible-runner failed to start"):
+        apply_state("tdd-hermes")
+
+
+def test_apply_state_failed_no_events_falls_back_to_status(monkeypatch):
+    """`_extract_failure_message` must degrade to the status string
+    when ansible-runner emits no `runner_on_*` events. Without this
+    branch, an empty `events` list would surface as the literal word
+    'unknown' — verify the wrapper handles the no-events case."""
+    _patch_runtime(monkeypatch, runner_result=_runner_result(status="failed", events=[]))
+    with pytest.raises(SkillApplyError, match="failed"):
+        apply_state("tdd-hermes")
+
+
+def test_apply_state_log_dir_sanitizes_host_alias(monkeypatch, tmp_path):
+    """A tampered hosts.json with `alias: '../escape'` must not let
+    the log dir traverse outside `${clawrium_config}/logs/`. The
+    sanitizer replaces every non-allowlist char (including `/`) with
+    `_`. Dots are kept (so timestamps remain readable), but since
+    slashes are gone the `..` substring is just a filename token,
+    not a path component."""
+    _patch_runtime(
+        monkeypatch,
+        host={
+            "hostname": "wolf-i",
+            "alias": "../../escape",
+            "user": "wolf-i",
+            "port": 22,
+            "key_id": "wolf-i",
+        },
+    )
+
+    apply_state("tdd-hermes")
+
+    logs_dir = (tmp_path / "clawrium" / "logs").resolve()
+    log_dirs = list((tmp_path / "clawrium" / "logs").iterdir())
+    assert log_dirs, "expected a log dir to be created"
+    for log_dir in log_dirs:
+        # The created path must be a direct child of logs_dir (a single
+        # filesystem segment, no embedded slash).
+        assert log_dir.parent.resolve() == logs_dir
+        assert "/" not in log_dir.name
+        # And the resolved path must stay rooted under logs_dir — this
+        # is the safety property that matters; `..` as a substring of
+        # a filename component is fine.
+        assert str(log_dir.resolve()).startswith(str(logs_dir))
+
+
+def test_apply_state_staging_cleaned_when_log_dir_creation_fails(monkeypatch, tmp_path):
+    """If `_make_log_dir` raises after `_stage_skills` has created a
+    tempdir, the staging dir must still be cleaned up. Without this
+    ordering, control-machine `${clawrium_config}/staging/skills/`
+    would accumulate orphan tempdirs on partial failures.
+    """
+    write_state("tdd-hermes", ["clawrium/tdd"])
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        skills_apply,
+        "_make_log_dir",
+        lambda *a, **kw: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        apply_state("tdd-hermes")
+
+    staging_base = tmp_path / "clawrium" / "staging" / "skills"
+    if staging_base.is_dir():
+        leftovers = [p for p in staging_base.iterdir() if p.is_dir()]
+        assert leftovers == [], (
+            f"staging dir leaked on partial failure: {leftovers}"
+        )
 
 
 def test_apply_state_drift_recovery_reapplies_same_state(monkeypatch):

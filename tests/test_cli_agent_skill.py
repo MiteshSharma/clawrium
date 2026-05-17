@@ -21,7 +21,6 @@ from clawrium.core.skills import (
     SkillNotFound,
 )
 from clawrium.core.skills_apply import (
-    AgentNotFoundError,
     ApplyResult,
     SkillApplyError,
     SkillApplyNotSupported,
@@ -37,9 +36,30 @@ def _isolate_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
 
+def _stub_agent_resolution(
+    monkeypatch: pytest.MonkeyPatch, agent_type: str = "hermes"
+) -> None:
+    """Pretend every agent name resolves to a `hermes` instance.
+
+    Without this stub, the preflight `_resolve_agent_type` call (added
+    in the rev2 fix for B1) would hit a real `hosts.json` read and the
+    tests would fail before exercising the install/remove flow.
+    """
+    monkeypatch.setattr(
+        cli_agent_skill,
+        "get_agent_by_name",
+        lambda name: (
+            {"hostname": "wolf-i", "alias": "wolf-i"},
+            agent_type,
+            {"agent_name": name},
+        ),
+    )
+
+
 def _stub_apply(monkeypatch, applied: list[str] | None = None) -> list[str]:
     """Replace `apply_state` with a recorder. Returns the list of agent
     names it was called with (so tests can assert it was actually invoked).
+    Also stubs `get_agent_by_name` so the preflight path passes.
     """
     calls: list[str] = []
 
@@ -54,6 +74,7 @@ def _stub_apply(monkeypatch, applied: list[str] | None = None) -> list[str]:
         )
 
     monkeypatch.setattr(cli_agent_skill, "apply_state", fake)
+    _stub_agent_resolution(monkeypatch)
     return calls
 
 
@@ -125,33 +146,52 @@ def test_install_rejects_url(monkeypatch):
 
 
 def test_install_renders_skill_not_found(monkeypatch):
-    def boom(name, **_kwargs):
-        raise SkillNotFound("Skill clawrium/missing not found.")
-
-    _stub_apply(monkeypatch)
-    monkeypatch.setattr(cli_agent_skill, "apply_state", boom)
+    """Preflight `load_skill` raises before any state mutation when
+    the ref points at a catalog entry that doesn't exist."""
+    _stub_agent_resolution(monkeypatch)
+    monkeypatch.setattr(
+        cli_agent_skill,
+        "load_skill",
+        lambda ref: (_ for _ in ()).throw(
+            SkillNotFound("Skill clawrium/missing not found.")
+        ),
+    )
+    monkeypatch.setattr(cli_agent_skill, "apply_state", lambda *a, **kw: None)
     result = runner.invoke(
         agent_skill_app, ["install", "tdd-hermes", "clawrium/tdd"]
     )
     assert result.exit_code == 1
     assert "not found" in result.output
+    # State must be untouched — preflight ran before add_skill.
+    assert read_state("tdd-hermes") == []
 
 
 def test_install_renders_incompatible_skill(monkeypatch):
-    def boom(name, **_kwargs):
-        raise IncompatibleSkillRegistry(
-            "Skill hermes/foo is a 'hermes'-native skill ..."
-        )
-
-    monkeypatch.setattr(cli_agent_skill, "apply_state", boom)
+    """Preflight `check_agent_compatibility` raises before state
+    mutation when the resolved agent type doesn't match the skill."""
+    _stub_agent_resolution(monkeypatch, agent_type="openclaw")
+    monkeypatch.setattr(
+        cli_agent_skill,
+        "check_agent_compatibility",
+        lambda _skill, _claw: (_ for _ in ()).throw(
+            IncompatibleSkillRegistry(
+                "Skill hermes/foo is a 'hermes'-native skill ..."
+            )
+        ),
+    )
+    monkeypatch.setattr(cli_agent_skill, "apply_state", lambda *a, **kw: None)
     result = runner.invoke(
-        agent_skill_app, ["install", "tdd-openclaw", "hermes/foo"]
+        agent_skill_app, ["install", "tdd-openclaw", "clawrium/tdd"]
     )
     assert result.exit_code == 1
     assert "hermes" in result.output and "native" in result.output
+    # State must be untouched — preflight caught the mismatch.
+    assert read_state("tdd-openclaw") == []
 
 
 def test_install_renders_apply_error(monkeypatch):
+    _stub_agent_resolution(monkeypatch)
+
     def boom(name, **_kwargs):
         raise SkillApplyError(
             "Skills apply failed (status=failed): Permission denied "
@@ -167,9 +207,12 @@ def test_install_renders_apply_error(monkeypatch):
 
 
 def test_install_renders_apply_not_supported(monkeypatch):
+    _stub_agent_resolution(monkeypatch, agent_type="openclaw")
+
     def boom(name, **_kwargs):
         raise SkillApplyNotSupported(
-            "Skills apply for 'openclaw' is not implemented yet ..."
+            "Skills install is not yet supported for openclaw agents. "
+            "Run `clm agent ps` to find a compatible agent."
         )
 
     monkeypatch.setattr(cli_agent_skill, "apply_state", boom)
@@ -177,33 +220,56 @@ def test_install_renders_apply_not_supported(monkeypatch):
         agent_skill_app, ["install", "tdd-openclaw", "clawrium/tdd"]
     )
     assert result.exit_code == 1
-    assert "not implemented yet" in result.output
+    assert "not yet supported" in result.output
+    # B6: no phase jargon in user-facing output.
+    assert "phase" not in result.output.lower()
 
 
 def test_install_renders_agent_not_found(monkeypatch):
-    def boom(name, **_kwargs):
-        raise AgentNotFoundError("Agent 'tdd-hermes' not found.")
-
-    monkeypatch.setattr(cli_agent_skill, "apply_state", boom)
+    """Agent name doesn't resolve → preflight raises
+    `AgentNotFoundError` before any state mutation."""
+    monkeypatch.setattr(cli_agent_skill, "get_agent_by_name", lambda _n: None)
+    monkeypatch.setattr(cli_agent_skill, "apply_state", lambda *a, **kw: None)
     result = runner.invoke(
         agent_skill_app, ["install", "tdd-hermes", "clawrium/tdd"]
     )
     assert result.exit_code == 1
     assert "not found" in result.output
+    assert read_state("tdd-hermes") == []
+
+
+def test_install_renders_ambiguous_agent_name(monkeypatch):
+    """get_agent_by_name raising ValueError translates to
+    AgentNotFoundError at the CLI surface."""
+    def raise_ambiguous(_name):
+        raise ValueError("Agent name 'tdd' is ambiguous across hosts: ...")
+
+    monkeypatch.setattr(
+        cli_agent_skill, "get_agent_by_name", raise_ambiguous
+    )
+    monkeypatch.setattr(cli_agent_skill, "apply_state", lambda *a, **kw: None)
+    result = runner.invoke(agent_skill_app, ["install", "tdd", "clawrium/tdd"])
+    assert result.exit_code == 1
+    assert "ambiguous" in result.output
 
 
 def test_install_renders_schema_validation_error(monkeypatch):
-    def boom(name, **_kwargs):
+    """Preflight `validate_skill` raises before state mutation."""
+    _stub_agent_resolution(monkeypatch)
+
+    def boom(_skill):
         raise SchemaValidationError(
             "Skill clawrium/broken failed schema validation: ..."
         )
 
-    monkeypatch.setattr(cli_agent_skill, "apply_state", boom)
+    monkeypatch.setattr(cli_agent_skill, "validate_skill", boom)
+    monkeypatch.setattr(cli_agent_skill, "apply_state", lambda *a, **kw: None)
     result = runner.invoke(
         agent_skill_app, ["install", "tdd-hermes", "clawrium/tdd"]
     )
     assert result.exit_code == 1
     assert "schema validation" in result.output
+    assert read_state("tdd-hermes") == []
 
 
 # ------------------------------- remove -------------------------------------
@@ -252,3 +318,79 @@ def test_state_file_canonicalized_after_install_remove_cycle(monkeypatch):
     runner.invoke(agent_skill_app, ["remove", "tdd-hermes", "clawrium/tdd"])
     raw = json.loads(state_file_path("tdd-hermes").read_text())
     assert raw == {"skills": []}
+
+
+# --------------------- transactional install / remove -----------------------
+
+
+def test_install_rolls_back_state_on_apply_failure(monkeypatch):
+    """When `apply_state` raises after `add_skill` has mutated the
+    state, the install path must restore the prior state so the
+    file tracks what the host actually has.
+    """
+    _stub_agent_resolution(monkeypatch)
+    monkeypatch.setattr(
+        cli_agent_skill,
+        "apply_state",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            SkillApplyError("ssh down (log: /tmp/...)")
+        ),
+    )
+    result = runner.invoke(
+        agent_skill_app, ["install", "tdd-hermes", "clawrium/tdd"]
+    )
+    assert result.exit_code == 1
+    assert "ssh down" in result.output
+    # Rollback contract: state file shows the skill is NOT installed.
+    assert read_state("tdd-hermes") == []
+
+
+def test_remove_rolls_back_state_on_apply_failure(monkeypatch):
+    """Symmetric: if `apply_state` raises after `remove_skill` drops
+    the entry, restore the prior state so the user sees the file
+    matches the host."""
+    write_state("tdd-hermes", ["clawrium/tdd"])
+    _stub_agent_resolution(monkeypatch)
+    monkeypatch.setattr(
+        cli_agent_skill,
+        "apply_state",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            SkillApplyError("ssh down (log: /tmp/...)")
+        ),
+    )
+    result = runner.invoke(
+        agent_skill_app, ["remove", "tdd-hermes", "clawrium/tdd"]
+    )
+    assert result.exit_code == 1
+    # Rollback contract: the entry is still there.
+    assert read_state("tdd-hermes") == ["clawrium/tdd"]
+
+
+def test_install_preflight_failure_does_not_mutate_state(monkeypatch):
+    """Bare-name validation lives upstream of `add_skill`; the state
+    file must remain at its prior content."""
+    _stub_apply(monkeypatch)
+    write_state("tdd-hermes", ["clawrium/tdd"])
+    result = runner.invoke(agent_skill_app, ["install", "tdd-hermes", "bare"])
+    assert result.exit_code == 1
+    # State unchanged.
+    assert read_state("tdd-hermes") == ["clawrium/tdd"]
+
+
+def test_exit_with_error_sanitizes_bidi_in_message(monkeypatch):
+    """A `SkillApplyError` whose message contains U+202E (RTLO) must
+    render with the bidi-control codepoint stripped. The sanitizer
+    used by `_exit_with_error` is the same one chat.py uses for the
+    other CLI error paths."""
+    rtlo_msg = "host ‮unreachable: msg"
+    monkeypatch.setattr(
+        cli_agent_skill,
+        "apply_state",
+        lambda *a, **kw: (_ for _ in ()).throw(SkillApplyError(rtlo_msg)),
+    )
+    _stub_agent_resolution(monkeypatch)
+    result = runner.invoke(
+        agent_skill_app, ["install", "tdd-hermes", "clawrium/tdd"]
+    )
+    assert result.exit_code == 1
+    assert "‮" not in result.output
