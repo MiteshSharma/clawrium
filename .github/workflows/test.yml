@@ -28,13 +28,16 @@ jobs:
           cache: "npm"
           cache-dependency-path: gui/package-lock.json
 
-      - name: Install dependencies
-        run: uv sync
-
-      # Stage the frontend so `tests/test_wheel_contents.py` runs instead of
-      # being skipped. Without this, the regression test for #401 is inert.
+      # Stage the frontend BEFORE `uv sync`. The wheel target force-includes
+      # `src/clawrium/gui/frontend/`, so `uv sync` (which builds the project
+      # in editable mode via hatchling) would otherwise fail with
+      # `FileNotFoundError: Forced include not found`. Also unblocks
+      # `tests/test_wheel_contents.py` (#401 regression net).
       - name: Build GUI frontend
         run: make build-ui
+
+      - name: Install dependencies
+        run: uv sync
 
       - name: Run tests with coverage
         run: make test-cov
