@@ -127,11 +127,16 @@ allowed_users = []
 {% endif %}
 {# require_mention is the hermes-side knob; upstream calls it
    reply_to_mentions_only. Same semantics — translate verbatim.
-   ATX Round 3 W3: default `true` to match the CLI prompt's default. The
-   prior `false` default silently turned mention-gated bots into ambient
-   responders on any reconfigure of a hosts.json record predating the
-   field's introduction. #}
-reply_to_mentions_only = {{ (_discord.get('require_mention') | default(true)) | bool | lower }}
+   ATX Round 3 W3 + Round 4 B1-R4: default `true` to match the CLI
+   prompt's default, applied via dict.get(key, default) at the Python
+   level rather than `| default(true)` — Jinja2's default() filter only
+   fires on Undefined, NOT on None, and dict.get() returns None for
+   missing keys. A `_discord.get('require_mention') | default(true)`
+   form silently rendered `false` for any legacy hosts.json record
+   predating the field, turning mention-gated bots into ambient
+   responders — exactly the safety regression Round 3 W3 was meant to
+   prevent. #}
+reply_to_mentions_only = {{ _discord.get('require_mention', true) | bool | lower }}
 {% if _discord.get('draft_update_interval_ms') %}
 draft_update_interval_ms = {{ _discord.get('draft_update_interval_ms') | int }}
 {% endif %}

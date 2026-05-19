@@ -481,6 +481,51 @@ class TestChannelsDiscordBlock:
         assert "allow_all_users" not in rendered
         assert "allowed_channels" not in rendered
 
+    def test_discord_legacy_record_defaults_reply_to_mentions_to_true(self):
+        """ATX Round 4 B1-R4: a hosts.json record predating the
+        require_mention field (the dict has `enabled` + `bot_token` but no
+        require_mention) MUST render `reply_to_mentions_only = true`.
+
+        The fragile form `_discord.get('require_mention') | default(true)`
+        silently rendered `false` because dict.get returns None for missing
+        keys and Jinja's default() only fires on Undefined. dict.get(key,
+        default) applies the default at the Python level, bypassing the
+        filter entirely."""
+        rendered = _render_with_channels_and_integrations(
+            channels={
+                "discord": {
+                    "enabled": True,
+                    "bot_token": "DUMMY_LEGACY_TOKEN_VALUE",
+                    # NB: require_mention deliberately absent — simulating a
+                    # legacy hosts.json record written before the field was
+                    # added in #422.
+                }
+            },
+            provider={"type": "anthropic", "default_model": "m"},
+        )
+        assert "reply_to_mentions_only = true" in rendered, (
+            "Legacy hosts.json record rendered reply_to_mentions_only=false "
+            "— this is the ATX Round 4 B1-R4 safety regression. The CLI "
+            "default is True; the template must match."
+        )
+
+    def test_discord_explicit_false_require_mention_renders_false(self):
+        """Counterpart to the legacy-default test: an explicit `False` value
+        must NOT be overridden to `True`. This catches the alternative
+        `| default(true, boolean=True)` form, which would clobber explicit
+        opt-outs."""
+        rendered = _render_with_channels_and_integrations(
+            channels={
+                "discord": {
+                    "enabled": True,
+                    "bot_token": "DUMMY",
+                    "require_mention": False,
+                }
+            },
+            provider={"type": "anthropic", "default_model": "m"},
+        )
+        assert "reply_to_mentions_only = false" in rendered
+
     def test_discord_bot_token_toml_escaped(self):
         """Tokens with embedded quotes/backslashes must be escaped so they
         cannot break out of the TOML basic string and inject `[autonomy]`
