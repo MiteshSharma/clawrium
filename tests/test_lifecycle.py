@@ -112,10 +112,14 @@ class TestRunLifecyclePlaybook:
             "clawrium.core.lifecycle.get_config_dir",
             return_value=tmp_path,
         ), patch(
-            "clawrium.core.secrets.get_instance_secrets",
+            # ATX iter-5: patch at the consumer namespace, not the source
+            # module. `lifecycle.py` does `from clawrium.core.secrets import
+            # get_instance_secrets` at module-load — patching the source
+            # module is a no-op against the already-bound name in lifecycle.
+            "clawrium.core.lifecycle.get_instance_secrets",
             return_value={},
         ), patch(
-            "clawrium.core.secrets.get_instance_key",
+            "clawrium.core.lifecycle.get_instance_key",
             return_value="test-key",
         ):
             return _run_lifecycle_playbook(
@@ -229,6 +233,63 @@ class TestRunLifecyclePlaybook:
         )
         assert success is False
         assert error == "Start operation timed out"
+
+    def test_secrets_patches_are_actually_called(self, tmp_path: Path):
+        """ATX iter-5 NW-A meta-test: the patch targets in `_run_with_events`
+        must hit the names actually consumed by `_run_lifecycle_playbook`.
+        A wrong patch target (e.g. `clawrium.core.secrets.*` against a
+        `from x import y` consumer) silently no-ops and the secrets-
+        isolation defence becomes illusory. Assert the mocks are called."""
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {"zer-test": {"type": "zeroclaw"}},
+        }
+
+        playbook_path = tmp_path / "start.yaml"
+        playbook_path.write_text("---\n- hosts: all\n")
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+
+        runner = MagicMock()
+        runner.status = "successful"
+        runner.events = []
+
+        with patch(
+            "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+            return_value=playbook_path,
+        ), patch(
+            "clawrium.core.lifecycle.get_host_private_key",
+            return_value=key_path,
+        ), patch(
+            "clawrium.core.lifecycle.ansible_runner.run",
+            return_value=runner,
+        ), patch(
+            "clawrium.core.lifecycle.get_config_dir",
+            return_value=tmp_path,
+        ), patch(
+            "clawrium.core.lifecycle.get_instance_secrets",
+            return_value={},
+        ) as mock_get_secrets, patch(
+            "clawrium.core.lifecycle.get_instance_key",
+            return_value="test-key",
+        ) as mock_get_key:
+            _run_lifecycle_playbook(
+                "zeroclaw", "zer-test", "192.168.1.100", "start", host
+            )
+
+        # If either of these fires, the patch target is correct AND
+        # `_run_lifecycle_playbook` actually reads through the consumer
+        # binding. If both stay un-called on a future refactor that
+        # bypasses these helpers, this test alerts before the secrets-
+        # isolation guarantee silently regresses.
+        assert mock_get_secrets.called or mock_get_key.called, (
+            "Neither get_instance_secrets nor get_instance_key was called — "
+            "either the consumer no longer reads through these helpers, or "
+            "the patch target is wrong (ATX iter-5 NW-A)"
+        )
 
 
 class TestStartClaw:
@@ -1037,8 +1098,14 @@ class TestConfigureAgentZeroclawBearerForwarding:
                 return_value=("", ""),
              ), \
              patch(
-                "clawrium.core.secrets.get_instance_secrets",
+                # ATX iter-5: lifecycle namespace, not source module —
+                # see _run_with_events for the same fix.
+                "clawrium.core.lifecycle.get_instance_secrets",
                 return_value={},
+             ), \
+             patch(
+                "clawrium.core.lifecycle.get_instance_key",
+                return_value="test-key",
              ), \
              patch(
                 "clawrium.core.integrations.get_agent_integrations",
@@ -1294,8 +1361,13 @@ class TestConfigureAgentZeroclawBearerForwarding:
                 return_value=("", ""),
              ), \
              patch(
-                "clawrium.core.secrets.get_instance_secrets",
+                # ATX iter-5: lifecycle namespace, not source module.
+                "clawrium.core.lifecycle.get_instance_secrets",
                 return_value={},
+             ), \
+             patch(
+                "clawrium.core.lifecycle.get_instance_key",
+                return_value="test-key",
              ), \
              patch(
                 "clawrium.core.integrations.get_agent_integrations",
