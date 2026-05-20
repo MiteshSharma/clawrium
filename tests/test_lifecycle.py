@@ -1,4 +1,16 @@
-"""Tests for claw lifecycle management module."""
+"""Tests for claw lifecycle management module.
+
+Secrets isolation in this file relies on a load-bearing autouse fixture in
+`tests/conftest.py::_isolate_config_dir` — it redirects `XDG_CONFIG_HOME`
+to a tmp directory, so `clawrium.core.secrets.load_secrets()` returns `{}`
+for any test that doesn't explicitly mock `get_instance_secrets`. Removing
+or narrowing that fixture silently regresses ~all tests in this file that
+exercise the configure/start/restart paths — they would call the real
+secrets loader against the developer's `~/.config/clawrium/secrets.json`.
+The patches inside `_run_with_events`/`_capture_configure` are defence in
+depth (with a meta-test pinning correct interception); the fixture is the
+primary guarantee. ATX iter-6 W1.
+"""
 
 import json
 from pathlib import Path
@@ -280,15 +292,22 @@ class TestRunLifecyclePlaybook:
                 "zeroclaw", "zer-test", "192.168.1.100", "start", host
             )
 
-        # If either of these fires, the patch target is correct AND
-        # `_run_lifecycle_playbook` actually reads through the consumer
-        # binding. If both stay un-called on a future refactor that
-        # bypasses these helpers, this test alerts before the secrets-
-        # isolation guarantee silently regresses.
-        assert mock_get_secrets.called or mock_get_key.called, (
-            "Neither get_instance_secrets nor get_instance_key was called — "
-            "either the consumer no longer reads through these helpers, or "
-            "the patch target is wrong (ATX iter-5 NW-A)"
+        # ATX iter-6: both calls MUST be intercepted. `get_instance_key`
+        # is a pure formatter and would still be invoked by any refactor
+        # that bypassed `get_instance_secrets` (e.g. inlining a json.load
+        # or introducing a new helper). With `or`, that bypass would pass
+        # silently and the real `get_instance_secrets` would read disk.
+        # `and` matches the actual call sequence at lifecycle.py:312-313
+        # — both helpers always fire on the success path.
+        assert mock_get_key.called, (
+            "get_instance_key not called — patch target or call path drifted "
+            "(ATX iter-5 NW-A / iter-6)"
+        )
+        assert mock_get_secrets.called, (
+            "get_instance_secrets not called — this is the call that gates "
+            "real secret values; if a refactor bypasses it, real "
+            "~/.config/clawrium/secrets.json reads happen unintercepted "
+            "(ATX iter-5 NW-A / iter-6)"
         )
 
 
