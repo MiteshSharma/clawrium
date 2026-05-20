@@ -64,6 +64,45 @@ ALIAS_TO_CANONICAL = {
 }
 
 
+def _token_prefix(token: str | None) -> str:
+    """Return first 8 chars of a token for logging; "" if absent."""
+    if not isinstance(token, str):
+        return ""
+    return token.strip()[:8]
+
+
+def _emit_gateway_token_rotated(
+    on_event: Callable[[str, str], None] | None,
+    agent_key: str,
+    old_token: str | None,
+    new_token: str | None,
+    reason: str,
+) -> None:
+    """Emit a structured `gateway_token_rotated` event.
+
+    Issue #437: single emit site whenever any lifecycle op writes a new
+    value to hosts.json.gateway.auth. Suppressed on first mint (no prior
+    token) because that's an install, not a rotation.
+    """
+    if not isinstance(new_token, str) or not new_token.strip():
+        return
+    old_clean = old_token.strip() if isinstance(old_token, str) else ""
+    new_clean = new_token.strip()
+    if not old_clean or old_clean == new_clean:
+        return
+    payload = json.dumps(
+        {
+            "agent_key": agent_key,
+            "old_token_prefix": _token_prefix(old_clean),
+            "new_token_prefix": _token_prefix(new_clean),
+            "reason": reason,
+        }
+    )
+    if on_event is not None:
+        on_event("gateway_token_rotated", payload)
+    logger.info("gateway_token_rotated %s", payload)
+
+
 def get_host_private_key(key_id: str) -> Path | None:
     """Resolve host SSH key path.
 
@@ -530,7 +569,213 @@ def restart_agent(
     )
     start_result["operation"] = "restart"
 
+    # Issue #437: zeroclaw daemon does not persist its bearer across
+    # systemd restarts. The just-restarted daemon will mint a fresh token
+    # on the next pair handshake. Re-pair now and overwrite hosts.json so
+    # the operator-visible invariant ("hosts.json.gateway.auth equals the
+    # bearer the daemon will enforce") holds across restarts.
+    if start_result["success"] and _resolve_agent_type(claw_name) == "zeroclaw":
+        repair_success, repair_error = _zeroclaw_repair_after_restart(
+            hostname,
+            agent_name=agent_name,
+            on_event=on_event,
+        )
+        if not repair_success:
+            return {
+                "success": False,
+                "agent": target,
+                "host": hostname,
+                "operation": "restart",
+                "pid": start_result.get("pid"),
+                "started_at": start_result.get("started_at"),
+                "error": f"Re-pair after restart failed: {repair_error}",
+            }
+
     return start_result
+
+
+def _extract_zeroclaw_gateway_facts(
+    artifacts_dir: Path,
+) -> tuple[str | None, str | None]:
+    """Read `zeroclaw_gateway_token` and `zeroclaw_gateway_url` out of an
+    ansible-runner fact_cache directory.
+
+    Returns (token, url); either may be None if the playbook did not emit
+    the fact (e.g. it failed before reaching the set_fact task).
+    """
+    fact_cache_dir = artifacts_dir / "fact_cache"
+    if not fact_cache_dir.exists():
+        return None, None
+
+    for fact_file in fact_cache_dir.glob("*"):
+        try:
+            with open(fact_file) as fh:
+                facts = json.load(fh)
+        except (json.JSONDecodeError, IOError) as exc:
+            logger.debug("Skipping fact file %s: %s", fact_file, exc)
+            continue
+        payload = facts.get("__payload__")
+        if not isinstance(payload, str) or not payload:
+            continue
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+
+        token_raw = parsed.get("zeroclaw_gateway_token")
+        url_raw = parsed.get("zeroclaw_gateway_url")
+        if isinstance(token_raw, dict):
+            token_raw = token_raw.get("value")
+        if isinstance(url_raw, dict):
+            url_raw = url_raw.get("value")
+        if isinstance(token_raw, str):
+            token_raw = token_raw.strip()
+        if isinstance(url_raw, str):
+            url_raw = url_raw.strip()
+        if token_raw and url_raw:
+            return token_raw, url_raw
+    return None, None
+
+
+def _zeroclaw_repair_after_restart(
+    hostname: str,
+    agent_name: str | None,
+    on_event: Callable[[str, str], None] | None,
+) -> tuple[bool, str | None]:
+    """Run the zeroclaw restart playbook to re-pair and persist the new
+    bearer to hosts.json.
+
+    Returns (success, error_message). Emits a `gateway_token_rotated`
+    event with reason="restart" when the token actually changed.
+    """
+
+    def emit(stage: str, message: str) -> None:
+        if on_event:
+            on_event(stage, message)
+        logger.info("[%s] %s", stage, message)
+
+    host = get_host(hostname)
+    if not host:
+        return False, f"Host '{hostname}' not found"
+
+    target = agent_name or "zeroclaw"
+    resolved = _resolve_agent_record(host, target, expected_type="zeroclaw")
+    if not resolved:
+        return False, f"Agent '{target}' not installed on '{hostname}'"
+    agent_key, _agent_type, agent_record = resolved
+    unix_agent_name = agent_record.get("agent_name") or agent_key
+
+    gateway_cfg = agent_record.get("config", {}).get("gateway") or {}
+    gateway_port = gateway_cfg.get("port")
+    if not isinstance(gateway_port, int) or gateway_port <= 0:
+        return (
+            False,
+            f"Gateway port missing from hosts.json for {agent_key}. "
+            f"Re-run `clm agent configure {agent_key}`.",
+        )
+
+    key_id = host.get("key_id") or hostname
+    ssh_key = get_host_private_key(key_id)
+    if not ssh_key:
+        return False, "SSH key not found"
+
+    playbook_path = _get_lifecycle_playbook_path("zeroclaw", "restart")
+    if not playbook_path.exists():
+        return False, f"Restart playbook not found: {playbook_path}"
+
+    inventory = {
+        "all": {
+            "hosts": {
+                host["hostname"]: {
+                    "ansible_user": host.get("user", "xclm"),
+                    "ansible_port": host.get("port", 22),
+                    "ansible_ssh_private_key_file": str(ssh_key),
+                }
+            },
+            "vars": {
+                "agent_name": unix_agent_name,
+                "agent_type": "zeroclaw",
+                "config": {"gateway": {"port": gateway_port}},
+            },
+        }
+    }
+
+    logs_dir = _get_logs_dir()
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    host_display = host.get("alias") or host.get("key_id") or hostname
+    operation_log_dir = (
+        logs_dir / f"restart-pair-zeroclaw-{host_display}-{timestamp}"
+    )
+    operation_log_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(operation_log_dir, 0o700)
+
+    emit("restart", "Re-pairing zeroclaw after restart...")
+
+    try:
+        result = ansible_runner.run(
+            private_data_dir=str(operation_log_dir),
+            inventory=inventory,
+            playbook=str(playbook_path),
+            quiet=True,
+            timeout=180,
+        )
+
+        if result.status == "timeout":
+            return False, "Re-pair after restart timed out"
+        if result.status != "successful":
+            error_msg = f"Re-pair playbook failed: {result.status}"
+            for event in result.events:
+                if event.get("event") == "runner_on_failed":
+                    event_data = event.get("event_data", {})
+                    res = event_data.get("res", {})
+                    if "msg" in res:
+                        error_msg = res["msg"]
+                        break
+                    if "stderr" in res:
+                        error_msg = res["stderr"]
+                        break
+            return False, error_msg
+
+        artifacts_dir = Path(result.config.artifact_dir)
+        new_token, new_url = _extract_zeroclaw_gateway_facts(artifacts_dir)
+        if not new_token or not new_url:
+            return (
+                False,
+                "Re-pair playbook succeeded but pairing token was not "
+                f"captured. Re-run `clm agent configure {agent_key}` and "
+                f"check `journalctl --unit zeroclaw-{agent_key}`.",
+            )
+
+        old_token = agent_record.get("config", {}).get("gateway", {}).get("auth")
+
+        def updater(h: dict) -> dict:
+            agents = h.setdefault("agents", {})
+            record = agents.setdefault(agent_key, {})
+            config = record.setdefault("config", {})
+            gateway = config.setdefault("gateway", {})
+            gateway["auth"] = new_token
+            gateway["url"] = new_url
+            return h
+
+        if not update_host(host["hostname"], updater):
+            return (
+                False,
+                f"Re-pair succeeded but failed to update hosts.json for "
+                f"{agent_key} on {hostname}",
+            )
+
+        _emit_gateway_token_rotated(
+            on_event, agent_key, old_token, new_token, "restart"
+        )
+        emit("restart", "Pairing token refreshed")
+        return True, None
+
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        _cleanup_ansible_artifacts(operation_log_dir)
 
 
 def sync_agent(
@@ -540,16 +785,20 @@ def sync_agent(
     workspace_only: bool = False,
     on_event: Callable[[str, str], None] | None = None,
 ) -> LifecycleResult:
-    """Sync configuration and optionally restart an agent instance.
+    """Sync configuration to an agent instance.
 
-    Orchestrates: configure_agent -> restart_agent (unless workspace_only).
-    This is a single command to ensure an agent is running the latest configuration.
+    Issue #437: sync now equals configure. The previous configure → restart
+    orchestration created token divergence on every sync because restart did
+    not re-pair. Now configure always re-pairs (and the playbook's
+    notify-driven restart fires whenever config.toml or the systemd drop-in
+    actually changed), so the explicit restart step is redundant and unsafe.
 
     Args:
         hostname: Hostname or alias of target host
         claw_name: Type of agent to sync (e.g., "openclaw")
         agent_name: Optional specific instance name
-        workspace_only: If True, only sync workspace files without restarting
+        workspace_only: Accepted for backwards compat; sync no longer
+            performs a separate restart, so the flag is informational
         on_event: Optional callback for progress events
 
     Returns:
@@ -564,7 +813,6 @@ def sync_agent(
     target = agent_name or claw_name
     emit("sync", f"Syncing {target} on {hostname}...")
 
-    # Validate host and agent exist
     host = get_host(hostname)
     if not host:
         raise LifecycleError(f"Host '{hostname}' not found")
@@ -574,8 +822,6 @@ def sync_agent(
         raise LifecycleError(f"Agent '{target}' not installed on '{hostname}'")
     agent_key, agent_type, claw_record = resolved
 
-    # Check onboarding state - agent must be past PENDING to sync
-    # This allows syncing during onboarding (e.g., after identity stage)
     onboarding = claw_record.get("onboarding", {})
     state_value = onboarding.get("state", "pending")
 
@@ -590,16 +836,6 @@ def sync_agent(
             f"Run 'clm agent configure {agent_key}' first."
         )
 
-    # Auto-coerce workspace_only=True for non-READY states
-    # start_agent() enforces state==READY, so restart would fail
-    if state != OnboardingState.READY and not workspace_only:
-        workspace_only = True
-        emit(
-            "sync",
-            f"Note: Agent not fully onboarded (state={state_value}), syncing workspace only",
-        )
-
-    # Get existing config to re-apply
     existing_config = claw_record.get("config", {})
     if not existing_config:
         raise LifecycleError(
@@ -607,7 +843,6 @@ def sync_agent(
             f"Run 'clm agent configure {agent_key}' first."
         )
 
-    # Step 1: Configure agent (sync config files)
     emit("sync", f"Configuring {agent_key}...")
     config_success, config_error = configure_agent(
         hostname,
@@ -615,6 +850,7 @@ def sync_agent(
         existing_config,
         agent_name=agent_key,
         on_event=on_event,
+        reason="sync",
     )
 
     if not config_success:
@@ -628,50 +864,6 @@ def sync_agent(
             "error": f"Configure failed: {config_error}",
         }
 
-    # Step 2: Restart agent (unless workspace_only)
-    if workspace_only:
-        emit("sync", f"Workspace sync complete for {agent_key} (no restart)")
-        return {
-            "success": True,
-            "agent": agent_key,
-            "host": hostname,
-            "operation": "sync",
-            "pid": None,
-            "started_at": None,
-            "error": None,
-        }
-
-    # Wrap in try/except to maintain LifecycleResult return contract
-    emit("sync", f"Restarting {agent_key}...")
-    try:
-        restart_result = restart_agent(
-            hostname,
-            agent_type,
-            agent_name=agent_key,
-            on_event=on_event,
-        )
-    except LifecycleError as e:
-        return {
-            "success": False,
-            "agent": agent_key,
-            "host": hostname,
-            "operation": "sync",
-            "pid": None,
-            "started_at": None,
-            "error": f"Restart failed: {e}",
-        }
-
-    if not restart_result["success"]:
-        return {
-            "success": False,
-            "agent": agent_key,
-            "host": hostname,
-            "operation": "sync",
-            "pid": None,
-            "started_at": None,
-            "error": f"Restart failed: {restart_result['error']}",
-        }
-
     emit("sync", f"Sync complete for {agent_key}")
 
     return {
@@ -679,8 +871,8 @@ def sync_agent(
         "agent": agent_key,
         "host": hostname,
         "operation": "sync",
-        "pid": restart_result.get("pid"),
-        "started_at": restart_result.get("started_at"),
+        "pid": None,
+        "started_at": None,
         "error": None,
     }
 
@@ -692,6 +884,7 @@ def configure_agent(
     agent_name: str | None = None,
     extra_vars: dict | None = None,
     on_event: Callable[[str, str], None] | None = None,
+    reason: str = "configure",
 ) -> tuple[bool, str | None]:
     """Configure an agent instance on a remote host.
 
@@ -1150,54 +1343,9 @@ def configure_agent(
         "integrations": integrations_data,
     }
 
-    # ZeroClaw idempotent re-configure (ATX Round 1 B3): pass any
-    # existing bearer token in via Ansible vars so the configure playbook
-    # can skip the pairing handshake when already paired. Without this
-    # every configure call would mint a fresh token and silently
-    # invalidate any in-flight `clm chat` WebSocket.
-    if resolved_type == "zeroclaw":
-        existing_gateway = agent_record.get("config", {}).get("gateway") or {}
-        existing_token = existing_gateway.get("auth")
-        # ATX Round 2 W5: keep the Python-side threshold consistent with
-        # the playbook's `length >= 16` check. A 1-15 char hand-edited
-        # token would otherwise be passed in but silently rejected by the
-        # playbook, causing an opaque re-pair.
-        if (
-            isinstance(existing_token, str)
-            and len(existing_token.strip()) >= 16
-        ):
-            ansible_vars["existing_gateway_token"] = existing_token.strip()
-        else:
-            # ATX Round 3 W5 / Round 4 B1: when a too-short token
-            # forces a re-pair, surface that explicitly so the operator
-            # can tell whether any live `clm chat` sessions are about
-            # to break. Suppressed when there is no token at all
-            # (first configure) — that's the normal mint path, not an
-            # unexpected re-pair.
-            #
-            # Must use the `WARNING:` prefix + stage="configure" pattern
-            # (mirrors the integration-type warning at lifecycle.py:1046)
-            # so cli/agent.py's `_print_configure_warnings` callback
-            # routes the message to the user. The callback dispatches
-            # on the `WARNING:` prefix; a `stage="warn"` event with a
-            # different prefix is silently dropped at the terminal.
-            if isinstance(existing_token, str) and existing_token.strip():
-                warning_msg = (
-                    f"WARNING: Existing gateway token for {agent_key} "
-                    f"is shorter than 16 characters — treating as "
-                    f"absent. A new pairing handshake will be performed "
-                    f"and any live `clm chat {agent_key}` session will "
-                    f"need to reconnect."
-                )
-                emit("configure", warning_msg)
-                logger.warning(warning_msg)
-            ansible_vars["existing_gateway_token"] = ""
-        # `force_repair` flows in via extra_vars when the CLI surfaces
-        # an explicit rotation flag; default false so normal reconfigures
-        # are idempotent. ATX Round 2 S1: direct assignment — `setdefault`
-        # on a freshly constructed dict reads as a guard that doesn't
-        # exist in practice.
-        ansible_vars["force_repair"] = False
+    # Issue #437: zeroclaw always re-pairs on configure. No skip path,
+    # no existing_gateway_token, no force_repair. The token in hosts.json
+    # is overwritten with whatever the playbook's pair handshake mints.
 
     # Merge extra_vars (not persisted to hosts.json)
     if extra_vars:
@@ -1387,6 +1535,20 @@ def configure_agent(
             existing_gateway["auth"] = zc_gateway_token
             existing_gateway["url"] = zc_gateway_url
             config_data["gateway"] = existing_gateway
+
+            # Issue #437: emit structured rotation event when the bearer
+            # in hosts.json is about to be overwritten with a different
+            # token. Suppressed on first-time mint (no prior token).
+            prior_token = (
+                agent_record.get("config", {}).get("gateway", {}).get("auth")
+            )
+            _emit_gateway_token_rotated(
+                on_event,
+                agent_key,
+                prior_token,
+                zc_gateway_token,
+                reason,
+            )
 
         # B2: Only update hosts.json after Ansible succeeds
         emit("configure", "Saving configuration to hosts.json...")

@@ -117,10 +117,39 @@ def ps(
     status_command(host=host)
 
 
-def _print_configure_warnings(_stage: str, message: str) -> None:
+def _print_configure_warnings(stage: str, message: str) -> None:
     """on_event callback for configure_agent that surfaces WARNING-prefixed
-    messages to the terminal so silent lifecycle gaps (e.g. an integration
-    with an unknown type) become visible during `clm agent configure`."""
+    messages and structured lifecycle events to the terminal so silent
+    lifecycle gaps (e.g. an integration with an unknown type, or an
+    operator-visible token rotation) become visible during `clm agent
+    configure`/`sync`/`restart`."""
+    if stage == "gateway_token_rotated":
+        # Issue #437: structured rotation event. Payload is JSON with
+        # agent_key + old/new token prefixes + reason. Decode best-effort
+        # — a malformed payload still surfaces, just without the agent
+        # name.
+        agent_label: str | None = None
+        try:
+            payload = json.loads(message)
+            if isinstance(payload, dict):
+                raw_key = payload.get("agent_key")
+                if isinstance(raw_key, str) and raw_key:
+                    agent_label = raw_key
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if agent_label:
+            console.print(
+                f"  [yellow]Gateway token rotated for "
+                f"{rich_escape(agent_label)}. Active chat sessions on "
+                f"other machines will need to reconnect.[/yellow]"
+            )
+        else:
+            console.print(
+                "  [yellow]Gateway token rotated. Active chat sessions on "
+                "other machines will need to reconnect.[/yellow]"
+            )
+        return
+
     if message.startswith("WARNING:"):
         # Escape `message` before embedding in a Rich markup span — the
         # lifecycle warning interpolates `integration_type` from

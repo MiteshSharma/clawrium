@@ -1,5 +1,6 @@
 """Tests for claw lifecycle management module."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -338,6 +339,173 @@ class TestRestartClaw:
 
         assert result["success"] is True
         assert result["operation"] == "restart"
+
+
+class TestRestartAgentZeroclawRepair:
+    """Issue #437: `restart_agent` for zeroclaw must re-pair after the
+    systemd restart and atomically update `hosts.json.gateway.auth`.
+    Without this, hosts.json keeps the old token while the daemon enforces
+    a freshly-minted one, breaking `clm chat` on the next call."""
+
+    def _host(self) -> dict:
+        return {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "zer-test": {
+                    "type": "zeroclaw",
+                    "agent_name": "zerot",
+                    "onboarding": {"state": "ready"},
+                    "config": {"gateway": {"port": 40000, "auth": "old-token-zzzzz"}},
+                }
+            },
+        }
+
+    def test_zeroclaw_restart_invokes_repair_and_updates_hosts_json(self, tmp_path: Path):
+        host = self._host()
+        key_path = tmp_path / "test_key"
+        key_path.write_text("key")
+        playbook_path = tmp_path / "restart.yaml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        artifacts_dir = tmp_path / "artifacts"
+        fact_cache_dir = artifacts_dir / "fact_cache"
+        fact_cache_dir.mkdir(parents=True)
+        (fact_cache_dir / "192.168.1.100").write_text(
+            json.dumps({
+                "__payload__": json.dumps({
+                    "zeroclaw_gateway_token": "fresh-after-restart-zzzzz",
+                    "zeroclaw_gateway_url": "ws://192.168.1.100:40000/ws/chat",
+                })
+            })
+        )
+        repair_runner = MagicMock()
+        repair_runner.status = "successful"
+        repair_runner.events = []
+        repair_runner.config.artifact_dir = str(artifacts_dir)
+
+        events: list[tuple[str, str]] = []
+
+        def on_event(stage: str, message: str) -> None:
+            events.append((stage, message))
+
+        captured_update: dict = {}
+
+        def update_host_capture(_hostname: str, updater) -> bool:
+            h = {"hostname": "192.168.1.100", "agents": host["agents"].copy()}
+            captured_update["updated"] = updater(h)
+            return True
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.stop_agent",
+                return_value={
+                    "success": True, "agent": "zer-test", "host": "192.168.1.100",
+                    "operation": "stop", "pid": None, "started_at": None, "error": None,
+                },
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.start_agent",
+                    return_value={
+                        "success": True, "agent": "zer-test", "host": "192.168.1.100",
+                        "operation": "start", "pid": None,
+                        "started_at": "2026-05-19T00:00:00Z", "error": None,
+                    },
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.get_host_private_key",
+                        return_value=key_path,
+                    ):
+                        with patch(
+                            "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                            return_value=playbook_path,
+                        ):
+                            with patch(
+                                "clawrium.core.lifecycle.ansible_runner.run",
+                                return_value=repair_runner,
+                            ):
+                                with patch(
+                                    "clawrium.core.lifecycle.update_host",
+                                    side_effect=update_host_capture,
+                                ):
+                                    with patch(
+                                        "clawrium.core.lifecycle.get_config_dir",
+                                        return_value=tmp_path,
+                                    ):
+                                        result = restart_agent(
+                                            "192.168.1.100", "zeroclaw",
+                                            on_event=on_event,
+                                        )
+
+        assert result["success"] is True
+        # The repair updater overwrote the bearer in hosts.json.
+        updated = captured_update["updated"]
+        new_auth = (
+            updated["agents"]["zer-test"]["config"]["gateway"]["auth"]
+        )
+        assert new_auth == "fresh-after-restart-zzzzz"
+
+        # And it emitted exactly one rotation event with reason="restart".
+        rotation = [m for s, m in events if s == "gateway_token_rotated"]
+        assert len(rotation) == 1
+        payload = json.loads(rotation[0])
+        assert payload["agent_key"] == "zer-test"
+        assert payload["reason"] == "restart"
+
+    def test_zeroclaw_restart_fails_when_repair_playbook_fails(self, tmp_path: Path):
+        host = self._host()
+        key_path = tmp_path / "test_key"
+        key_path.write_text("key")
+        playbook_path = tmp_path / "restart.yaml"
+        playbook_path.write_text("---\n- hosts: all\n")
+
+        repair_runner = MagicMock()
+        repair_runner.status = "failed"
+        repair_runner.events = [
+            {"event": "runner_on_failed",
+             "event_data": {"res": {"msg": "pair handshake exploded"}}}
+        ]
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.stop_agent",
+                return_value={
+                    "success": True, "agent": "zer-test", "host": "192.168.1.100",
+                    "operation": "stop", "pid": None, "started_at": None, "error": None,
+                },
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.start_agent",
+                    return_value={
+                        "success": True, "agent": "zer-test", "host": "192.168.1.100",
+                        "operation": "start", "pid": None,
+                        "started_at": "2026-05-19T00:00:00Z", "error": None,
+                    },
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.get_host_private_key",
+                        return_value=key_path,
+                    ):
+                        with patch(
+                            "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                            return_value=playbook_path,
+                        ):
+                            with patch(
+                                "clawrium.core.lifecycle.ansible_runner.run",
+                                return_value=repair_runner,
+                            ):
+                                with patch(
+                                    "clawrium.core.lifecycle.get_config_dir",
+                                    return_value=tmp_path,
+                                ):
+                                    result = restart_agent(
+                                        "192.168.1.100", "zeroclaw"
+                                    )
+
+        assert result["success"] is False
+        assert "Re-pair" in result["error"]
 
 
 class TestRemoveClaw:
@@ -833,8 +1001,9 @@ class TestSyncAgent:
         mock_configure.assert_called_once()
         mock_restart.assert_not_called()
 
-    def test_returns_failure_when_restart_fails(self):
-        """B9: Sync fails when restart step fails after configure succeeds."""
+    def test_does_not_call_restart_agent(self):
+        """Issue #437: sync no longer orchestrates a separate restart.
+        configure handles re-pairing + handler-driven restart in one shot."""
         host = {
             "hostname": "192.168.1.100",
             "key_id": "test",
@@ -863,112 +1032,85 @@ class TestSyncAgent:
                 return_value=(True, None),
             ) as mock_configure:
                 with patch(
-                    "clawrium.core.lifecycle.restart_agent",
-                    return_value={
-                        "success": False,
-                        "agent": "opc-work",
-                        "host": "192.168.1.100",
-                        "operation": "restart",
-                        "pid": None,
-                        "started_at": None,
-                        "error": "Restart error",
-                    },
-                ):
-                    result = sync_agent("192.168.1.100", "openclaw")
-
-        assert result["success"] is False
-        assert "Restart failed" in result["error"]
-        assert result["operation"] == "sync"
-        # Confirm configure was called (intermediate step ran)
-        mock_configure.assert_called_once()
-
-    def test_returns_failure_when_restart_raises_exception(self):
-        """B2: Sync catches LifecycleError from restart and returns result."""
-        host = {
-            "hostname": "192.168.1.100",
-            "key_id": "test",
-            "agent_name": "xclm",
-            "port": 22,
-            "agents": {
-                "opc-work": {
-                    "type": "openclaw",
-                    "onboarding": {"state": "ready"},
-                    "config": {
-                        "gateway": {"port": 40000},
-                        "provider": {
-                            "name": "test",
-                            "type": "ollama",
-                            "endpoint": "http://localhost:11434",
-                            "default_model": "llama3",
-                        },
-                    },
-                }
-            },
-        }
-
-        with patch("clawrium.core.lifecycle.get_host", return_value=host):
-            with patch(
-                "clawrium.core.lifecycle.configure_agent",
-                return_value=(True, None),
-            ):
-                with patch(
-                    "clawrium.core.lifecycle.restart_agent",
-                    side_effect=LifecycleError("Restart exception"),
-                ):
-                    result = sync_agent("192.168.1.100", "openclaw")
-
-        assert result["success"] is False
-        assert "Restart failed" in result["error"]
-        assert "Restart exception" in result["error"]
-        assert result["operation"] == "sync"
-
-    def test_returns_success_on_successful_sync(self):
-        """Sync succeeds when all steps succeed."""
-        host = {
-            "hostname": "192.168.1.100",
-            "key_id": "test",
-            "agent_name": "xclm",
-            "port": 22,
-            "agents": {
-                "opc-work": {
-                    "type": "openclaw",
-                    "onboarding": {"state": "ready"},
-                    "config": {
-                        "gateway": {"port": 40000},
-                        "provider": {
-                            "name": "test",
-                            "type": "ollama",
-                            "endpoint": "http://localhost:11434",
-                            "default_model": "llama3",
-                        },
-                    },
-                }
-            },
-        }
-
-        with patch("clawrium.core.lifecycle.get_host", return_value=host):
-            with patch(
-                "clawrium.core.lifecycle.configure_agent",
-                return_value=(True, None),
-            ):
-                with patch(
-                    "clawrium.core.lifecycle.restart_agent",
-                    return_value={
-                        "success": True,
-                        "agent": "opc-work",
-                        "host": "192.168.1.100",
-                        "operation": "restart",
-                        "pid": 1234,
-                        "started_at": "2026-04-14T12:00:00Z",
-                        "error": None,
-                    },
-                ):
+                    "clawrium.core.lifecycle.restart_agent"
+                ) as mock_restart:
                     result = sync_agent("192.168.1.100", "openclaw")
 
         assert result["success"] is True
         assert result["operation"] == "sync"
+        mock_configure.assert_called_once()
+        # Issue #437: restart is no longer orchestrated by sync.
+        mock_restart.assert_not_called()
+
+    def test_returns_success_on_successful_sync(self):
+        """Sync succeeds when configure succeeds."""
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "opc-work": {
+                    "type": "openclaw",
+                    "onboarding": {"state": "ready"},
+                    "config": {
+                        "gateway": {"port": 40000},
+                        "provider": {
+                            "name": "test",
+                            "type": "ollama",
+                            "endpoint": "http://localhost:11434",
+                            "default_model": "llama3",
+                        },
+                    },
+                }
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.configure_agent",
+                return_value=(True, None),
+            ):
+                result = sync_agent("192.168.1.100", "openclaw")
+
+        assert result["success"] is True
+        assert result["operation"] == "sync"
         assert result["agent"] == "opc-work"
-        assert result["pid"] == 1234
+
+    def test_sync_passes_reason_sync_to_configure(self):
+        """Issue #437: sync calls configure_agent with reason='sync' so
+        the rotation event payload identifies the originating op."""
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "opc-work": {
+                    "type": "openclaw",
+                    "onboarding": {"state": "ready"},
+                    "config": {
+                        "gateway": {"port": 40000},
+                        "provider": {
+                            "name": "test",
+                            "type": "ollama",
+                            "endpoint": "http://localhost:11434",
+                            "default_model": "llama3",
+                        },
+                    },
+                }
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.configure_agent",
+                return_value=(True, None),
+            ) as mock_configure:
+                sync_agent("192.168.1.100", "openclaw")
+
+        kwargs = mock_configure.call_args.kwargs
+        assert kwargs.get("reason") == "sync"
 
     def test_sync_agent_by_explicit_name(self):
         """W7: Test sync with explicit agent_name parameter."""
@@ -999,21 +1141,9 @@ class TestSyncAgent:
                 "clawrium.core.lifecycle.configure_agent",
                 return_value=(True, None),
             ):
-                with patch(
-                    "clawrium.core.lifecycle.restart_agent",
-                    return_value={
-                        "success": True,
-                        "agent": "opc-work",
-                        "host": "192.168.1.100",
-                        "operation": "restart",
-                        "pid": None,
-                        "started_at": "2026-04-14T12:00:00Z",
-                        "error": None,
-                    },
-                ):
-                    result = sync_agent(
-                        "192.168.1.100", "openclaw", agent_name="opc-work"
-                    )
+                result = sync_agent(
+                    "192.168.1.100", "openclaw", agent_name="opc-work"
+                )
 
         assert result["success"] is True
         assert result["agent"] == "opc-work"
@@ -1052,28 +1182,14 @@ class TestSyncAgent:
                 "clawrium.core.lifecycle.configure_agent",
                 return_value=(True, None),
             ):
-                with patch(
-                    "clawrium.core.lifecycle.restart_agent",
-                    return_value={
-                        "success": True,
-                        "agent": "opc-work",
-                        "host": "192.168.1.100",
-                        "operation": "restart",
-                        "pid": None,
-                        "started_at": "2026-04-14T12:00:00Z",
-                        "error": None,
-                    },
-                ):
-                    result = sync_agent("192.168.1.100", "openclaw", on_event=on_event)
+                result = sync_agent("192.168.1.100", "openclaw", on_event=on_event)
 
         assert result["success"] is True
-        # W8: Assert sync events were emitted with proper count/ordering
         sync_events = [e for e in events if e[0] == "sync"]
-        # Should have at least 4 sync events: Syncing, Configuring, Restarting, complete
-        assert len(sync_events) >= 4
-        # First should be "Syncing..."
+        # Issue #437: sync now emits 3 events — "Syncing", "Configuring",
+        # "Sync complete" (the explicit "Restarting" step is gone).
+        assert len(sync_events) >= 3
         assert "Syncing" in sync_events[0][1]
-        # Last should be "Sync complete"
         assert "complete" in sync_events[-1][1].lower()
 
     def test_workspace_only_skips_restart(self):
