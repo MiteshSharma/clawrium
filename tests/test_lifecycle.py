@@ -638,6 +638,11 @@ class TestRemoveClaw:
         # Should have validate and remove events
         assert any(stage == "validate" for stage, _ in events)
         assert any(stage == "remove" for stage, _ in events)
+        # Verify the specific state cleanup message is emitted (or "already absent")
+        remove_messages = [msg for st, msg in events if st == "remove"]
+        assert any(
+            "agent state" in msg.lower() for msg in remove_messages
+        ), f"Expected state cleanup message, got: {remove_messages}"
 
     def test_removes_agent_state_directory(self, tmp_path: Path):
         """Pre-seed a per-agent state directory and verify remove_agent

@@ -217,14 +217,26 @@ def cleanup_agent_state(agent_name: str) -> bool:
     # runs this guard (keys.py, reset.py, cli/agent.py).
     config_dir = get_config_dir()
     try:
-        if not path.resolve().is_relative_to(config_dir.resolve()):
-            raise ValueError(
-                f"Agent state path {path} escapes config directory {config_dir}"
-            )
-    except (OSError, ValueError) as e:
+        resolved_path = path.resolve()
+        resolved_config = config_dir.resolve()
+    except OSError as e:
         raise ValueError(
             f"Invalid agent state path for {agent_name!r}: {e}"
         ) from e
+
+    if not resolved_path.is_relative_to(resolved_config):
+        raise ValueError(
+            f"Agent state path {path} escapes config directory {config_dir}"
+        )
+
+    # Check symlink BEFORE exists() — a broken symlink has exists() == False
+    # but is_symlink() == True. If we check exists() first, we'd return False
+    # and leave the broken symlink as orphan state (the exact bug #400 pattern).
+    if path.is_symlink():
+        # Defense-in-depth: refuse to follow symlinks with rmtree.
+        raise ValueError(
+            f"Agent state path {path} is a symlink, refusing to remove"
+        )
 
     if not path.exists():
         return False
@@ -233,12 +245,5 @@ def cleanup_agent_state(agent_name: str) -> bool:
     # the soft-failure boundary; ignoring errors here would silently
     # leave orphan directories (the exact bug #400 was filed for) and
     # disable Python 3.8+'s built-in symlink guard.
-    if path.is_symlink():
-        # Defense-in-depth: refuse to follow symlinks with rmtree.
-        raise ValueError(
-            f"Agent state path {path} is a symlink, refusing to remove"
-        )
-
     shutil.rmtree(path)
-    # Verify removal — rmtree may partially fail on permission errors.
-    return not path.exists()
+    return True

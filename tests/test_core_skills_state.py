@@ -268,3 +268,29 @@ class TestCleanupAgentState:
         assert not agent_dir.exists()
         # Second call — directory already gone
         assert cleanup_agent_state("hermes-tdd") is False
+
+    def test_rejects_broken_symlink_as_state_dir(self, tmp_path: Path):
+        """A broken symlink at the agent state dir path must be rejected,
+        not silently skipped. exists() returns False for broken symlinks,
+        so checking exists() before is_symlink() would leave the orphan."""
+        from clawrium.core.skills_state import cleanup_agent_state
+
+        agent_dir = tmp_path / "clawrium" / "agents" / "hermes-tdd"
+        agent_dir.mkdir(parents=True)
+
+        # Replace the directory with a broken symlink pointing to a
+        # non-existent target WITHIN the config tree (so the confinement
+        # check passes but the symlink guard still fires)
+        agent_dir.rmdir()
+        broken_target = tmp_path / "clawrium" / "agents" / ".nonexistent"
+        agent_dir.symlink_to(broken_target)
+
+        # Verify our test setup: exists() is False but is_symlink() is True
+        assert not agent_dir.exists()
+        assert agent_dir.is_symlink()
+
+        with pytest.raises(ValueError, match="is a symlink"):
+            cleanup_agent_state("hermes-tdd")
+
+        # Symlink should still exist (not removed)
+        assert agent_dir.is_symlink()
