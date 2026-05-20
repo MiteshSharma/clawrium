@@ -510,6 +510,208 @@ class TestZeroclawRepairAfterStart:
         assert success is False
         assert "Invalid agent_name" in error
 
+    def test_returns_failure_when_fact_cache_empty(self, tmp_path: Path):
+        """ATX W-COV-2: playbook reports successful but the fact cache
+        is empty — the pair token never made it back to clm. This is
+        the exact timing window the always-repair invariant must
+        surface as a failure, not silently leave hosts.json stale."""
+        host = self._host()
+        artifacts_dir = tmp_path / "artifacts"
+        (artifacts_dir / "fact_cache").mkdir(parents=True)
+        # No fact files written → extractor returns (None, None).
+        runner = MagicMock()
+        runner.status = "successful"
+        runner.events = []
+        runner.config.artifact_dir = str(artifacts_dir)
+
+        success, error = self._run_repair(host, tmp_path, runner=runner)
+        assert success is False
+        assert "pairing token was not captured" in error
+
+    def test_returns_failure_when_gateway_port_missing(self, tmp_path: Path):
+        """ATX W-COV-4: hosts.json record without config.gateway.port
+        must surface a clear error rather than building an invalid
+        Ansible inventory."""
+        host = self._host()
+        host["agents"]["zer-test"]["config"]["gateway"] = {"auth": "x" * 32}
+        runner, _ = self._setup_repair_runner(tmp_path, "any-token")
+        success, error = self._run_repair(host, tmp_path, runner=runner)
+        assert success is False
+        assert "Gateway port missing" in error
+
+    def test_no_rotation_event_emitted_when_update_host_fails(self, tmp_path: Path):
+        """ATX W-COV-3: the rotation event must NOT fire if the disk
+        write fails — that's the exact ordering invariant W2 fixed in
+        configure_agent. Pin the same invariant for the restart path."""
+        host = self._host()
+        runner, _ = self._setup_repair_runner(tmp_path, "would-be-new-token")
+        events: list[tuple[str, str]] = []
+
+        def on_event(stage: str, message: str) -> None:
+            events.append((stage, message))
+
+        success, _ = self._run_repair(
+            host, tmp_path, runner=runner,
+            update_host_result=False, on_event=on_event,
+        )
+        assert success is False
+        rotation = [m for s, m in events if s == "gateway_token_rotated"]
+        assert not rotation, f"rotation event leaked despite write failure: {rotation!r}"
+
+
+class TestStartAgentZeroclawRepairWiring:
+    """ATX W-COV-1: exercise the start_agent → _zeroclaw_repair_after_start
+    branch through a real `start_agent` call (the helper is unit-tested
+    in TestZeroclawRepairAfterStart; this class pins the wiring)."""
+
+    def _zeroclaw_host(self) -> dict:
+        return {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "zer-test": {
+                    "type": "zeroclaw",
+                    "agent_name": "zerot",
+                    "onboarding": {"state": "ready"},
+                    "config": {"gateway": {"port": 40000, "auth": "x" * 32}},
+                }
+            },
+        }
+
+    def test_start_zeroclaw_invokes_repair_with_reason_start(self, tmp_path: Path):
+        host = self._zeroclaw_host()
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook_path = tmp_path / "start.yaml"
+        playbook_path.write_text("---\n- hosts: all\n")
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ):
+                with patch(
+                    "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                    return_value=playbook_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ):
+                        with patch(
+                            "clawrium.core.lifecycle._update_agent_runtime",
+                            return_value=True,
+                        ):
+                            with patch(
+                                "clawrium.core.lifecycle.get_config_dir",
+                                return_value=tmp_path,
+                            ):
+                                with patch(
+                                    "clawrium.core.lifecycle._zeroclaw_repair_after_start",
+                                    return_value=(True, None),
+                                ) as mock_repair:
+                                    result = start_agent("192.168.1.100", "zeroclaw")
+
+        assert result["success"] is True
+        mock_repair.assert_called_once()
+        kwargs = mock_repair.call_args.kwargs
+        assert kwargs.get("reason") == "start"
+        # ATX W-NEW-2: helper receives resolved agent_key (not raw param)
+        assert kwargs.get("agent_name") == "zer-test"
+
+    def test_start_zeroclaw_returns_failure_when_repair_fails(self, tmp_path: Path):
+        host = self._zeroclaw_host()
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook_path = tmp_path / "start.yaml"
+        playbook_path.write_text("---\n- hosts: all\n")
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ):
+                with patch(
+                    "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                    return_value=playbook_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ):
+                        with patch(
+                            "clawrium.core.lifecycle._update_agent_runtime",
+                            return_value=True,
+                        ):
+                            with patch(
+                                "clawrium.core.lifecycle.get_config_dir",
+                                return_value=tmp_path,
+                            ):
+                                with patch(
+                                    "clawrium.core.lifecycle._zeroclaw_repair_after_start",
+                                    return_value=(False, "pair failed"),
+                                ):
+                                    result = start_agent("192.168.1.100", "zeroclaw")
+
+        assert result["success"] is False
+        assert "Re-pair after start failed" in result["error"]
+        assert "pair failed" in result["error"]
+
+    def test_start_openclaw_does_not_invoke_zeroclaw_repair(self, tmp_path: Path):
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "opc-test": {
+                    "type": "openclaw",
+                    "onboarding": {"state": "ready"},
+                }
+            },
+        }
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook_path = tmp_path / "start.yaml"
+        playbook_path.write_text("---\n- hosts: all\n")
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ):
+                with patch(
+                    "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                    return_value=playbook_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ):
+                        with patch(
+                            "clawrium.core.lifecycle._update_agent_runtime",
+                            return_value=True,
+                        ):
+                            with patch(
+                                "clawrium.core.lifecycle.get_config_dir",
+                                return_value=tmp_path,
+                            ):
+                                with patch(
+                                    "clawrium.core.lifecycle._zeroclaw_repair_after_start",
+                                ) as mock_repair:
+                                    result = start_agent("192.168.1.100", "openclaw")
+
+        assert result["success"] is True
+        mock_repair.assert_not_called()
+
 
 class TestRestartAgentZeroclawWiring:
     """Issue #437: `restart_agent` for zeroclaw drives the re-pair through

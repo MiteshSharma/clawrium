@@ -13,8 +13,12 @@
 # startup, so the old token in hosts.json no longer matches whatever the
 # daemon will enforce).
 
+# ATX W-SEC-4: no `become: yes` — every task in this play (the
+# /health/providers probe + the included pair.yaml handshake) hits
+# loopback HTTP only. Privilege escalation here would broaden blast
+# radius for zero benefit; if a future task needs root, add `become`
+# at the task level (not the play level).
 - hosts: all
-  become: yes
   vars:
     gateway_port: "{{ config.gateway.port }}"
     gateway_local_base: "http://127.0.0.1:{{ gateway_port }}"

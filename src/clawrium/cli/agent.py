@@ -2278,7 +2278,10 @@ def remove(
         if result["success"]:
             console.print("[green]✓[/green] Agent removed successfully")
         else:
-            console.print(f"[red]✗[/red] Failed to remove agent: {result['error']}")
+            console.print(
+                f"[red]✗[/red] Failed to remove agent: "
+                f"{rich_escape(result['error'] or '')}"
+            )
             raise typer.Exit(code=1)
 
     except HostsFileCorruptedError as e:
@@ -2370,7 +2373,10 @@ def start(
             console.print("[green]✓[/green] Agent started successfully")
             console.print("  Run 'clm agent ps' to check status")
         else:
-            console.print(f"[red]✗[/red] Failed to start agent: {result['error']}")
+            console.print(
+                f"[red]✗[/red] Failed to start agent: "
+                f"{rich_escape(result['error'] or '')}"
+            )
             raise typer.Exit(code=1)
 
     except HostsFileCorruptedError as e:
@@ -2439,7 +2445,10 @@ def stop(
         if result["success"]:
             console.print("[green]✓[/green] Agent stopped successfully")
         else:
-            console.print(f"[red]✗[/red] Failed to stop agent: {result['error']}")
+            console.print(
+                f"[red]✗[/red] Failed to stop agent: "
+                f"{rich_escape(result['error'] or '')}"
+            )
             raise typer.Exit(code=1)
 
     except HostsFileCorruptedError as e:
@@ -2504,7 +2513,10 @@ def restart(
             console.print("[green]✓[/green] Agent restarted successfully")
             console.print("  Run 'clm agent ps' to check status")
         else:
-            console.print(f"[red]✗[/red] Failed to restart agent: {result['error']}")
+            console.print(
+                f"[red]✗[/red] Failed to restart agent: "
+                f"{rich_escape(result['error'] or '')}"
+            )
             raise typer.Exit(code=1)
 
     except HostsFileCorruptedError as e:
@@ -2587,7 +2599,10 @@ def sync(
             console.print("[green]✓[/green] Configuration synced")
             console.print("  Run 'clm agent ps' to check status")
         else:
-            console.print(f"[red]✗[/red] Failed to sync agent: {result['error']}")
+            console.print(
+                f"[red]✗[/red] Failed to sync agent: "
+                f"{rich_escape(result['error'] or '')}"
+            )
             raise typer.Exit(code=1)
 
     except HostsFileCorruptedError as e:

@@ -447,6 +447,52 @@ def test_chat_zeroclaw_loop_guard_stops_on_second_401(monkeypatch):
     assert "Authentication failed" in result.output
 
 
+def test_chat_zeroclaw_treats_corrupted_hosts_as_genuine_401(monkeypatch):
+    """ATX W-COV-5: when reloading hosts.json during the 401 recovery
+    path raises HostsFileCorruptedError, treat the 401 as genuine —
+    surface 'Authentication failed' and exit 1, do not retry."""
+    host = {"hostname": "192.168.1.100", "alias": "server1"}
+    agent_initial = {
+        "agent_name": "zer-test",
+        "config": {
+            "gateway": {
+                "url": "ws://192.168.1.100:40123/ws/chat",
+                "auth": "stable-bearer-zzzzz",
+                "port": 40123,
+            }
+        },
+    }
+
+    call_log = {"count": 0}
+
+    def get_agent_by_name(_name: str):
+        call_log["count"] += 1
+        if call_log["count"] == 1:
+            return host, "zeroclaw", agent_initial
+        raise HostsFileCorruptedError("hosts.json malformed")
+
+    monkeypatch.setattr("clawrium.cli.chat.get_agent_by_name", get_agent_by_name)
+    monkeypatch.setattr(
+        "clawrium.cli.chat._resolve_chat_type", lambda _agent_type: "zeroclaw"
+    )
+
+    run_call_count = {"n": 0}
+
+    def fake_asyncio_run(coro):
+        coro.close()
+        run_call_count["n"] += 1
+        raise ChatAuthenticationError("401")
+
+    monkeypatch.setattr("clawrium.cli.chat.asyncio.run", fake_asyncio_run)
+
+    result = runner.invoke(app, ["chat", "zer-test", "--idle-timeout", "0"])
+
+    assert result.exit_code == 1
+    # No retry — only the initial attempt.
+    assert run_call_count["n"] == 1
+    assert "Authentication failed" in result.output
+
+
 def test_chat_zeroclaw_does_not_reconnect_when_disk_bearer_unchanged(monkeypatch):
     """Issue #437: an authentic 401 (disk bearer matches in-memory) must
     surface the existing 'Authentication failed' error rather than

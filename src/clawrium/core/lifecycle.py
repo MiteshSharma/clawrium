@@ -141,6 +141,19 @@ def _get_logs_dir() -> Path:
     return logs_dir
 
 
+def _safe_host_display(host: dict, hostname: str) -> str:
+    """Return a filesystem-safe host display string for log dir naming.
+
+    ATX W-SEC-3: an alias like `../etc` or `my/box` would otherwise turn
+    the operation log directory into a traversal target. Substitute any
+    char outside `[A-Za-z0-9_.-]` with `_`. Empty / all-bad-char input
+    falls back to "host".
+    """
+    raw = host.get("alias") or host.get("key_id") or hostname or ""
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
+    return sanitized or "host"
+
+
 def _cleanup_ansible_artifacts(operation_log_dir: Path) -> None:
     """Clean up ansible-runner artifacts that may contain secrets.
 
@@ -319,7 +332,7 @@ def _run_lifecycle_playbook(
 
     logs_dir = _get_logs_dir()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    host_display = host.get("alias") or host.get("key_id") or hostname
+    host_display = _safe_host_display(host, hostname)
     operation_log_dir = (
         logs_dir / f"{operation}-{agent_type}-{host_display}-{timestamp}"
     )
@@ -441,17 +454,23 @@ def start_agent(
         },
     )
 
-    emit("start", f"Started {agent_key} successfully")
-
     # Issue #437 / ATX W1: zeroclaw daemon does not persist bearer state
     # across systemd starts. Always re-pair after a cold start so
     # hosts.json.gateway.auth agrees with the token the daemon will
     # enforce on the next request. restart_agent reuses this path via
     # its stop -> start sequence (repair_reason="restart").
     if _resolve_agent_type(claw_name) == "zeroclaw":
+        # ATX W-SEC-2: do NOT emit "Started successfully" until the
+        # repair completes. An operator who ctrl-C's between the success
+        # line and the silent-but-still-running repair would otherwise
+        # be left with a stale hosts.json bearer.
+        emit("start", f"Daemon started; pairing {agent_key}...")
+        # ATX W-NEW-2: pass the resolved agent_key, not the raw caller
+        # parameter, so the helper's _resolve_agent_record always sees a
+        # canonical instance key.
         repair_success, repair_error = _zeroclaw_repair_after_start(
             hostname,
-            agent_name=agent_name,
+            agent_name=agent_key,
             on_event=on_event,
             reason=repair_reason,
         )
@@ -465,6 +484,8 @@ def start_agent(
                 "started_at": now,
                 "error": f"Re-pair after start failed: {repair_error}",
             }
+
+    emit("start", f"Started {agent_key} successfully")
 
     return {
         "success": True,
@@ -737,14 +758,18 @@ def _zeroclaw_repair_after_start(
 
     logs_dir = _get_logs_dir()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    host_display = host.get("alias") or host.get("key_id") or hostname
+    host_display = _safe_host_display(host, hostname)
     operation_log_dir = (
         logs_dir / f"restart-pair-zeroclaw-{host_display}-{timestamp}"
     )
     operation_log_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(operation_log_dir, 0o700)
 
-    emit("restart", "Re-pairing zeroclaw after restart...")
+    # ATX W-NEW-1: stage uses the actual reason so the start/restart
+    # CLI handlers (which dispatch by stage name) render the progress
+    # line instead of silently swallowing a hardcoded "restart" stage
+    # during a "start" op.
+    emit(reason, f"Re-pairing zeroclaw after {reason}...")
 
     try:
         result = ansible_runner.run(
@@ -1400,7 +1425,7 @@ def configure_agent(
     # Set up logging
     logs_dir = _get_logs_dir()
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    host_display = host.get("alias") or host.get("key_id") or hostname
+    host_display = _safe_host_display(host, hostname)
     operation_log_dir = (
         logs_dir / f"configure-{resolved_type}-{host_display}-{timestamp}"
     )

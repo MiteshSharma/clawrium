@@ -112,6 +112,95 @@ class TestConfigureClaw:
         assert success is False
         assert "failed to update local state" in error
 
+    def test_no_rotation_event_emitted_when_update_host_fails_with_prior_token(self, tmp_path: Path):
+        """ATX W-COV-3: when configure's hosts.json write fails AFTER
+        the pair handshake minted a new token, the rotation event must
+        NOT be emitted — that's the W2 ordering invariant. Without this
+        test, moving the emit back before the write would silently
+        regress."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "zer-test": {
+                    "type": "zeroclaw",
+                    "config": {
+                        "gateway": {
+                            "auth": "stable-prior-token-zzzzzzz",
+                            "url": "ws://test-host:40000/ws/chat",
+                        }
+                    },
+                }
+            },
+        }
+        config_data = {
+            "gateway": {"host": "0.0.0.0", "port": 40000, "allow_public_bind": True},
+            "provider": {
+                "name": "test-provider",
+                "type": "anthropic",
+                "default_model": "claude-sonnet-4-5",
+            },
+        }
+
+        key_path = tmp_path / "key"
+        key_path.write_text("key")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        artifacts_dir = tmp_path / "artifacts"
+        fact_cache_dir = artifacts_dir / "fact_cache"
+        fact_cache_dir.mkdir(parents=True)
+        (fact_cache_dir / "test-host").write_text(json.dumps({
+            "__payload__": json.dumps({
+                "zeroclaw_gateway_token": "freshly-minted-token-but-not-persisted",
+                "zeroclaw_gateway_url": "ws://test-host:40000/ws/chat",
+            }),
+        }))
+
+        mock_runner = MagicMock()
+        mock_runner.status = "successful"
+        mock_runner.events = []
+        mock_runner.config.artifact_dir = str(artifacts_dir)
+
+        events: list[tuple[str, str]] = []
+
+        def on_event(stage: str, message: str) -> None:
+            events.append((stage, message))
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ):
+                with patch(
+                    "clawrium.core.lifecycle.get_host_private_key",
+                    return_value=key_path,
+                ):
+                    with patch(
+                        "clawrium.core.lifecycle.ansible_runner.run",
+                        return_value=mock_runner,
+                    ):
+                        with patch(
+                            "clawrium.core.lifecycle.update_host",
+                            return_value=False,
+                        ):
+                            with patch(
+                                "clawrium.core.providers.get_provider_api_key",
+                                return_value="",
+                            ):
+                                success, _ = configure_agent(
+                                    "test-host", "zeroclaw", config_data,
+                                    on_event=on_event,
+                                )
+
+        assert success is False
+        rotation = [m for s, m in events if s == "gateway_token_rotated"]
+        assert not rotation, (
+            f"rotation event leaked despite update_host failure: {rotation!r}"
+        )
+
     def test_returns_false_when_playbook_missing(self, tmp_path: Path):
         """Test that missing configure playbook is detected."""
         host = {
