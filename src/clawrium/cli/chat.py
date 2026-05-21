@@ -15,7 +15,11 @@ import asyncio
 import re
 from typing import Any, TypedDict
 
+import sys
+
 import typer
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import FormattedText
 from rich.console import Console
 from rich.markup import escape as rich_escape
 
@@ -205,6 +209,7 @@ def chat(
                     response_timeout_seconds=timeout,
                     idle_timeout_seconds=idle_timeout,
                     chat_type=chat_type,
+                    agent_label=str(display_agent),
                 )
             )
             if attempted_reconnect:
@@ -331,11 +336,13 @@ async def _chat_loop(
     response_timeout_seconds: float,
     idle_timeout_seconds: float,
     chat_type: str = "websocket",
+    agent_label: str = "agent",
 ) -> None:
     with console.status("Connecting to agent...", spinner="dots"):
         await backend.connect()
 
     history_capable = chat_type == "openai"
+    agent_prefix_plain = f"{agent_label}> "
 
     try:
         while True:
@@ -385,7 +392,15 @@ async def _chat_loop(
                 nonlocal shown_prefix
                 _stop_status()
                 if not shown_prefix:
-                    console.print("agent> ", end="", markup=False, highlight=False)
+                    # `style=` (not markup) — `agent_label` may legitimately
+                    # contain `[`/`]`, which would otherwise be parsed as
+                    # Rich markup and crash or render wrong.
+                    console.print(
+                        agent_prefix_plain,
+                        end="",
+                        style="bold green",
+                        highlight=False,
+                    )
                     shown_prefix = True
                 console.print(delta, end="", markup=False, highlight=False)
 
@@ -433,9 +448,21 @@ async def _chat_loop(
             if shown_prefix:
                 console.print("")
             elif final_text:
-                console.print(f"agent> {final_text}", markup=False, highlight=False)
+                console.print(
+                    agent_prefix_plain,
+                    end="",
+                    style="bold green",
+                    highlight=False,
+                )
+                console.print(final_text, markup=False, highlight=False)
             else:
-                console.print("agent> [no response]", markup=False, highlight=False)
+                console.print(
+                    agent_prefix_plain,
+                    end="",
+                    style="bold green",
+                    highlight=False,
+                )
+                console.print("[no response]", markup=False, highlight=False)
 
             # Surface a user-visible notice when the backend silently trimmed
             # the conversation history to stay under MAX_HISTORY_TURNS. Only
@@ -452,15 +479,36 @@ async def _chat_loop(
         await backend.close()
 
 
+_PROMPT_SESSION: PromptSession[str] | None = None
+
+
+def _get_prompt_session() -> PromptSession[str]:
+    global _PROMPT_SESSION
+    if _PROMPT_SESSION is None:
+        _PROMPT_SESSION = PromptSession()
+    return _PROMPT_SESSION
+
+
 async def _read_user_input(prompt: str, idle_timeout_seconds: float) -> str:
-    task = asyncio.create_task(asyncio.to_thread(input, prompt))
-    try:
-        if idle_timeout_seconds > 0:
-            return await asyncio.wait_for(task, timeout=idle_timeout_seconds)
-        return await task
-    except TimeoutError:
-        task.cancel()
-        raise
+    # Non-TTY fallback: prompt_toolkit requires a real terminal and raises
+    # if stdin is piped or otherwise not a TTY. Preserve the bare `input()`
+    # behavior so scripted callers (`echo hi | clm chat ...`) still work.
+    if not sys.stdin.isatty():
+        task = asyncio.create_task(asyncio.to_thread(input, prompt))
+        try:
+            if idle_timeout_seconds > 0:
+                return await asyncio.wait_for(task, timeout=idle_timeout_seconds)
+            return await task
+        except TimeoutError:
+            task.cancel()
+            raise
+
+    styled = FormattedText([("ansiblue bold", prompt)])
+    session = _get_prompt_session()
+    coro = session.prompt_async(styled)
+    if idle_timeout_seconds > 0:
+        return await asyncio.wait_for(coro, timeout=idle_timeout_seconds)
+    return await coro
 
 
 def _resolve_chat_type(agent_type: str) -> str:

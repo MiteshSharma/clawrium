@@ -1619,3 +1619,97 @@ class TestZeroclawChat:
 
         assert result.exit_code == 0, result.output
         assert captured["backend"].gateway_url.endswith("/ws/chat")
+
+
+# --- Styled chat prompts (issue #455) ---------------------------------
+
+
+def test_chat_loop_uses_agent_name_in_prefix(monkeypatch, capsys):
+    """The agent prefix must surface the resolved agent name, not the
+    literal `agent>`, so multi-agent sessions are distinguishable."""
+    fake_client = FakeChatClient()
+    inputs = iter(["hello", "/exit"])
+
+    async def fake_read_user_input(prompt: str, idle_timeout_seconds: float) -> str:
+        return next(inputs)
+
+    monkeypatch.setattr(chat_module, "_read_user_input", fake_read_user_input)
+
+    asyncio.run(
+        chat_module._chat_loop(
+            backend=fake_client,
+            session_key="main",
+            response_timeout_seconds=30.0,
+            idle_timeout_seconds=10.0,
+            chat_type="websocket",
+            agent_label="cuddly-otter",
+        )
+    )
+
+    captured = capsys.readouterr().out
+    assert "cuddly-otter> " in captured
+    assert "agent> " not in captured
+
+
+def test_chat_loop_agent_prefix_uses_green_style(monkeypatch):
+    """The streaming agent-prefix print must use `style='bold green'`
+    rather than markup, so labels containing `[`/`]` render correctly
+    and the bold-green visual matches the spec."""
+    fake_client = FakeChatClient()
+    inputs = iter(["hi", "/exit"])
+
+    async def fake_read_user_input(prompt: str, idle_timeout_seconds: float) -> str:
+        return next(inputs)
+
+    monkeypatch.setattr(chat_module, "_read_user_input", fake_read_user_input)
+
+    captured_prints: list[dict[str, object]] = []
+    real_print = chat_module.console.print
+
+    def recording_print(*args, **kwargs):
+        captured_prints.append({"args": args, "kwargs": kwargs})
+        return real_print(*args, **kwargs)
+
+    monkeypatch.setattr(chat_module.console, "print", recording_print)
+
+    asyncio.run(
+        chat_module._chat_loop(
+            backend=fake_client,
+            session_key="main",
+            response_timeout_seconds=30.0,
+            idle_timeout_seconds=10.0,
+            chat_type="websocket",
+            agent_label="my-agent",
+        )
+    )
+
+    prefix_calls = [
+        call
+        for call in captured_prints
+        if call["args"] and call["args"][0] == "my-agent> "
+    ]
+    assert prefix_calls, "No print call emitted the agent prefix"
+    for call in prefix_calls:
+        assert call["kwargs"].get("style") == "bold green"
+        # `markup` must not be set to True for this call; the prefix is
+        # printed with `style=` precisely so the label is safe against
+        # any `[` characters it might contain.
+        assert "markup" not in call["kwargs"] or call["kwargs"]["markup"] is False
+
+
+def test_read_user_input_signature_preserved():
+    """The `_read_user_input` signature is part of the test surface —
+    `tests/test_cli_chat.py` monkeypatches it with the exact
+    `(prompt, idle_timeout_seconds) -> str` shape. Guard against
+    accidental signature drift."""
+    import inspect
+
+    sig = inspect.signature(chat_module._read_user_input)
+    params = list(sig.parameters)
+    assert params == ["prompt", "idle_timeout_seconds"]
+    # `from __future__ import annotations` turns annotations into strings,
+    # so compare by name to stay robust to that.
+    prompt_ann = sig.parameters["prompt"].annotation
+    idle_ann = sig.parameters["idle_timeout_seconds"].annotation
+    assert prompt_ann in (str, "str")
+    assert idle_ann in (float, "float")
