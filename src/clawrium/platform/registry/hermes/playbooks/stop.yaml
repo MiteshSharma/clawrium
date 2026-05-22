@@ -7,6 +7,30 @@
         path: "/etc/systemd/system/{{ agent_type }}-{{ agent_name }}.service"
       register: service_file
 
+    - name: Check if dashboard systemd unit exists
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ agent_type }}-dashboard-{{ agent_name }}.service"
+      register: dashboard_unit_file
+
+    # PartOf would normally propagate stop from the gateway to the dashboard,
+    # but we want the dashboard down even if the gateway is already stopped
+    # (idempotent stop / disable). Stop dashboard FIRST so an in-flight
+    # request that races the gateway shutdown still completes against a live
+    # dashboard process.
+    - name: Stop hermes dashboard service gracefully
+      ansible.builtin.systemd:
+        name: "{{ agent_type }}-dashboard-{{ agent_name }}"
+        state: stopped
+      when: dashboard_unit_file.stat.exists
+      ignore_errors: yes
+
+    - name: Disable hermes dashboard service
+      ansible.builtin.systemd:
+        name: "{{ agent_type }}-dashboard-{{ agent_name }}"
+        enabled: no
+      when: dashboard_unit_file.stat.exists
+      ignore_errors: yes
+
     - name: Stop hermes service gracefully
       ansible.builtin.systemd:
         name: "{{ agent_type }}-{{ agent_name }}"
@@ -43,6 +67,19 @@
       register: process_check
       changed_when: false
       failed_when: process_check.rc == 0
+
+    # ATX W7: dashboard runs as a separate `hermes dashboard ...` command
+    # (with its own node child process). The gateway pgrep above does not
+    # catch a stuck dashboard, so an operator who relies on `clm agent stop`
+    # could be left with the dashboard still bound to its loopback port.
+    # Only enforce when the dashboard unit is actually installed.
+    - name: Verify hermes dashboard process is stopped
+      ansible.builtin.command:
+        cmd: pgrep -u {{ agent_name }} -f "hermes dashboard"
+      register: dashboard_process_check
+      changed_when: false
+      failed_when: dashboard_process_check.rc == 0
+      when: dashboard_unit_file.stat.exists
 
     - name: Display success message
       ansible.builtin.debug:
