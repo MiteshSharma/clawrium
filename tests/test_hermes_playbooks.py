@@ -339,3 +339,210 @@ def test_hermes_remove_playbook_removes_dashboard_unit():
     assert any(
         "dashboard" in n.lower() and "remove" in n.lower() for n in names
     ), "remove.yaml must remove the dashboard unit file"
+
+
+# ---------------------------------------------------------------------------
+# Issue #490 — chat-WS pre-build workaround
+#
+# Regression anchors for the install-time mitigation against two upstream
+# NousResearch/hermes-agent v2026.5.7 defects:
+#   A. `_hermes_ink_bundle_stale` looks for `ink-bundle.js`, but the build
+#      script only produces `entry-exports.js` — staleness check is
+#      permanently True.
+#   B. `_make_tui_argv` runs synchronous `subprocess.run([npm, "run",
+#      "build"])` after `await ws.accept()`, blocking the asyncio loop and
+#      preventing the WS handshake response from reaching the client.
+#
+# Until upstream lands fixes, the install playbook pre-builds the TUI
+# bundle, creates the missing `ink-bundle.js` alias, and bumps mtimes so
+# both staleness checks resolve to False.
+# ---------------------------------------------------------------------------
+
+
+_UI_TUI_DIR = "/home/{{ agent_name }}/.hermes/code/ui-tui"
+_INK_DIST = f"{_UI_TUI_DIR}/packages/hermes-ink/dist"
+
+
+def _find_task_by_chdir(tasks: list[dict], chdir: str, cmd_contains: str):
+    """Return the first command-module task whose `cmd` contains
+    `cmd_contains` and whose `chdir` matches."""
+    for t in tasks:
+        cmd_value = _task_module_value(
+            t, "ansible.builtin.command", "command"
+        )
+        if not isinstance(cmd_value, dict):
+            continue
+        if cmd_value.get("chdir") != chdir:
+            continue
+        if cmd_contains in str(cmd_value.get("cmd", "")):
+            return t
+    return None
+
+
+def test_install_playbook_pre_builds_ui_tui_node_deps():
+    """`npm install` must run at install time in `ui-tui/`.
+
+    Pre-installing is half of the workaround for upstream defect B
+    (sync subprocess in async handler) — the runtime path in
+    `_make_tui_argv` would otherwise lazy-install on first WS request
+    and block the asyncio event loop.
+    """
+    tasks = _tasks(_hermes_playbook("install"))
+    task = _find_task_by_chdir(tasks, _UI_TUI_DIR, "npm install")
+    assert task is not None, (
+        "Missing `npm install` task with chdir = "
+        f"{_UI_TUI_DIR!r}. Required so `_make_tui_argv` doesn't lazy-"
+        "install at WS handshake time."
+    )
+    assert task.get("become_user") == "{{ agent_name }}", (
+        "npm install must run as the agent user so node_modules is "
+        "owned correctly."
+    )
+    env = task.get("environment") or {}
+    assert env.get("CI") == "1", (
+        "Set CI=1 so npm doesn't drop into interactive prompts on a "
+        "headless host."
+    )
+
+
+def test_install_playbook_pre_builds_ui_tui_bundle():
+    """`npm run build` must run at install time in `ui-tui/`.
+
+    This produces `dist/entry.js` + `packages/hermes-ink/dist/
+    entry-exports.js` so the dashboard's `_make_tui_argv` finds them
+    fresh on first chat WS request and skips the build branch
+    entirely (workaround for upstream defect B).
+    """
+    tasks = _tasks(_hermes_playbook("install"))
+    task = _find_task_by_chdir(tasks, _UI_TUI_DIR, "npm run build")
+    assert task is not None, (
+        "Missing `npm run build` task with chdir = "
+        f"{_UI_TUI_DIR!r}."
+    )
+    assert task.get("become_user") == "{{ agent_name }}", (
+        "npm run build must run as the agent user."
+    )
+
+
+def test_install_playbook_aliases_entry_exports_to_ink_bundle():
+    """Workaround for upstream defect A (filename drift): the
+    hermes-ink build script writes `entry-exports.js`, but
+    `_hermes_ink_bundle_stale` checks for `ink-bundle.js`. Copy the
+    one to the other so the check finds what it's looking for.
+    """
+    tasks = _tasks(_hermes_playbook("install"))
+    src_path = f"{_INK_DIST}/entry-exports.js"
+    dest_path = f"{_INK_DIST}/ink-bundle.js"
+    task = next(
+        (
+            t for t in tasks
+            if isinstance(
+                _task_module_value(t, "ansible.builtin.copy", "copy"), dict,
+            )
+            and _task_module_value(t, "ansible.builtin.copy", "copy").get(
+                "src"
+            ) == src_path
+            and _task_module_value(t, "ansible.builtin.copy", "copy").get(
+                "dest"
+            ) == dest_path
+        ),
+        None,
+    )
+    assert task is not None, (
+        f"Missing copy task aliasing {src_path!r} -> {dest_path!r}. "
+        "This is the upstream-filename-drift workaround for defect A "
+        "(hermes_cli/main.py:_hermes_ink_bundle_stale checks for "
+        "ink-bundle.js but the build script emits entry-exports.js)."
+    )
+    copy_args = _task_module_value(task, "ansible.builtin.copy", "copy")
+    assert copy_args.get("remote_src") is True, (
+        "Must set remote_src: true — both files live on the agent host, "
+        "not on the controller."
+    )
+
+
+def test_install_playbook_touches_ink_bundle_and_entry_js():
+    """Both `ink-bundle.js` and `dist/entry.js` must be touched at the
+    end of install so:
+      - `_hermes_ink_bundle_stale` sees a non-stale bundle (its mtime
+        is newer than any source file in packages/hermes-ink/).
+      - `_tui_build_needed` sees `dist/entry.js` newer than every
+        `.ts/.tsx` source + package.json/-lock.json/tsconfig*.json
+        meta file in ui-tui/.
+    """
+    tasks = _tasks(_hermes_playbook("install"))
+    targets = {
+        f"{_INK_DIST}/ink-bundle.js",
+        f"{_UI_TUI_DIR}/dist/entry.js",
+    }
+    touched: set[str] = set()
+    for t in tasks:
+        file_args = _task_module_value(t, "ansible.builtin.file", "file")
+        if not isinstance(file_args, dict):
+            continue
+        if file_args.get("state") != "touch":
+            continue
+        path = file_args.get("path")
+        if path in targets:
+            touched.add(path)
+    missing = targets - touched
+    assert not missing, (
+        f"Missing touch (state: touch) tasks for: {sorted(missing)}. "
+        "Without these mtime bumps, _tui_build_needed and "
+        "_hermes_ink_bundle_stale return True on first chat WS request "
+        "and the asyncio loop blocks on `npm run build`."
+    )
+
+
+def test_install_playbook_prebuild_tasks_are_ordered():
+    """ATX B1: the five pre-build tasks have a hard runtime dependency
+    chain — reordering keeps existence-only assertions green while the
+    playbook fails at runtime (`copy: src entry-exports.js not found`;
+    esbuild: missing node_modules). Pin the order.
+
+        npm install
+          → npm run build
+            → copy entry-exports.js -> ink-bundle.js
+              → touch ink-bundle.js
+              → touch dist/entry.js
+    """
+    tasks = _tasks(_hermes_playbook("install"))
+    names = [t.get("name", "") for t in tasks]
+
+    def _find(predicate) -> int:
+        for i, n in enumerate(names):
+            if predicate(n):
+                return i
+        return -1
+
+    npm_install_idx = _find(lambda n: "Install ui-tui Node dependencies" in n)
+    npm_build_idx = _find(lambda n: "Pre-build ui-tui bundle" in n)
+    copy_alias_idx = _find(lambda n: "Alias entry-exports.js to ink-bundle.js" in n)
+    touch_ink_idx = _find(lambda n: "Touch ink-bundle.js" in n)
+    touch_entry_idx = _find(lambda n: "Touch ui-tui/dist/entry.js" in n)
+
+    assert npm_install_idx >= 0, "missing `npm install` task"
+    assert npm_build_idx >= 0, "missing `npm run build` task"
+    assert copy_alias_idx >= 0, "missing entry-exports.js -> ink-bundle.js alias"
+    assert touch_ink_idx >= 0, "missing touch ink-bundle.js task"
+    assert touch_entry_idx >= 0, "missing touch dist/entry.js task"
+
+    assert npm_install_idx < npm_build_idx, (
+        f"`npm install` (idx {npm_install_idx}) must precede `npm run build` "
+        f"(idx {npm_build_idx}) — esbuild needs node_modules."
+    )
+    assert npm_build_idx < copy_alias_idx, (
+        f"`npm run build` (idx {npm_build_idx}) must precede the alias copy "
+        f"(idx {copy_alias_idx}) — entry-exports.js doesn't exist until "
+        f"build completes."
+    )
+    assert copy_alias_idx < touch_ink_idx, (
+        f"alias copy (idx {copy_alias_idx}) must precede touch of ink-bundle.js "
+        f"(idx {touch_ink_idx}) — touching a non-existent file would create "
+        f"an empty placeholder."
+    )
+    assert copy_alias_idx < touch_entry_idx, (
+        f"alias copy (idx {copy_alias_idx}) must precede touch of dist/entry.js "
+        f"(idx {touch_entry_idx}) — touches close the pre-build block and "
+        f"must come last."
+    )
