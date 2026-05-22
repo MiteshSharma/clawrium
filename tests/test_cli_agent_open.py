@@ -37,12 +37,18 @@ def _seed_hosts(config_dir: Path, agent_type: str) -> None:
     (config_dir / "hosts.json").write_text(json.dumps(hosts))
 
 
-def test_open_rejects_non_hermes_agent(isolated_config: Path):
+def test_open_rejects_agent_without_web_ui_feature(isolated_config: Path):
+    """openclaw has no `features.web_ui` in its manifest → resolver returns
+    None → CLI exits with a clear "does not declare a native web UI" error.
+
+    The hermes-only gate was dropped in #491 (zeroclaw also exposes a UI);
+    the manifest's `features.web_ui` block is now the only gate.
+    """
     _seed_hosts(isolated_config, "openclaw")
     result = runner.invoke(app, ["agent", "open", "demo"])
     assert result.exit_code == 1
-    assert "not supported" in result.output.lower()
-    assert "hermes" in result.output.lower()
+    assert "does not declare" in result.output.lower()
+    assert "native web ui" in result.output.lower()
 
 
 def test_open_unknown_agent_exits_nonzero(isolated_config: Path):

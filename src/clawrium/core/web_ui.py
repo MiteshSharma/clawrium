@@ -9,10 +9,13 @@ Returns `None` whenever an agent is not installed or its manifest does
 not declare `features.web_ui` — callers should treat `None` as "no native
 UI available for this agent".
 
-Bind contract: `bind: "loopback"` in this iteration MUST be interpreted
-by downstream callers as the IPv4 address `127.0.0.1`. The `BIND_ADDRESS_MAP`
-constant is the single source of truth — Phase 2's tunnel manager and any
-future consumer must import it rather than re-deriving the mapping.
+Bind contract: `bind: "loopback"` advertises that the agent listens on
+127.0.0.1 only; `bind: "wildcard"` advertises that it listens on
+0.0.0.0 (any interface). Either way, the SSH tunnel target on the
+remote is loopback — both values resolve to `127.0.0.1` through
+`BIND_ADDRESS_MAP`. The map is the single source of truth: Phase 2's
+tunnel manager and any future consumer must import it rather than
+re-deriving the mapping.
 """
 
 from __future__ import annotations
@@ -35,7 +38,10 @@ logger = logging.getLogger(__name__)
 # Single source of truth for the `bind` enum → concrete network address.
 # Downstream callers MUST consult this map rather than hard-coding 127.0.0.1,
 # so that adding new bind modes later remains a single-file change.
-BIND_ADDRESS_MAP: dict[str, str] = {"loopback": "127.0.0.1"}
+BIND_ADDRESS_MAP: dict[str, str] = {
+    "loopback": "127.0.0.1",
+    "wildcard": "127.0.0.1",
+}
 
 # Characters that must never appear in a host-supplied identity-file path.
 # Phase 2's tunnel manager will pass this value to `ssh -i <path>`; rejecting
@@ -56,9 +62,12 @@ class ResolvedUI:
         remote_port: TCP port the dashboard listens on inside the agent
             host. Sourced from `agent_record.config.<port_field>` when
             persisted, else the manifest's `default_port`.
-        bind: Bind scope advertised by the manifest. Closed enum — only
-            `"loopback"` is accepted in this iteration. Downstream callers
-            should look up the concrete address via `BIND_ADDRESS_MAP[bind]`.
+        bind: Bind scope advertised by the manifest. Closed enum:
+            `"loopback"` (agent listens on 127.0.0.1 only) or `"wildcard"`
+            (agent listens on 0.0.0.0). Downstream callers should look up
+            the concrete tunnel target via `BIND_ADDRESS_MAP[bind]` —
+            both values map to `127.0.0.1` because the SSH tunnel always
+            forwards to the remote loopback interface regardless.
         ssh_config: SSH-tunnel parameters: `user`, optional `port`,
             optional `identity_file`. Empty dict when the host record
             provides no SSH details.
@@ -66,7 +75,7 @@ class ResolvedUI:
 
     host: str
     remote_port: int
-    bind: Literal["loopback"]
+    bind: Literal["loopback", "wildcard"]
     ssh_config: dict[str, Any] = field(default_factory=dict)
 
 

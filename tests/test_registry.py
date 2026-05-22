@@ -1335,10 +1335,17 @@ def test_openclaw_manifest_does_not_declare_web_ui():
     assert "web_ui" not in manifest.get("features", {})
 
 
-def test_zeroclaw_manifest_does_not_declare_web_ui():
-    """zeroclaw does not opt into the native-UI mechanism."""
+def test_zeroclaw_manifest_declares_web_ui():
+    """zeroclaw opts into the native-UI mechanism via gateway.port (#491)."""
     manifest = load_manifest("zeroclaw")
-    assert "web_ui" not in manifest.get("features", {})
+    web_ui = manifest.get("features", {}).get("web_ui", {})
+    assert web_ui.get("enabled") is True
+    assert web_ui.get("bind") == "wildcard"
+    assert web_ui.get("port_field") == "gateway.port"
+    # default_port is a schema-required placeholder for zeroclaw: configure.yaml
+    # always persists gateway.port at install time (computed per-instance in
+    # 40000..41999), so this fallback rarely fires.
+    assert web_ui.get("default_port") == 40000
 
 
 def test_openclaw_manifest_now_declares_memory_workspace():

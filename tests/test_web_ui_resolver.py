@@ -71,15 +71,40 @@ def test_resolve_openclaw_returns_none(monkeypatch):
     assert resolve("oc") is None
 
 
-def test_resolve_zeroclaw_returns_none(monkeypatch):
-    """zeroclaw's manifest does not declare `features.web_ui`."""
+def test_resolve_zeroclaw_returns_gateway_port(monkeypatch):
+    """zeroclaw resolves to its persisted `gateway.port` (mirror of #478)."""
+    agent_record = {
+        "agent_name": "zc",
+        "type": "zeroclaw",
+        "config": {"gateway": {"port": 40123}},
+    }
+    _patch_agent(
+        monkeypatch,
+        host=_host("zero.local"),
+        agent_type="zeroclaw",
+        agent_record=agent_record,
+    )
+
+    resolved = resolve("zc")
+
+    assert isinstance(resolved, ResolvedUI)
+    assert resolved.host == "zero.local"
+    assert resolved.remote_port == 40123
+    assert resolved.bind == "wildcard"
+
+
+def test_resolve_zeroclaw_falls_back_to_default_port(monkeypatch):
+    """zeroclaw without a persisted gateway.port falls back to manifest default."""
     _patch_agent(
         monkeypatch,
         host=_host(),
         agent_type="zeroclaw",
         agent_record={"agent_name": "zc", "type": "zeroclaw", "config": {}},
     )
-    assert resolve("zc") is None
+    resolved = resolve("zc")
+    assert resolved is not None
+    assert resolved.bind == "wildcard"
+    assert resolved.remote_port == 40000
 
 
 def test_resolve_missing_agent_returns_none(monkeypatch):
@@ -408,6 +433,13 @@ def test_bind_address_map_covers_loopback():
     from clawrium.core.web_ui import BIND_ADDRESS_MAP
 
     assert BIND_ADDRESS_MAP["loopback"] == "127.0.0.1"
+
+
+def test_bind_address_map_covers_wildcard():
+    """`wildcard` agents (zeroclaw) still tunnel to remote loopback."""
+    from clawrium.core.web_ui import BIND_ADDRESS_MAP
+
+    assert BIND_ADDRESS_MAP["wildcard"] == "127.0.0.1"
 
 
 def test_resolve_returns_none_when_enabled_false(monkeypatch):
