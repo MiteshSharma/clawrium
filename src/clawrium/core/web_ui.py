@@ -61,7 +61,9 @@ class ResolvedUI:
             constructing a `ResolvedUI` with an empty host.
         remote_port: TCP port the dashboard listens on inside the agent
             host. Sourced from `agent_record.config.<port_field>` when
-            persisted, else the manifest's `default_port`.
+            persisted, else the manifest's `default_port` (if declared).
+            When neither is available the resolver returns `None` rather
+            than constructing a `ResolvedUI` with an invented port.
         bind: Bind scope advertised by the manifest. Closed enum:
             `"loopback"` (agent listens on 127.0.0.1 only) or `"wildcard"`
             (agent listens on 0.0.0.0). Downstream callers should look up
@@ -161,7 +163,9 @@ def resolve(agent_key: str) -> ResolvedUI | None:
           - the host record has no usable primary address,
           - the agent's manifest cannot be loaded,
           - the manifest does not declare `features.web_ui`,
-          - `features.web_ui.enabled` is `False`.
+          - `features.web_ui.enabled` is `False`,
+          - `hosts.json` carries no persisted port at `port_field` AND
+            the manifest declares no `default_port` (#491).
     """
     if not isinstance(agent_key, str) or not agent_key.strip():
         return None
@@ -229,8 +233,21 @@ def resolve(agent_key: str) -> ResolvedUI | None:
         and 0 < persisted_port <= 65535
     ):
         remote_port = persisted_port
-    else:
+    elif "default_port" in web_ui:
         remote_port = web_ui["default_port"]
+    else:
+        # Manifest has no static fallback and `hosts.json` is missing the
+        # persisted port — surface as "no UI" rather than inventing one.
+        # Inventing a default would silently serve a different instance's
+        # UI when multiple agents of the same type share a host.
+        logger.warning(
+            "resolve(%s): %r has no persisted %s in hosts.json and the "
+            "manifest declares no default_port — treating as no UI available",
+            agent_key,
+            agent_type,
+            web_ui["port_field"],
+        )
+        return None
 
     return ResolvedUI(
         host=host,

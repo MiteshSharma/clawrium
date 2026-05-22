@@ -145,11 +145,19 @@ class WebUIFeatureConfig(TypedDict):
     `port_field` is a dotted path into the agent's `hosts.json` config
     record (for example, `dashboard.port` or `gateway.port`) so callers
     can locate the persisted per-instance port.
+
+    `default_port` is optional. In practice every agent type computes a
+    per-instance port at install time and persists it under `port_field`,
+    so a single manifest-wide default would silently collide when a host
+    runs multiple agents of the same type. Manifests should omit
+    `default_port` when no static fallback exists; resolvers surface a
+    missing persisted port as "no UI available" rather than serving a
+    different instance's URL.
     """
 
     enabled: bool
     bind: Literal["loopback", "wildcard"]
-    default_port: int
+    default_port: NotRequired[int]
     port_field: str
 
 
@@ -537,12 +545,15 @@ _PORT_FIELD_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*
 def _validate_web_ui(web_ui_value: object, agent_type: str) -> WebUIFeatureConfig:
     """Validate `features.web_ui` block.
 
-    `bind` is a closed enum: `loopback` or `wildcard`. All four fields
-    (`enabled`, `bind`, `default_port`, `port_field`) are required when the
-    block is present. `default_port` is constrained to 1024..65535 —
-    privileged ports (<1024) are rejected outright because non-root agent
-    processes cannot bind them. `port_field` must be a dotted identifier
-    path (e.g. `dashboard.port`, `gateway.port`).
+    `bind` is a closed enum: `loopback` or `wildcard`. `enabled`, `bind`,
+    and `port_field` are required; `default_port` is optional (most
+    agents compute a per-instance port at install time and persist it
+    under `port_field`, so a single manifest-wide default would silently
+    collide for hosts running multiple instances of the same agent type).
+    When present, `default_port` is constrained to 1024..65535 —
+    privileged ports (<1024) are rejected outright because non-root
+    agent processes cannot bind them. `port_field` must be a dotted
+    identifier path (e.g. `dashboard.port`, `gateway.port`).
     """
     web_ui = _as_dict(web_ui_value, "features.web_ui", agent_type)
 
@@ -560,8 +571,9 @@ def _validate_web_ui(web_ui_value: object, agent_type: str) -> WebUIFeatureConfi
             f"has invalid `features.web_ui.bind` (expected one of {allowed})",
         )
 
+    has_default_port = "default_port" in web_ui
     default_port = web_ui.get("default_port")
-    if (
+    if has_default_port and (
         not isinstance(default_port, int)
         or isinstance(default_port, bool)
         or default_port < 1024
@@ -589,12 +601,14 @@ def _validate_web_ui(web_ui_value: object, agent_type: str) -> WebUIFeatureConfi
             "(expected dotted identifier path, e.g. 'dashboard.port')",
         )
 
-    return {
+    result: WebUIFeatureConfig = {
         "enabled": enabled,
         "bind": bind,
-        "default_port": default_port,
         "port_field": port_field,
     }
+    if has_default_port:
+        result["default_port"] = default_port
+    return result
 
 
 def _validate_features(features_value: object, agent_type: str) -> FeaturesConfig:

@@ -1073,7 +1073,13 @@ def test_manifest_rejects_invalid_features_memory(monkeypatch):
 
 
 def _valid_web_ui_block() -> dict:
-    """Return a minimal valid `features.web_ui` block for tests."""
+    """Return a minimal valid `features.web_ui` block for tests.
+
+    `default_port` is included in the canonical block so the existing
+    "validator accepts a complete block" / range-boundary tests still
+    exercise that branch — but the field is optional in the schema
+    (issue #491), and the omission test below exercises that path.
+    """
     return {
         "enabled": True,
         "bind": "loopback",
@@ -1112,8 +1118,14 @@ def test_load_manifest_rejects_invalid_web_ui_bind(monkeypatch):
         load_manifest("openclaw")
 
 
-def test_load_manifest_rejects_web_ui_missing_default_port(monkeypatch):
-    """`default_port` is required and must be a positive integer."""
+def test_load_manifest_accepts_web_ui_without_default_port(monkeypatch):
+    """`default_port` is optional (issue #491).
+
+    Agents like hermes and zeroclaw compute per-instance ports at install
+    time and persist them under `port_field`; a manifest-wide default
+    would silently collide on hosts running multiple instances. The
+    resolver surfaces a missing persisted port as "no UI" instead.
+    """
     from clawrium.core import registry
 
     manifest = deepcopy(_valid_manifest())
@@ -1122,8 +1134,12 @@ def test_load_manifest_rejects_web_ui_missing_default_port(monkeypatch):
     manifest["features"] = {"web_ui": block}
     monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
 
-    with pytest.raises(ManifestParseError, match="features.web_ui.default_port"):
-        load_manifest("openclaw")
+    loaded = load_manifest("openclaw")
+    web_ui = loaded["features"]["web_ui"]
+    assert "default_port" not in web_ui
+    assert web_ui["enabled"] is True
+    assert web_ui["bind"] == "loopback"
+    assert web_ui["port_field"] == "dashboard.port"
 
 
 def test_load_manifest_rejects_web_ui_non_positive_port(monkeypatch):
@@ -1233,9 +1249,13 @@ def test_load_manifest_rejects_web_ui_non_dict(monkeypatch):
         load_manifest("openclaw")
 
 
-@pytest.mark.parametrize("missing_field", ["enabled", "bind", "default_port", "port_field"])
+@pytest.mark.parametrize("missing_field", ["enabled", "bind", "port_field"])
 def test_load_manifest_rejects_web_ui_missing_field(monkeypatch, missing_field):
-    """Each required `web_ui` field must be present."""
+    """Each required `web_ui` field must be present.
+
+    `default_port` is intentionally absent from this list (issue #491) —
+    see `test_load_manifest_accepts_web_ui_without_default_port`.
+    """
     from clawrium.core import registry
 
     manifest = deepcopy(_valid_manifest())
@@ -1320,13 +1340,19 @@ def test_allowed_web_ui_binds_matches_literal():
 
 
 def test_hermes_manifest_declares_web_ui():
-    """The bundled hermes manifest advertises native dashboard support."""
+    """The bundled hermes manifest advertises native dashboard support.
+
+    No `default_port` (issue #491): install.py computes a per-instance
+    port in 45000..46999 and persists it under `dashboard.port`, so a
+    manifest-wide default would silently collide on hosts running
+    multiple hermes instances.
+    """
     manifest = load_manifest("hermes")
     web_ui = manifest.get("features", {}).get("web_ui", {})
     assert web_ui.get("enabled") is True
     assert web_ui.get("bind") == "loopback"
-    assert web_ui.get("default_port") == 9119
     assert web_ui.get("port_field") == "dashboard.port"
+    assert "default_port" not in web_ui
 
 
 def test_openclaw_manifest_does_not_declare_web_ui():
@@ -1336,16 +1362,19 @@ def test_openclaw_manifest_does_not_declare_web_ui():
 
 
 def test_zeroclaw_manifest_declares_web_ui():
-    """zeroclaw opts into the native-UI mechanism via gateway.port (#491)."""
+    """zeroclaw opts into the native-UI mechanism via gateway.port (#491).
+
+    No `default_port`: zeroclaw computes a per-instance port at install
+    time (`40000 + hash % 2000`) and persists it under `gateway.port`,
+    so a manifest-wide default would silently collide on hosts running
+    multiple zeroclaw instances.
+    """
     manifest = load_manifest("zeroclaw")
     web_ui = manifest.get("features", {}).get("web_ui", {})
     assert web_ui.get("enabled") is True
     assert web_ui.get("bind") == "wildcard"
     assert web_ui.get("port_field") == "gateway.port"
-    # default_port is a schema-required placeholder for zeroclaw: configure.yaml
-    # always persists gateway.port at install time (computed per-instance in
-    # 40000..41999), so this fallback rarely fires.
-    assert web_ui.get("default_port") == 40000
+    assert "default_port" not in web_ui
 
 
 def test_openclaw_manifest_now_declares_memory_workspace():
