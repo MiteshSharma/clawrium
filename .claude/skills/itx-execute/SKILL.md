@@ -32,10 +32,14 @@ across all subtasks.
   ```
 - `tmux` available on the host. If not, fail with a clear message —
   orchestrate mode requires tmux.
-- `.claude/itx-config.json` `mcp.review_enabled: true`. If review is
-  not enabled, fail — orchestrate mode requires ATX to gate handoffs.
 - A plan file exists at `.itx/<parent>/00_PLAN.md` (created by
   `/itx:plan-create`). Refuse to start otherwise.
+
+ATX availability is **not** a precondition. Children use the
+fallback chain in **ATX Review** below. Handoff is still keyed on
+PR-open — without ATX, that just means the child opens the PR after
+local `make test` + `make lint` pass instead of after an ATX rating
+clears.
 
 ### Orchestration contract
 
@@ -47,19 +51,22 @@ The orchestrator (the claude session that runs orchestrate mode) does
    `claude --dangerously-skip-permissions '/itx:execute <N>'` in the
    subtask's worktree.
 3. Polls subtask PR state every ~5 minutes.
-4. When a subtask's PR appears (signal that ATX cleared inside the
-   child), spawns the **next** subtask with the correct stacked base.
-5. Escalates to the user when a child reports it is stuck after 3 ATX
-   iterations without clearing Rating > 3/5.
+4. When a subtask's PR appears (the child's handoff signal), spawns
+   the **next** subtask with the correct stacked base.
+5. Surfaces stuck children (PRs carrying `[ITX-STUCK]`) in the
+   end-of-run summary table, but does **not** halt the pipeline
+   waiting for user input — see "Stuck child" below.
 
 The orchestrator does **NOT**:
 
 - Touch source code.
 - Run tests / lint directly.
 - Merge PRs. Merging is the user's decision.
-- Bypass ATX or use `--no-verify`.
+- Block on user input. If something requires a decision, the child
+  records it as a Callout on its PR and proceeds.
+- Bypass ATX when ATX is available; bypass `--no-verify`.
 - Spawn all subtask windows up front. Windows are created **on demand**
-  when the predecessor's PR is open with clean ATX.
+  when the predecessor's PR is open.
 
 ### Stacked PR layout
 
@@ -78,10 +85,15 @@ As predecessors merge, GitHub auto-updates downstream PR bases to main.
 
 ### tmux layout
 
-- Session name: `itx/<parent>` (e.g. `itx/112`).
-- One window per subtask, named `subtask-<letter>` or
-  `issue-<N>` if subtasks have no obvious ordering letter.
-- Created on demand. User attaches with `tmux attach -t itx/<parent>`.
+- Session name: `<project-name>-issue-<parent>` where `<project-name>`
+  is the repo name from `basename $(git rev-parse --show-toplevel)`.
+  Example: `clawrium-issue-478`.
+- One window per subtask, named `issue-<N>` (the subtask issue number).
+  Example: `issue-481`, `issue-482`, `issue-483`.
+- Created on demand. User attaches with
+  `tmux attach -t <project-name>-issue-<parent>`.
+- Window 0 (the session's default window) is owned by the orchestrator
+  and runs the polling loop / status display.
 
 ### Step-by-step
 
@@ -97,21 +109,22 @@ As predecessors merge, GitHub auto-updates downstream PR bases to main.
 
 4. **Create tmux session:**
    ```bash
-   tmux has-session -t "itx/${PARENT}" 2>/dev/null || \
-     tmux new-session -d -s "itx/${PARENT}"
+   REPO_NAME=$(basename $(git rev-parse --show-toplevel))
+   SESSION="${REPO_NAME}-issue-${PARENT}"
+   tmux has-session -t "$SESSION" 2>/dev/null || \
+     tmux new-session -d -s "$SESSION"
    ```
 
 5. **Spawn subtask A:**
    ```bash
-   REPO_NAME=$(basename $(git rev-parse --show-toplevel))
    REPO_PARENT=$(dirname $(git rev-parse --show-toplevel))
    WORKTREE_A="${REPO_PARENT}/${REPO_NAME}-issue-${A_NUM}"
    BRANCH_A="issue-${A_NUM}-<slug>"
 
    git worktree add "$WORKTREE_A" -b "$BRANCH_A" main
 
-   tmux new-window -t "itx/${PARENT}" -n "subtask-A" -c "$WORKTREE_A"
-   tmux send-keys -t "itx/${PARENT}:subtask-A" \
+   tmux new-window -t "$SESSION" -n "issue-${A_NUM}" -c "$WORKTREE_A"
+   tmux send-keys -t "${SESSION}:issue-${A_NUM}" \
      "claude --dangerously-skip-permissions '/itx:execute ${A_NUM}'" Enter
    ```
 
@@ -120,11 +133,13 @@ As predecessors merge, GitHub auto-updates downstream PR bases to main.
    gh pr list --repo "$OWNER/$REPO" --head "$BRANCH_A" \
      --json number,state,reviewDecision,body --jq '.[0]'
    ```
-   The child claude opens its PR **only after** its internal ATX loop
-   reaches Rating > 3/5 with no blockers. PR existence ⇒ ATX cleared.
+   The child opens its PR when its work is ready — that means
+   tests + lint pass and, if ATX is available, its iteration loop
+   has either cleared or exhausted (with unresolved blockers
+   documented as Callouts and an `[ITX-STUCK]` marker on the PR).
 
-   **Do not poll faster than 5 minutes.** ATX iterations take minutes;
-   faster polling burns cache without changing outcomes.
+   **Do not poll faster than 5 minutes.** Child iterations take
+   minutes; faster polling burns cache without changing outcomes.
 
 7. **On predecessor PR open, spawn next subtask:**
    - Create worktree at `${REPO_PARENT}/${REPO_NAME}-issue-${NEXT_NUM}`.
@@ -145,20 +160,28 @@ As predecessors merge, GitHub auto-updates downstream PR bases to main.
    subtask's PR URL, ATX rating, and base branch. Then stands down.
    Merging is the user's decision; merging happens bottom-up.
 
-### Escalation: stuck child
+### Stuck child (non-blocking)
 
-A child session that fails to clear Rating > 3/5 after 3 ATX iterations
-writes a marker comment on its own PR (or its issue if no PR exists
-yet) with body starting `[ITX-STUCK]` and pauses.
+A child that exhausts its 3-iteration ATX ceiling without clearing
+**still opens its PR**. The PR body documents every unresolved
+blocker as a Callout and the PR carries an `[ITX-STUCK]` marker
+comment.
 
-The orchestrator's polling loop also matches `[ITX-STUCK]` comments on
-the predecessor's issue. On detection:
+The orchestrator's polling loop treats an `[ITX-STUCK]`-marked PR the
+same as a clean PR for the purpose of advancing the pipeline — the
+child has done its best, recorded the gaps, and handed off. **Do not
+halt and do not block on user input.**
 
-1. Halt the spawn pipeline (do not start the next subtask).
-2. Surface the blockage to the user with: the subtask number, the ATX
-   feedback summary, and a recommended action.
-3. Wait for user direction (extend iterations, downgrade scope,
-   abandon, or manual takeover).
+In the end-of-run summary, flag every stuck subtask with the count of
+unresolved blockers so the user sees them up front. Merging decisions
+remain entirely the user's — they can read the Callouts, push back on
+the PR, take it over manually, or abandon. The orchestrator stands
+down after reporting; it does not wait for that decision.
+
+If the orchestrator itself encounters a genuinely unrecoverable
+condition (e.g., worktree directory already exists with a conflicting
+branch), it records a Callout on the **parent** issue (#`<parent>`)
+and exits non-zero with a summary. It does not prompt.
 
 ### PR base override (child contract)
 
@@ -195,9 +218,139 @@ gh pr edit <pr-num> --base "$PREV_BRANCH"
 ### When NOT to use orchestrate mode
 
 - Single-issue (no subtasks) — use regular mode.
-- ATX disabled in `.claude/itx-config.json` — gating signal missing.
 - You want manual control between every subtask — use regular mode
   with explicit handoffs.
+
+Note: ATX availability is **not** a precondition. If ATX is unavailable
+or fails, the orchestrator still spawns subtasks; PR-open remains the
+handoff signal. See **ATX Review** below.
+
+## ATX Review (resilient, non-blocking)
+
+Code review via ATX is desired but not required. Children execute
+review with a strict fallback chain and persist state so an interrupted
+execution can resume without re-running ATX on identical changes.
+
+### Detection chain
+
+Try each step in order; use the first that works. **Never block the
+user** waiting for ATX to become available.
+
+1. **ATX via MCP** (preferred). Check whether
+   `mcp__atx__request_review` is available in the tool list. If yes,
+   call it with the iteration body specified in
+   [AGENTS.md](../../../AGENTS.md#if-mcp-review-enabled-atx).
+2. **ATX via CLI** (fallback). If MCP is not available, check
+   `command -v atx` on the host. If found, invoke
+   `atx review --pr <pr-number> --json` (or the project's documented
+   CLI invocation in `.claude/itx-config.json` if specified) and parse
+   the JSON output the same way you'd parse the MCP response.
+3. **Skip ATX** (last resort). If neither MCP nor CLI is available,
+   **proceed with the work** — do not block, do not prompt the user.
+   Record a Callout on the PR (see "Callouts" below) noting that ATX
+   was unavailable so the reviewer knows to do a manual pass.
+
+### Session ID persistence
+
+Whenever an ATX review is requested (MCP or CLI), persist the session
+metadata immediately to `.itx/<N>/atx-session.json`:
+
+```json
+{
+  "session_id": "<id returned by ATX>",
+  "transport": "mcp" | "cli",
+  "commit_sha": "<HEAD sha at the moment review was requested>",
+  "iteration": 1,
+  "last_rating": null,
+  "last_blockers": [],
+  "started_at": "<ISO-8601 UTC>",
+  "updated_at": "<ISO-8601 UTC>"
+}
+```
+
+Update the file after every iteration with `iteration`, `last_rating`,
+`last_blockers`, and `updated_at`. Commit this file alongside your
+code changes — it's a planning artifact and helps the next run.
+
+### On resume / re-entry
+
+When `/itx:execute <N>` starts and `.itx/<N>/atx-session.json` exists:
+
+1. Read the file.
+2. Compare `commit_sha` with current `git rev-parse HEAD`.
+   - **Match + `last_rating > 3` + no blockers** → ATX already cleared
+     these changes. Skip ATX entirely; proceed to PR open / push.
+   - **Match + unresolved blockers** → Resume the same session
+     (poll status if MCP / re-fetch if CLI) instead of starting a new
+     review. This avoids burning cost on duplicate runs over identical
+     changes.
+   - **Mismatch** (HEAD has moved) → Stale session. Delete the file
+     and start a fresh ATX review against the new commit.
+3. If `transport` differs from what's currently available (e.g., file
+   says `mcp` but only CLI is available now): treat as stale, start
+   fresh — sessions are not portable across transports.
+
+### Iteration ceiling (non-blocking)
+
+Run at most **3** ATX iterations. After the 3rd iteration:
+
+- If Rating > 3/5 with no blockers: open / update PR normally with
+  the ATX summary in the body.
+- If still blocked: **open the PR anyway** with:
+  - The full ATX iteration history in the PR body (per
+    `<pr-format-atx>` in AGENTS.md).
+  - A **Callouts** section (see below) enumerating every unresolved
+    blocker with a best-guess decision and the reasoning. Do not
+    leave the work in an open-ended "stuck" state — close out with a
+    callout instead.
+  - Add the `[ITX-STUCK]` marker comment on the PR so the
+    orchestrator's polling loop can flag it.
+
+This replaces the older "wait for user direction" behavior. The
+orchestrator may still surface a stuck child in its end-of-run
+summary, but it will not pause the pipeline waiting for input — it
+either proceeds to the next subtask (if one is queued) or stands down
+with the report.
+
+## Callouts (required in every PR body)
+
+Every PR opened by `/itx:execute` MUST include a **Callouts** section
+near the bottom of the body — even if empty. Format:
+
+```markdown
+## Callouts
+
+- [DECISION] <one-line summary of a non-obvious choice you made>
+  - Why: <best-guess rationale based on existing project standards>
+  - Alternatives considered: <briefly>
+  - Reviewer: confirm or push back.
+
+- [UNRESOLVED] <what could not be resolved by the agent alone>
+  - Best guess applied: <what you did anyway>
+  - Reviewer: please verify.
+
+- [ENVIRONMENT] <anything unusual about the execution environment>
+  - Example: "ATX unavailable; review path was manual."
+
+- [TODO-FOLLOWUP] <work intentionally deferred>
+  - Tracking: <issue number or `to be filed`>
+```
+
+If you would otherwise want to ask the user a question via
+`AskUserQuestion`, **don't** — make a best-guess decision using
+existing project conventions (CLAUDE.md, AGENTS.md, neighboring code)
+and record it as a `[DECISION]` callout instead. The PR is the
+synchronization point with the user; do not block during execution.
+
+If there are genuinely no callouts, write:
+
+```markdown
+## Callouts
+
+_None._
+```
+
+so the reviewer knows the section wasn't forgotten.
 
 ## Worktree Mode (Recommended for Parallel Execution)
 
@@ -230,22 +383,30 @@ Example:
 
    **If tmux available** (interactive execution in background):
    ```bash
-   # Create session if not exists
-   tmux has-session -t "itx/exec" 2>/dev/null || tmux new-session -d -s "itx/exec"
+   REPO_NAME=$(basename $(git rev-parse --show-toplevel))
+   SESSION="${REPO_NAME}-issue-${NUMBER}"
+
+   # Create session if not exists. Session-per-issue keeps standalone
+   # runs isolated from orchestrate-mode sessions (which use the parent
+   # issue number).
+   tmux has-session -t "$SESSION" 2>/dev/null || \
+     tmux new-session -d -s "$SESSION"
 
    # Create window and run claude interactively (no -p flag so you can watch execution)
-   tmux new-window -t "itx/exec" -n "issue-${NUMBER}" -c "${WORKTREE_PATH}"
-   tmux send-keys -t "itx/exec:issue-${NUMBER}" \
+   tmux new-window -t "$SESSION" -n "issue-${NUMBER}" -c "${WORKTREE_PATH}"
+   tmux send-keys -t "${SESSION}:issue-${NUMBER}" \
      "claude --dangerously-skip-permissions '/itx:execute ${NUMBER}'" Enter
 
-   echo "Spawned in tmux 'itx/exec:issue-${NUMBER}'"
-   echo "Attach: tmux attach -t itx/exec"
+   echo "Spawned in tmux '${SESSION}:issue-${NUMBER}'"
+   echo "Attach: tmux attach -t ${SESSION}"
    ```
 
    **If tmux not available** (fallback):
-   Use `AskUserQuestion` to ask:
-   - **Subagent**: Spawn Task agent in worktree (non-interactive)
-   - **Same session**: Continue in current session (interactive, will ask permissions)
+   Do **not** prompt the user. Spawn a Task subagent
+   (`subagent_type="general-purpose"`) in the worktree with prompt
+   `/itx:execute ${NUMBER}`. Record this fallback in the PR's
+   **Callouts** section so the user knows the execution path differed
+   from the default (tmux + interactive claude).
 
 3. **Exit**: After spawning tmux window, exit current execution (work continues in tmux)
 
@@ -259,8 +420,11 @@ git worktree remove ../<repo>-issue-35
 # Or force remove if dirty
 git worktree remove --force ../<repo>-issue-35
 
-# Clean up tmux window
-tmux kill-window -t "itx/exec:issue-35"
+# Clean up tmux session (standalone mode: one session per issue)
+tmux kill-session -t "<repo>-issue-35"
+
+# Or, for orchestrate mode (one session per parent, kill just the window):
+tmux kill-window -t "<repo>-issue-<parent>:issue-35"
 ```
 
 ## GitHub Project Board (Optional)
@@ -465,12 +629,18 @@ Always:
 
 8. **Create PR**:
 
+   PR body MUST follow the templates in AGENTS.md (ATX or manual,
+   depending on what was actually used during execution) **and** MUST
+   include a `## Callouts` section near the bottom — see the
+   **Callouts** section earlier in this skill. The Callouts section is
+   non-optional; write `_None._` if there are none.
+
    **If in worktree mode**: Branch already exists (created during worktree setup)
    ```bash
    git add <files>
    git commit -m "<message>"
    git push -u origin issue-<number>-<slug>
-   gh pr create --title "<title>" --body "Closes #<number>"
+   gh pr create --title "<title>" --body-file <body-file>  # body must include Callouts
    ```
 
    **If in regular mode**: Create branch first
@@ -479,7 +649,7 @@ Always:
    git add <files>
    git commit -m "<message>"
    git push -u origin issue-<number>-<slug>
-   gh pr create --title "<title>" --body "Closes #<number>"
+   gh pr create --title "<title>" --body-file <body-file>
    ```
 
    **WARNING**: Never push to `main`. Always push to feature branch and create PR.
@@ -570,16 +740,25 @@ See [CONFIG.md](../../CONFIG.md) for full configuration options.
 
 ## Notes
 
-- **ALWAYS create task checklist before execution** - Do not skip this step
-- **Use TaskList() frequently** to maintain awareness of progress
-- **Complete tasks sequentially** unless explicitly marked as parallel
-- **If you feel lost**, check TaskList() to reorient
-- Project board updates are optional and only execute if configured
-- Build commands automatically adapt to project configuration
-- Subtasks can use cheaper/faster models (Haiku)
-- Parent orchestration can use any model
-- Always verify before marking complete
-- Don't skip the verification step
+- **NEVER block on user input.** No `AskUserQuestion`, no interactive
+  prompts. When in doubt, follow existing project standards (CLAUDE.md,
+  AGENTS.md, neighboring code) and record the decision as a Callout on
+  the PR. The PR is the synchronization point with the user.
+- **Always include a Callouts section in the PR body** — see the
+  Callouts section of this skill. Write `_None._` if empty.
+- **ALWAYS create task checklist before execution** — do not skip this step.
+- **Use TaskList() frequently** to maintain awareness of progress.
+- **Complete tasks sequentially** unless explicitly marked as parallel.
+- **If you feel lost**, check TaskList() to reorient.
+- **ATX is best-effort**: try MCP, then CLI, then skip and note in
+  Callouts. Never block on ATX availability. Persist
+  `.itx/<N>/atx-session.json` so interrupted runs don't re-run ATX on
+  identical changes.
+- Project board updates are optional and only execute if configured.
+- Build commands automatically adapt to project configuration.
+- Subtasks can use cheaper/faster models (Haiku).
+- Parent orchestration can use any model.
+- Always verify before marking complete — don't skip the verification step.
 
 ## Prompt Logging
 
