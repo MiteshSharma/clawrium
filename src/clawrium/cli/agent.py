@@ -1045,13 +1045,61 @@ def _run_channels_stage(
                 "Require @mention to respond?", default=True
             )
 
+            # stream_mode (#468): upstream default is "off" which buffers
+            # the entire turn before posting — long-running tool sequences
+            # (PR-building agents) appear stuck. Default the wizard to
+            # "partial" so new agents stream progress out of the box.
+            stream_mode_raw = typer.prompt(
+                "Discord stream mode (off/partial/multi_message)",
+                default="partial",
+            )
+            stream_mode = (stream_mode_raw or "").strip().lower()
+            if stream_mode not in ("off", "partial", "multi_message"):
+                console.print(
+                    "[red]Error:[/red] Invalid stream_mode "
+                    f"'{rich_escape(stream_mode)}'. Use one of: "
+                    "off, partial, multi_message."
+                )
+                return False
+
+            multi_message_delay_ms: int | None = None
+            if stream_mode == "multi_message":
+                delay_raw = typer.prompt(
+                    "Delay between Discord messages in ms (10000-60000)",
+                    default="10000",
+                )
+                delay_str = (delay_raw or "").strip()
+                try:
+                    delay_val = int(delay_str)
+                except ValueError:
+                    console.print(
+                        "[red]Error:[/red] multi_message_delay_ms must be "
+                        f"an integer, got '{rich_escape(delay_str)}'."
+                    )
+                    return False
+                # Discord enforces ~5 messages / 5s per channel; even 1s is
+                # only safe for short bursts. 10s floor leaves headroom for
+                # the daemon's own keep-alive traffic in the same channel
+                # and keeps multi-message responses comfortably under the
+                # rate ceiling for arbitrarily long replies.
+                if not (10000 <= delay_val <= 60000):
+                    console.print(
+                        "[red]Error:[/red] multi_message_delay_ms must be "
+                        "between 10000 and 60000 ms."
+                    )
+                    return False
+                multi_message_delay_ms = delay_val
+
             zc_discord_cfg: dict = {
                 "enabled": True,
                 "allowed_users": allowed_users,
                 "require_mention": require_mention,
+                "stream_mode": stream_mode,
             }
             if allowed_guilds:
                 zc_discord_cfg["allowed_guilds"] = allowed_guilds
+            if multi_message_delay_ms is not None:
+                zc_discord_cfg["multi_message_delay_ms"] = multi_message_delay_ms
 
             channels_config = {"discord": zc_discord_cfg}
         else:
@@ -1513,7 +1561,12 @@ def _run_validate_stage(
         provider_id = provider_result.details.get("provider_id")
         conn_result = verify_provider_connectivity(provider_id)
         if conn_result.passed:
-            console.print("  [green]✓[/green] Provider connectivity OK")
+            if conn_result.details.get("skipped"):
+                console.print(
+                    "  [yellow]⚠[/yellow] Provider connectivity check skipped"
+                )
+            else:
+                console.print("  [green]✓[/green] Provider connectivity OK")
             for warning in conn_result.warnings:
                 console.print(f"    [yellow]Warning:[/yellow] {rich_escape(warning)}")
                 all_warnings.append(warning)
