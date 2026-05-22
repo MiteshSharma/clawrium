@@ -137,6 +137,24 @@ No two phases touch the same files in conflicting ways, but the runtime dependen
 
 ---
 
+## Running the execution
+
+```
+/itx:execute orchestrate 478
+```
+
+This is hands-off:
+
+- Spawns a tmux session `clawrium-issue-478` (one window per subtask: `issue-481`, `issue-482`, `issue-483`).
+- Spawns subtasks on-demand — next subtask only starts after the predecessor's PR opens.
+- Stacked PRs: #481 → main, #482 → issue-481-*, #483 → issue-482-*. GitHub auto-rebases as predecessors merge.
+- ATX is best-effort: prefers MCP, falls back to CLI, otherwise skips and notes it in the PR's Callouts section. Session state persisted at `.itx/<N>/atx-session.json` so interrupted runs don't re-run ATX on identical changes.
+- Children never block on user input. Uncertain decisions become Callouts on the PR; stuck children open the PR with `[ITX-STUCK]` and unresolved blockers documented in Callouts.
+
+Attach to watch: `tmux attach -t clawrium-issue-478`. Detach with `Ctrl-b d`.
+
+Merge order is bottom-up: #481 → #482 → #483 → close #478.
+
 ## Closing #478
 
 Once all three subtasks (478-A / B / C) merge:
