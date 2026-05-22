@@ -51,6 +51,8 @@ class TestStartAgentEndpoint:
         result = await fleet_mod.start_agent_endpoint(agent_key)
 
         assert result["success"] is True
+        assert result["operation"] == "start"
+        assert result["agent"] == agent_key
         assert captured_args["hostname"] == hostname
         assert captured_args["claw_name"] == agent_type
         assert captured_args["agent_name"] == agent_key
@@ -118,7 +120,42 @@ class TestStartAgentEndpoint:
             await fleet_mod.start_agent_endpoint(agent_key)
 
         assert exc_info.value.status_code == 500
-        assert "Unexpected error" in exc_info.value.detail
+        assert exc_info.value.detail == fleet_mod._LIFECYCLE_GENERIC_ERROR
+
+
+    @pytest.mark.anyio
+    async def test_start_agent_returns_success_false_with_error_field(self, monkeypatch):
+        """When lifecycle returns success=False, endpoint must forward error field."""
+        agent_key = "test-agent"
+        hostname = "192.168.1.100"
+        agent_type = "zeroclaw"
+
+        mock_resolved = (
+            {"hostname": hostname, "user": "xclm"},
+            agent_type,
+            {"type": agent_type},
+        )
+        monkeypatch.setattr(
+            fleet_mod, "resolve_agent", lambda _key: mock_resolved
+        )
+
+        def mock_start_agent(hostname_arg, claw_name_arg, agent_name=None):
+            return {
+                "success": False,
+                "error": "SSH key not found",
+                "agent": agent_key,
+                "host": hostname,
+                "operation": "start",
+            }
+
+        monkeypatch.setattr(fleet_mod, "start_agent", mock_start_agent)
+
+        result = await fleet_mod.start_agent_endpoint(agent_key)
+
+        assert result["success"] is False
+        assert result["error"] == "SSH key not found"
+        assert result["operation"] == "start"
+        assert result["agent"] == agent_key
 
 
 class TestStopAgentEndpoint:
@@ -153,9 +190,22 @@ class TestStopAgentEndpoint:
         result = await fleet_mod.stop_agent_endpoint(agent_key)
 
         assert result["success"] is True
+        assert result["operation"] == "stop"
+        assert result["agent"] == agent_key
         assert captured_args["hostname"] == hostname
         assert captured_args["claw_name"] == agent_type
         assert captured_args["agent_name"] == agent_key
+
+    @pytest.mark.anyio
+    async def test_stop_agent_returns_404_when_agent_not_found(self, monkeypatch):
+        """When resolve_agent returns None, endpoint must raise 404."""
+        monkeypatch.setattr(fleet_mod, "resolve_agent", lambda _key: None)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await fleet_mod.stop_agent_endpoint("nonexistent-agent")
+
+        assert exc_info.value.status_code == 404
+        assert "not found" in exc_info.value.detail
 
     @pytest.mark.anyio
     async def test_stop_agent_returns_500_on_lifecycle_error(self, monkeypatch):
@@ -209,7 +259,42 @@ class TestStopAgentEndpoint:
             await fleet_mod.stop_agent_endpoint(agent_key)
 
         assert exc_info.value.status_code == 500
-        assert "Unexpected error" in exc_info.value.detail
+        assert exc_info.value.detail == fleet_mod._LIFECYCLE_GENERIC_ERROR
+
+
+    @pytest.mark.anyio
+    async def test_stop_agent_returns_success_false_with_error_field(self, monkeypatch):
+        """When lifecycle returns success=False, endpoint must forward error field."""
+        agent_key = "test-agent"
+        hostname = "192.168.1.100"
+        agent_type = "zeroclaw"
+
+        mock_resolved = (
+            {"hostname": hostname, "user": "xclm"},
+            agent_type,
+            {"type": agent_type},
+        )
+        monkeypatch.setattr(
+            fleet_mod, "resolve_agent", lambda _key: mock_resolved
+        )
+
+        def mock_stop_agent(hostname_arg, claw_name_arg, agent_name=None, timeout=30):
+            return {
+                "success": False,
+                "error": "Agent not running",
+                "agent": agent_key,
+                "host": hostname,
+                "operation": "stop",
+            }
+
+        monkeypatch.setattr(fleet_mod, "stop_agent", mock_stop_agent)
+
+        result = await fleet_mod.stop_agent_endpoint(agent_key)
+
+        assert result["success"] is False
+        assert result["error"] == "Agent not running"
+        assert result["operation"] == "stop"
+        assert result["agent"] == agent_key
 
 
 class TestRestartAgentEndpoint:
@@ -244,6 +329,8 @@ class TestRestartAgentEndpoint:
         result = await fleet_mod.restart_agent_endpoint(agent_key)
 
         assert result["success"] is True
+        assert result["operation"] == "restart"
+        assert result["agent"] == agent_key
         assert captured_args["hostname"] == hostname
         assert captured_args["claw_name"] == agent_type
         assert captured_args["agent_name"] == agent_key
@@ -305,7 +392,7 @@ class TestRestartAgentEndpoint:
             await fleet_mod.restart_agent_endpoint(agent_key)
 
         assert exc_info.value.status_code == 500
-        assert "Unexpected error" in exc_info.value.detail
+        assert exc_info.value.detail == fleet_mod._LIFECYCLE_GENERIC_ERROR
 
     @pytest.mark.anyio
     async def test_restart_agent_returns_404_when_agent_not_found(self, monkeypatch):
@@ -317,3 +404,37 @@ class TestRestartAgentEndpoint:
 
         assert exc_info.value.status_code == 404
         assert "not found" in exc_info.value.detail
+
+    @pytest.mark.anyio
+    async def test_restart_agent_returns_success_false_with_error_field(self, monkeypatch):
+        """When lifecycle returns success=False, endpoint must forward error field."""
+        agent_key = "test-agent"
+        hostname = "192.168.1.100"
+        agent_type = "zeroclaw"
+
+        mock_resolved = (
+            {"hostname": hostname, "user": "xclm"},
+            agent_type,
+            {"type": agent_type},
+        )
+        monkeypatch.setattr(
+            fleet_mod, "resolve_agent", lambda _key: mock_resolved
+        )
+
+        def mock_restart_agent(hostname_arg, claw_name_arg, agent_name=None):
+            return {
+                "success": False,
+                "error": "Stop failed: timeout",
+                "agent": agent_key,
+                "host": hostname,
+                "operation": "restart",
+            }
+
+        monkeypatch.setattr(fleet_mod, "restart_agent", mock_restart_agent)
+
+        result = await fleet_mod.restart_agent_endpoint(agent_key)
+
+        assert result["success"] is False
+        assert result["error"] == "Stop failed: timeout"
+        assert result["operation"] == "restart"
+        assert result["agent"] == agent_key

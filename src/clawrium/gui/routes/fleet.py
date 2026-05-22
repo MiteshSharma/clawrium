@@ -51,6 +51,9 @@ _FLEET_HEALTH_EXECUTOR = ThreadPoolExecutor(
 # include the user's config path (e.g. ~/.config/clawrium/secrets.json).
 _ABS_PATH_RE = re.compile(r"(?:/[\w.\-]+)+")
 
+# Generic error message for lifecycle operations to avoid path leakage
+_LIFECYCLE_GENERIC_ERROR = "Lifecycle operation failed. Check server logs."
+
 
 def _sanitize_health_error(error: str | None) -> str | None:
     if not error:
@@ -193,13 +196,18 @@ async def start_agent_endpoint(agent_key: str):
             agent_type,
             agent_name=agent_key,
         )
-        return {"success": result["success"], "operation": "start", "agent": agent_key}
+        return {
+            "success": result["success"],
+            "operation": "start",
+            "agent": agent_key,
+            "error": result.get("error"),
+        }
     except LifecycleError as e:
         logger.error("start_agent failed for %s: %s", agent_key, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error("start_agent failed for %s: %s", agent_key, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=_LIFECYCLE_GENERIC_ERROR)
 
 
 @router.post("/agents/{agent_key}/stop")
@@ -217,13 +225,18 @@ async def stop_agent_endpoint(agent_key: str):
             agent_type,
             agent_name=agent_key,
         )
-        return {"success": result["success"], "operation": "stop", "agent": agent_key}
+        return {
+            "success": result["success"],
+            "operation": "stop",
+            "agent": agent_key,
+            "error": result.get("error"),
+        }
     except LifecycleError as e:
         logger.error("stop_agent failed for %s: %s", agent_key, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error("stop_agent failed for %s: %s", agent_key, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=_LIFECYCLE_GENERIC_ERROR)
 
 
 @router.post("/agents/{agent_key}/restart")
@@ -245,12 +258,13 @@ async def restart_agent_endpoint(agent_key: str):
             "success": result["success"],
             "operation": "restart",
             "agent": agent_key,
+            "error": result.get("error"),
         }
     except LifecycleError as e:
         logger.error("restart_agent failed for %s: %s", agent_key, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error("restart_agent failed for %s: %s", agent_key, e, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=_LIFECYCLE_GENERIC_ERROR)
 
 
