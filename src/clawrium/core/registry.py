@@ -133,11 +133,27 @@ class ChatFeatureConfig(TypedDict):
     type: Literal["openai", "websocket", "zeroclaw"]
 
 
+class WebUIFeatureConfig(TypedDict):
+    """Native web UI capability descriptor.
+
+    `bind` is a closed enum; only `loopback` is accepted in this iteration —
+    LAN-bound dashboards are deliberately out of scope. `port_field` is a
+    dotted path into the agent's `hosts.json` config record (for example,
+    `dashboard.port`) so callers can locate the persisted per-instance port.
+    """
+
+    enabled: bool
+    bind: Literal["loopback"]
+    default_port: int
+    port_field: str
+
+
 class FeaturesConfig(TypedDict):
     """Capability flags advertised by an agent manifest."""
 
     memory: NotRequired[bool]
     chat: NotRequired[ChatFeatureConfig]
+    web_ui: NotRequired[WebUIFeatureConfig]
 
 
 class AgentManifest(TypedDict):
@@ -503,6 +519,77 @@ def _validate_workspace(workspace_value: object, agent_type: str) -> WorkspaceCo
 
 
 _ALLOWED_CHAT_TYPES = ("openai", "websocket", "zeroclaw")
+_ALLOWED_WEB_UI_BINDS = ("loopback",)
+
+# `port_field` is a dotted path that downstream code uses both as a config
+# lookup (`agent_record.config.<port_field>`) and — in Phase 2 — as an
+# Ansible extra-var. Constrain to dotted identifier segments so a tampered
+# or third-party manifest cannot smuggle path-traversal, prototype-pollution,
+# or shell-metachar payloads through this field.
+_PORT_FIELD_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$")
+
+
+def _validate_web_ui(web_ui_value: object, agent_type: str) -> WebUIFeatureConfig:
+    """Validate `features.web_ui` block.
+
+    `bind` is a closed enum (currently `loopback` only). All four fields
+    (`enabled`, `bind`, `default_port`, `port_field`) are required when the
+    block is present. `default_port` is constrained to 1024..65535 —
+    privileged ports (<1024) are rejected outright because non-root agent
+    processes cannot bind them. `port_field` must be a dotted identifier
+    path (e.g. `dashboard.port`).
+    """
+    web_ui = _as_dict(web_ui_value, "features.web_ui", agent_type)
+
+    enabled = web_ui.get("enabled")
+    if not isinstance(enabled, bool):
+        _raise_parse_error(
+            agent_type, "has invalid `features.web_ui.enabled` (expected boolean)"
+        )
+
+    bind = web_ui.get("bind")
+    if bind not in _ALLOWED_WEB_UI_BINDS:
+        allowed = ", ".join(repr(b) for b in _ALLOWED_WEB_UI_BINDS)
+        _raise_parse_error(
+            agent_type,
+            f"has invalid `features.web_ui.bind` (expected one of {allowed})",
+        )
+
+    default_port = web_ui.get("default_port")
+    if (
+        not isinstance(default_port, int)
+        or isinstance(default_port, bool)
+        or default_port < 1024
+        or default_port > 65535
+    ):
+        # Privileged ports (1..1023) are rejected outright — non-root agent
+        # processes cannot bind them, and `logger.warning` is invisible in
+        # the default uv-tool deployment, so a silent accept would be a
+        # latent footgun. Fail loudly at manifest-load time instead.
+        _raise_parse_error(
+            agent_type,
+            "has invalid `features.web_ui.default_port` "
+            "(expected integer in 1024..65535)",
+        )
+
+    port_field = web_ui.get("port_field")
+    if (
+        not isinstance(port_field, str)
+        or not port_field.strip()
+        or not _PORT_FIELD_RE.fullmatch(port_field)
+    ):
+        _raise_parse_error(
+            agent_type,
+            "has invalid `features.web_ui.port_field` "
+            "(expected dotted identifier path, e.g. 'dashboard.port')",
+        )
+
+    return {
+        "enabled": enabled,
+        "bind": bind,
+        "default_port": default_port,
+        "port_field": port_field,
+    }
 
 
 def _validate_features(features_value: object, agent_type: str) -> FeaturesConfig:
@@ -529,6 +616,9 @@ def _validate_features(features_value: object, agent_type: str) -> FeaturesConfi
                 f"has invalid `features.chat.type` (expected one of {allowed})",
             )
         validated["chat"] = {"type": chat_type}
+
+    if "web_ui" in features:
+        validated["web_ui"] = _validate_web_ui(features["web_ui"], agent_type)
 
     return validated
 

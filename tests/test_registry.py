@@ -1072,6 +1072,275 @@ def test_manifest_rejects_invalid_features_memory(monkeypatch):
         load_manifest("openclaw")
 
 
+def _valid_web_ui_block() -> dict:
+    """Return a minimal valid `features.web_ui` block for tests."""
+    return {
+        "enabled": True,
+        "bind": "loopback",
+        "default_port": 9119,
+        "port_field": "dashboard.port",
+    }
+
+
+def test_load_manifest_accepts_valid_web_ui(monkeypatch):
+    """A complete `features.web_ui` block round-trips through validation."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    manifest["features"] = {"web_ui": _valid_web_ui_block()}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    loaded = load_manifest("openclaw")
+    web_ui = loaded.get("features", {}).get("web_ui", {})
+    assert web_ui.get("enabled") is True
+    assert web_ui.get("bind") == "loopback"
+    assert web_ui.get("default_port") == 9119
+    assert web_ui.get("port_field") == "dashboard.port"
+
+
+def test_load_manifest_rejects_invalid_web_ui_bind(monkeypatch):
+    """`bind` is a closed enum — only `loopback` accepted in this iteration."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["bind"] = "0.0.0.0"
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui.bind"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_rejects_web_ui_missing_default_port(monkeypatch):
+    """`default_port` is required and must be a positive integer."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block.pop("default_port")
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui.default_port"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_rejects_web_ui_non_positive_port(monkeypatch):
+    """`default_port` must be > 0 (zero/negative ports are nonsense for TCP)."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["default_port"] = 0
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui.default_port"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_rejects_web_ui_non_bool_enabled(monkeypatch):
+    """`enabled` must be a boolean, not a truthy string."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["enabled"] = "yes"
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui.enabled"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_rejects_web_ui_empty_port_field(monkeypatch):
+    """`port_field` must be a non-empty string (it's a config path)."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["port_field"] = ""
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui.port_field"):
+        load_manifest("openclaw")
+
+
+def test_load_manifest_rejects_web_ui_bool_default_port(monkeypatch):
+    """YAML `true`/`false` satisfy `isinstance(x, int)` — must be rejected."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["default_port"] = True
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui.default_port"):
+        load_manifest("openclaw")
+
+
+@pytest.mark.parametrize(
+    "port,is_valid",
+    [
+        (-1, False),
+        (0, False),
+        (1, False),  # privileged port rejected outright
+        (80, False),  # privileged port rejected outright
+        (1023, False),  # privileged port rejected outright
+        (1024, True),
+        (9119, True),
+        (65535, True),
+        (65536, False),
+        (100000, False),
+    ],
+)
+def test_load_manifest_web_ui_default_port_boundaries(monkeypatch, port, is_valid):
+    """`default_port` accepts 1024..65535 inclusive; everything else rejected.
+
+    Privileged ports (<1024) are rejected at manifest-load time because
+    non-root agent processes cannot bind them — `logger.warning` would be
+    invisible in the default uv-tool deployment, so a silent accept would
+    be a latent footgun.
+    """
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["default_port"] = port
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    if is_valid:
+        loaded = load_manifest("openclaw")
+        assert loaded["features"]["web_ui"]["default_port"] == port
+    else:
+        with pytest.raises(ManifestParseError, match="features.web_ui.default_port"):
+            load_manifest("openclaw")
+
+
+def test_load_manifest_rejects_web_ui_non_dict(monkeypatch):
+    """A scalar `features.web_ui` value must be rejected with a clear error."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    manifest["features"] = {"web_ui": "not-a-dict"}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui"):
+        load_manifest("openclaw")
+
+
+@pytest.mark.parametrize("missing_field", ["enabled", "bind", "default_port", "port_field"])
+def test_load_manifest_rejects_web_ui_missing_field(monkeypatch, missing_field):
+    """Each required `web_ui` field must be present."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block.pop(missing_field)
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match=f"features.web_ui.{missing_field}"):
+        load_manifest("openclaw")
+
+
+@pytest.mark.parametrize(
+    "bad_port_field",
+    [
+        "   ",  # whitespace-only
+        "..port",  # leading double dot
+        "port..nested",  # double dot in middle
+        ".port",  # leading dot
+        "port.",  # trailing dot
+        "port name",  # space in segment
+        "9port.x",  # leading digit in first segment
+        "port-name",  # hyphen not allowed
+        "port/x",  # slash (path traversal)
+    ],
+)
+def test_load_manifest_rejects_web_ui_invalid_port_field_shape(monkeypatch, bad_port_field):
+    """`port_field` must be a dotted-identifier path; everything else rejected."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["port_field"] = bad_port_field
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    with pytest.raises(ManifestParseError, match="features.web_ui.port_field"):
+        load_manifest("openclaw")
+
+
+@pytest.mark.parametrize(
+    "good_port_field",
+    [
+        "port",
+        "dashboard.port",
+        "deep.nested.path.port",
+        "_underscore",
+        "with_underscore.x",
+        "__proto__.x",  # valid identifier even if semantically odd
+        "secrets.api_key",  # valid identifier — semantic safety is a higher-layer concern
+    ],
+)
+def test_load_manifest_accepts_web_ui_valid_port_field_shape(monkeypatch, good_port_field):
+    """Dotted-identifier shapes pass validation regardless of segment names.
+
+    `secrets.api_key` and `__proto__.x` are deliberately on the accept list
+    to document the contract: this validator enforces *shape* only.
+    Semantic safety (don't smuggle secrets through this field) is the
+    consumer layer's job in Phase 2 — Ansible extra-vars use parameterized
+    var substitution, not string concatenation.
+    """
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["port_field"] = good_port_field
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    loaded = load_manifest("openclaw")
+    assert loaded["features"]["web_ui"]["port_field"] == good_port_field
+
+
+def test_allowed_web_ui_binds_matches_literal():
+    """The runtime enum and the Literal type annotation must stay in sync."""
+    import typing
+
+    from clawrium.core.registry import WebUIFeatureConfig, _ALLOWED_WEB_UI_BINDS
+
+    literal_args = typing.get_args(WebUIFeatureConfig.__annotations__["bind"])
+    assert set(literal_args) == set(_ALLOWED_WEB_UI_BINDS)
+
+
+def test_hermes_manifest_declares_web_ui():
+    """The bundled hermes manifest advertises native dashboard support."""
+    manifest = load_manifest("hermes")
+    web_ui = manifest.get("features", {}).get("web_ui", {})
+    assert web_ui.get("enabled") is True
+    assert web_ui.get("bind") == "loopback"
+    assert web_ui.get("default_port") == 9119
+    assert web_ui.get("port_field") == "dashboard.port"
+
+
+def test_openclaw_manifest_does_not_declare_web_ui():
+    """openclaw does not opt into the native-UI mechanism."""
+    manifest = load_manifest("openclaw")
+    assert "web_ui" not in manifest.get("features", {})
+
+
+def test_zeroclaw_manifest_does_not_declare_web_ui():
+    """zeroclaw does not opt into the native-UI mechanism."""
+    manifest = load_manifest("zeroclaw")
+    assert "web_ui" not in manifest.get("features", {})
+
+
 def test_openclaw_manifest_now_declares_memory_workspace():
     """Phase 1 backfill: openclaw manifest carries the memory metadata for Phase 3."""
     manifest = load_manifest("openclaw")
