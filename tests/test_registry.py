@@ -1105,7 +1105,12 @@ def test_load_manifest_accepts_valid_web_ui(monkeypatch):
 
 
 def test_load_manifest_rejects_invalid_web_ui_bind(monkeypatch):
-    """`bind` is a closed enum — only `loopback` accepted in this iteration."""
+    """`bind` is a closed enum — `loopback` and `wildcard` accepted.
+
+    Other values (e.g. `0.0.0.0`, `lan`, arbitrary strings) are rejected
+    at manifest-load so a typo can't end up as `bind: wildcrad` and
+    silently produce a broken tunnel.
+    """
     from clawrium.core import registry
 
     manifest = deepcopy(_valid_manifest())
@@ -1116,6 +1121,21 @@ def test_load_manifest_rejects_invalid_web_ui_bind(monkeypatch):
 
     with pytest.raises(ManifestParseError, match="features.web_ui.bind"):
         load_manifest("openclaw")
+
+
+@pytest.mark.parametrize("bind_value", ["loopback", "wildcard"])
+def test_load_manifest_accepts_web_ui_bind_values(monkeypatch, bind_value):
+    """Both members of the `bind` enum round-trip through validation (#491)."""
+    from clawrium.core import registry
+
+    manifest = deepcopy(_valid_manifest())
+    block = _valid_web_ui_block()
+    block["bind"] = bind_value
+    manifest["features"] = {"web_ui": block}
+    monkeypatch.setattr(registry.yaml, "safe_load", lambda _: manifest)
+
+    loaded = load_manifest("openclaw")
+    assert loaded["features"]["web_ui"]["bind"] == bind_value
 
 
 def test_load_manifest_accepts_web_ui_without_default_port(monkeypatch):

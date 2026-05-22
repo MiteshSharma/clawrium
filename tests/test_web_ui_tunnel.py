@@ -21,6 +21,7 @@ from clawrium.core import web_ui_tunnel
 from clawrium.core.web_ui import ResolvedUI
 from clawrium.core.web_ui_tunnel import (
     TunnelError,
+    _build_ssh_for,
     _cmdline_matches,
     _cmdline_signature,
     _pick_free_port,
@@ -70,6 +71,62 @@ def test_cmdline_signature_matches_actual_proc_format():
 def test_cmdline_signature_rejects_unrelated_cmdline():
     signature = _cmdline_signature(["ssh", "-N", "-L", "1234:127.0.0.1:9119", "xclm@host"])
     assert not _cmdline_matches("nginx: worker process", signature)
+
+
+def test_build_ssh_for_loopback_targets_remote_loopback():
+    """A `loopback`-bound agent yields a `-L L:127.0.0.1:R` forward."""
+    resolved = ResolvedUI(
+        host="hermes.local",
+        remote_port=45123,
+        bind="loopback",
+        ssh_config={"user": "xclm"},
+    )
+    cmd = _build_ssh_for(resolved, local_port=39211)
+    forward = next(arg for arg in cmd if arg.startswith("39211:"))
+    assert forward == "39211:127.0.0.1:45123"
+
+
+def test_build_ssh_for_wildcard_resolves_to_remote_loopback():
+    """A `wildcard`-bound agent (zeroclaw) still tunnels to remote loopback.
+
+    Locks in the BIND_ADDRESS_MAP contract: the tunnel builder consumes
+    `BIND_ADDRESS_MAP[resolved.bind]` for the `-L` remote target rather
+    than hardcoding `127.0.0.1`. The runtime output happens to be the
+    same as the loopback case today (both map to 127.0.0.1), but the
+    test asserts the *code path* — change `BIND_ADDRESS_MAP['wildcard']`
+    in `web_ui.py` and this test breaks loudly. ATX iteration 2 B-new1.
+    """
+    resolved = ResolvedUI(
+        host="zero.local",
+        remote_port=40123,
+        bind="wildcard",
+        ssh_config={"user": "xclm"},
+    )
+    cmd = _build_ssh_for(resolved, local_port=39211)
+    forward = next(arg for arg in cmd if arg.startswith("39211:"))
+    assert forward == "39211:127.0.0.1:40123"
+
+
+def test_build_ssh_for_consults_bind_address_map(monkeypatch):
+    """The builder MUST go through `BIND_ADDRESS_MAP`, not a hardcoded literal.
+
+    Defense-in-depth regression anchor for the contract documented in
+    `web_ui.py`. We swap a sentinel into `BIND_ADDRESS_MAP['wildcard']`
+    and assert the `-L` flag reflects the swap. If a future refactor
+    re-introduces a hardcoded `127.0.0.1`, this test fails.
+    """
+    monkeypatch.setitem(
+        web_ui_tunnel.BIND_ADDRESS_MAP, "wildcard", "10.99.99.99"
+    )
+    resolved = ResolvedUI(
+        host="zero.local",
+        remote_port=40123,
+        bind="wildcard",
+        ssh_config={"user": "xclm"},
+    )
+    cmd = _build_ssh_for(resolved, local_port=39211)
+    forward = next(arg for arg in cmd if arg.startswith("39211:"))
+    assert forward == "39211:10.99.99.99:40123"
 
 
 def test_ensure_returns_existing_local_port_when_healthy(
