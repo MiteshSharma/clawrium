@@ -67,6 +67,10 @@ export const api = {
   getAgent: (key: string) => request<AgentDetail>(`/fleet/agents/${key}`),
   getAgentWebUI: (key: string) =>
     request<WebUIResponse>(`/fleet/agents/${key}/web-ui`),
+  mintAgentPairingCode: (key: string) =>
+    request<PairingCodeResponse>(`/fleet/agents/${key}/pairing-code`, {
+      method: "POST",
+    }),
   startAgent: (key: string) => request<ActionResponse>(`/agents/${key}/start`, { method: "POST" }),
   stopAgent: (key: string) => request<ActionResponse>(`/agents/${key}/stop`, { method: "POST" }),
   restartAgent: (key: string) => request<ActionResponse>(`/agents/${key}/restart`, { method: "POST" }),
@@ -256,6 +260,7 @@ import type {
   AgentDetail,
   ActionResponse,
   WebUIResponse,
+  PairingCodeResponse,
   TopologyResponse,
   Provider,
   ProviderTypesMap,

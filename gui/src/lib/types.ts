@@ -76,6 +76,14 @@ export interface WebUIResponse {
   reason: string | null;
 }
 
+// Response from POST /fleet/agents/{key}/pairing-code. Returned only by
+// agent types whose web dashboard requires an in-browser pairing
+// handshake (zeroclaw). The code is one-shot: a successful pair on the
+// daemon consumes it; another mint call overwrites it.
+export interface PairingCodeResponse {
+  pairing_code: string;
+}
+
 // Topology types
 export interface TopologyResponse {
   control: TopologyControl;

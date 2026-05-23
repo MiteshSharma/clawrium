@@ -357,6 +357,179 @@ async def agent_web_ui(agent_key: str) -> dict[str, Any]:
     }
 
 
+# Agent types whose web UI requires an in-browser pairing handshake. Today
+# only zeroclaw — hermes serves its dashboard without an in-process auth
+# step (the SSH key is the boundary). Keep this in sync with the frontend
+# allowlist in `gui/src/hooks/use-agent.ts`.
+_PAIRING_AGENT_TYPES = {"zeroclaw"}
+
+# Bound the upstream call to the agent daemon so a hung / unreachable
+# daemon doesn't pin a FastAPI worker. The pairing endpoint is in-process
+# on the agent and should respond in milliseconds; 10s is a generous
+# ceiling that still surfaces hangs as 504 to the browser.
+_PAIRING_UPSTREAM_TIMEOUT_S = 10.0
+
+
+@router.post("/fleet/agents/{agent_key}/pairing-code")
+async def agent_pairing_code(agent_key: str) -> dict[str, Any]:
+    """Mint a fresh pairing code for the agent's native web UI.
+
+    Only meaningful for agent types whose dashboard SPA gates browser
+    sessions with an in-process pairing handshake (zeroclaw today). The
+    endpoint:
+
+      1. Resolves the agent in ``hosts.json``.
+      2. Reuses the existing ``web_ui_tunnel`` to reach the agent's
+         dashboard daemon over SSH local-forward.
+      3. Reads the bearer token persisted at
+         ``agents.<name>.config.gateway.auth`` (the same one ansible
+         lifecycle ops mint via ``/pair`` and write to disk).
+      4. POSTs ``/api/pairing/initiate`` with that bearer; the daemon
+         overwrites its in-memory ``pairing_code`` slot and returns
+         the new code.
+
+    Each call invalidates the previous code (zeroclaw stores exactly
+    one). Callers MUST treat the response code as ephemeral and not
+    cache it. The returned bearer never leaves the gateway side; only
+    the short pairing code is sent to the browser.
+    """
+    import httpx
+
+    resolved_match = await asyncio.to_thread(resolve_agent, agent_key)
+    if resolved_match is None:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+    _host_record, agent_type, agent_record = resolved_match
+
+    if agent_type not in _PAIRING_AGENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Agent type '{agent_type}' does not use an in-browser "
+                "pairing handshake."
+            ),
+        )
+
+    ui = await asyncio.to_thread(web_ui_module.resolve, agent_key)
+    if ui is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Agent '{agent_key}' does not declare a native web UI in "
+                "its manifest."
+            ),
+        )
+
+    gateway = (agent_record.get("config") or {}).get("gateway") or {}
+    bearer = gateway.get("auth")
+    if not isinstance(bearer, str) or not bearer.strip():
+        # No persisted bearer means lifecycle ops have not run successfully
+        # against this agent. Without it /api/pairing/initiate would 401 on
+        # the daemon side and the browser would see an opaque upstream
+        # error. Surface the actionable next step instead.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Agent '{agent_key}' has no gateway bearer persisted. Run "
+                f"`clm agent configure {agent_key}` first."
+            ),
+        )
+
+    if _host_is_local(ui.host):
+        base = f"http://127.0.0.1:{ui.remote_port}"
+    else:
+        try:
+            local_port = await asyncio.to_thread(web_ui_tunnel.ensure, agent_key)
+        except web_ui_tunnel.TunnelError as e:
+            logger.warning("pairing-code tunnel failed for %s: %s", agent_key, e)
+            raise HTTPException(
+                status_code=502,
+                detail=_ABS_PATH_RE.sub("<path>", str(e)),
+            ) from e
+        except Exception as e:  # noqa: BLE001 — log full trace, generic body
+            logger.error(
+                "pairing-code tunnel unexpected error for %s",
+                agent_key,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Internal error establishing tunnel; see server logs.",
+            ) from e
+
+        async with _LAST_ACCESS_LOCK:
+            WEB_UI_LAST_ACCESS[agent_key] = time.time()
+        base = f"http://127.0.0.1:{local_port}"
+
+    try:
+        async with httpx.AsyncClient(timeout=_PAIRING_UPSTREAM_TIMEOUT_S) as client:
+            resp = await client.post(
+                f"{base}/api/pairing/initiate",
+                headers={"Authorization": f"Bearer {bearer}"},
+            )
+    except httpx.TimeoutException as e:
+        logger.warning("pairing-code upstream timeout for %s", agent_key)
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                f"Timed out talking to the agent daemon for '{agent_key}'. "
+                "The tunnel may be up but the daemon is unresponsive."
+            ),
+        ) from e
+    except httpx.HTTPError as e:
+        logger.warning("pairing-code upstream error for %s: %s", agent_key, e)
+        raise HTTPException(
+            status_code=502,
+            detail="Could not reach the agent daemon to mint a pairing code.",
+        ) from e
+
+    if resp.status_code == 401:
+        # Stale bearer in hosts.json (devices.db wiped or rebuilt on the
+        # agent host). Map to the same operator guidance the ansible
+        # pair.yaml validator emits.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Agent daemon rejected the persisted bearer for "
+                f"'{agent_key}' (401). Re-run `clm agent configure "
+                f"{agent_key}` to re-pair from scratch."
+            ),
+        )
+    if resp.status_code == 503:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Agent daemon reports pairing disabled or unavailable (503). "
+                f"Check the daemon and restart with `clm agent restart "
+                f"{agent_key}`."
+            ),
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Agent daemon returned unexpected status "
+                f"{resp.status_code} for pairing-code request."
+            ),
+        )
+
+    try:
+        body = resp.json()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=502,
+            detail="Agent daemon returned a non-JSON pairing response.",
+        ) from e
+
+    code = body.get("pairing_code")
+    if not isinstance(code, str) or not code:
+        raise HTTPException(
+            status_code=502,
+            detail="Agent daemon returned an empty pairing code.",
+        )
+
+    return {"pairing_code": code}
+
+
 async def reap_idle_tunnels(threshold_seconds: float = 1800.0) -> int:
     """Close tunnels that have been idle longer than ``threshold_seconds``.
 
