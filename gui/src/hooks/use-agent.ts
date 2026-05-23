@@ -12,6 +12,12 @@ export function useAgent(key: string) {
 
 export const WEB_UI_AGENT_TYPES = new Set(["hermes", "zeroclaw"]);
 
+// Agent types whose dashboard SPA requires an in-browser pairing
+// handshake. Keep in sync with `_PAIRING_AGENT_TYPES` in
+// `src/clawrium/gui/routes/fleet.py`. Today only zeroclaw — hermes
+// serves its dashboard without an in-process pairing step.
+export const PAIRING_AGENT_TYPES = new Set(["zeroclaw"]);
+
 export function useAgentWebUI(key: string, agentType: string, status: string) {
   return useQuery({
     queryKey: ["agent-web-ui", key, status],
@@ -27,6 +33,14 @@ export function useAgentWebUI(key: string, agentType: string, status: string) {
     // the tunnel is up to keep the reaper map quiet.
     refetchInterval: (query) =>
       query.state.data?.available ? false : 30_000,
+  });
+}
+
+export function useAgentPairingCode(key: string) {
+  // Mint-on-demand mutation. Each call overwrites the daemon's
+  // in-memory pairing code; the previous code becomes invalid.
+  return useMutation({
+    mutationFn: () => api.mintAgentPairingCode(key),
   });
 }
 

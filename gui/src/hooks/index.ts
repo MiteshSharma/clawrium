@@ -7,7 +7,9 @@ export {
   useAgent,
   useAgentActions,
   useAgentWebUI,
+  useAgentPairingCode,
   WEB_UI_AGENT_TYPES,
+  PAIRING_AGENT_TYPES,
 } from "./use-agent";
 export { useSettings, useVersion, useClearUsage } from "./use-settings";
 export {
