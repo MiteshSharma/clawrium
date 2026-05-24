@@ -17,7 +17,7 @@
 
     - name: Fail if agent not installed
       ansible.builtin.fail:
-        msg: "Agent user '{{ agent_name }}' not found. Run 'clm agent install --type zeroclaw ...' first."
+        msg: "Agent user '{{ agent_name }}' not found. Run 'clawctl agent create <name> --type zeroclaw --host <host>' first."
       when: user_check.msg is defined
 
     - name: Validate provider configuration is present
@@ -25,7 +25,7 @@
         msg: >-
           ZeroClaw configure requires config.provider.type to be one of
           anthropic|openai|ollama|openrouter. Re-run via
-          `clm agent configure {{ agent_name }} --stage providers`.
+          `clawctl agent configure {{ agent_name }} --stage providers`.
       when:
         - config.provider is not defined
           or config.provider.type is not defined
@@ -40,7 +40,7 @@
         mode: "0700"
 
     # Workspace personality files (issue #358). `force: no` means a
-    # subsequent `clm agent configure` run never clobbers user edits to
+    # subsequent `clawctl agent configure` run never clobbers user edits to
     # these MD files — they seed the daemon on first configure, then the
     # operator owns the content. BOOTSTRAP.md is intentionally NOT
     # rendered: the runtime generates it on first boot and self-deletes
@@ -262,13 +262,13 @@
           /health/providers returned 401 — gateway is reachable but
           provider credentials may be invalid. Verify the API key for
           provider '{{ config.provider.type }}' and re-run
-          `clm agent configure {{ agent_name }}` if needed.
+          `clawctl agent configure {{ agent_name }}` if needed.
       when: health_probe.status == 401
 
     # Always re-pair (issue #437). The daemon does not persist bearer
     # state across restarts, so the only way to make hosts.json
     # structurally agree with the daemon is to mint a fresh token on
-    # every configure run. The trade-off (in-flight `clm chat` sessions
+    # every configure run. The trade-off (in-flight `clawctl agent chat` sessions
     # on other machines need to reconnect) is accepted in exchange for
     # eliminating the silent divergence class entirely.
     - name: Run zeroclaw pair handshake

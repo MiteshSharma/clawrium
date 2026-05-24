@@ -1021,13 +1021,20 @@ class TestHermesChat:
         assert result.exit_code == 1
         assert "hermes_api_server_key" in result.output.lower()
         assert "re-run" in result.output.lower()
-        # ATX W3 — the remediation hint must be copy-pasteable; the
-        # literal "..." would land in users' shells as an unparseable
-        # agent name. The `<name>` placeholder makes the substitution
-        # obvious.
+        # ATX iter-2 S-new-1: the remediation hint interpolates the
+        # actual agent_name so the user can copy-paste it directly. The
+        # ATX iter-1 W3 fix used `<name>` as a placeholder; iter-2
+        # promoted that to interpolation. Both checks below pin the
+        # current behavior: positive (the literal agent name is in the
+        # hint) and negative (no stray "..." that would survive a
+        # placeholder reintroduction).
+        assert "hermes-test" in result.output, (
+            "remediation hint must interpolate the actual agent_name "
+            "so the suggested command is copy-pasteable verbatim."
+        )
         assert "..." not in result.output, (
-            "remediation hint contains literal '...' — users will copy "
-            "it verbatim. Use '<name>' as a placeholder instead."
+            "remediation hint must not contain literal '...' — users "
+            "will copy it verbatim and the CLI will fail to parse."
         )
 
     def test_missing_api_server_block(self, monkeypatch):
