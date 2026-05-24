@@ -1,15 +1,16 @@
 """`clawctl agent configure <name>` — non-interactive (+TTY fallback) configure.
 
-Plan §"Specific Outcomes":
-    `clawctl agent configure <n> --stage validate` runs validate stage
-    non-interactively.
+Bundle 4 (#509) closes Risk R3 from the parent plan: the `channels`
+stage no longer prompts for Discord/Slack input here. Channel
+configuration moves into the dedicated `clawctl channel registry
+create` + `clawctl agent channel attach` surfaces. Invoking
+`clawctl agent configure <n> --stage channels` now exits with a
+deprecation notice that points at the replacement commands.
 
-The full per-stage rewrite (providers/identity/channels/validate) with
-flag-driven inputs and Discord/Slack extraction lives in bundle 4
-(#509). This bundle wraps the existing legacy `cli/agent.py:configure`
-flow so the surface exists, the `--stage` flag works, and the
-non-interactive contract is enforced for the `validate` stage (the one
-the bundle's acceptance criteria call out by name).
+The remaining stages (`providers`, `identity`, `validate`) continue
+to delegate to the legacy `clawrium.core.onboarding.run_stage`. The
+non-interactive contract still applies: when stdin is not a TTY and a
+mandatory stage flag is missing, the verb fails fast (plan §7).
 """
 
 from __future__ import annotations
@@ -78,11 +79,21 @@ def configure(
             ),
         )
 
+    # R3 closure: --stage channels is deprecated in favour of the
+    # dedicated channel surfaces. Exit with a clear pointer; no Discord/
+    # Slack prompts here.
+    if stage is Stage.channels:
+        emit_error(
+            "'clawctl agent configure --stage channels' is deprecated",
+            hint=(
+                "use 'clawctl channel registry create <name> --type ... ...' "
+                "and 'clawctl agent channel attach <name> --agent " + name + "'"
+            ),
+        )
+
     # Provider stage requires provider flag (or TTY for prompt fallback).
     if stage is Stage.providers:
         require_flag(provider, flag="--provider")
-    if stage is Stage.channels and not channel and not stdin_is_tty():
-        require_flag(channel, flag="--channel")
 
     stream_action(
         resource=f"agent/{name}", message=f"configure stage={stage.value} on {hostname}"

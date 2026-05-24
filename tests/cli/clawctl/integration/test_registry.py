@@ -1,0 +1,215 @@
+"""Tests for `clawctl integration registry` CRUD verbs."""
+
+from __future__ import annotations
+
+
+from typer.testing import CliRunner
+
+from clawrium.cli import app
+
+runner = CliRunner()
+
+
+def test_create_github_non_interactive(fleet_dir, stdin_not_tty) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "gh",
+            "--type",
+            "github",
+            "--credential",
+            "GITHUB_TOKEN=ghp_test",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "integration/gh" in result.output
+
+
+def test_create_requires_type(fleet_dir, stdin_not_tty) -> None:
+    result = runner.invoke(
+        app,
+        ["integration", "registry", "create", "no-type", "--credential", "K=V"],
+    )
+    assert result.exit_code != 0
+
+
+def test_create_unknown_type_rejected(fleet_dir, stdin_not_tty) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "x",
+            "--type",
+            "no-such-type",
+            "--credential",
+            "K=V",
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_create_missing_required_credentials_fails(fleet_dir, stdin_not_tty) -> None:
+    # github requires GITHUB_TOKEN; passing a non-matching key fails.
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "bad",
+            "--type",
+            "github",
+            "--credential",
+            "OTHER=VAL",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "missing required credential" in result.output
+
+
+def test_create_credential_stdin(fleet_dir, stdin_not_tty) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "stdin-gh",
+            "--type",
+            "github",
+            "--credential-stdin",
+        ],
+        input="GITHUB_TOKEN=ghp_stdin\n",
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_create_credential_kv_must_have_equals(fleet_dir, stdin_not_tty) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "bad-kv",
+            "--type",
+            "github",
+            "--credential",
+            "no-equals-sign",
+        ],
+    )
+    assert result.exit_code != 0
+
+
+def test_get_lists_integrations(fleet_dir, stdin_not_tty) -> None:
+    runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "l1",
+            "--type",
+            "github",
+            "--credential",
+            "GITHUB_TOKEN=t",
+        ],
+    )
+    result = runner.invoke(app, ["integration", "registry", "get"])
+    assert result.exit_code == 0
+    assert "l1" in result.output
+
+
+def test_get_types_lists_catalog(fleet_dir, stdin_not_tty) -> None:
+    result = runner.invoke(app, ["integration", "registry", "get", "--types"])
+    assert result.exit_code == 0
+    assert "github" in result.output
+
+
+def test_describe_known(fleet_dir, stdin_not_tty) -> None:
+    runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "d1",
+            "--type",
+            "github",
+            "--credential",
+            "GITHUB_TOKEN=t",
+        ],
+    )
+    result = runner.invoke(app, ["integration", "registry", "describe", "d1"])
+    assert result.exit_code == 0
+    assert "github" in result.output
+
+
+def test_edit_updates_credential(fleet_dir, stdin_not_tty) -> None:
+    runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "e1",
+            "--type",
+            "github",
+            "--credential",
+            "GITHUB_TOKEN=old",
+        ],
+    )
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "edit",
+            "e1",
+            "--credential",
+            "GITHUB_TOKEN=new",
+        ],
+    )
+    assert result.exit_code == 0
+
+
+def test_delete_requires_yes(fleet_dir, stdin_not_tty) -> None:
+    runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "dx",
+            "--type",
+            "github",
+            "--credential",
+            "GITHUB_TOKEN=t",
+        ],
+    )
+    result = runner.invoke(app, ["integration", "registry", "delete", "dx"])
+    assert result.exit_code != 0
+    assert "--yes" in result.output
+
+
+def test_delete_with_yes_removes(fleet_dir, stdin_not_tty) -> None:
+    runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "dy",
+            "--type",
+            "github",
+            "--credential",
+            "GITHUB_TOKEN=t",
+        ],
+    )
+    result = runner.invoke(app, ["integration", "registry", "delete", "dy", "--yes"])
+    assert result.exit_code == 0
