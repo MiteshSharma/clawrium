@@ -15,6 +15,25 @@ this module. The contract is documented in `.itx/435/00_PLAN.md` §6
 
 This module imports nothing from `clawrium.core.*`; it deals only with
 rendering primitives.
+
+Sanitization contract (#507 ATX iter-1):
+
+| Primitive                              | Sanitizes? |
+|----------------------------------------|------------|
+| `errors.emit_error(message, hint)`     | Yes        |
+| `stream.stream_action(resource, msg)`  | Yes        |
+| `json_yaml.dump_name(kind, name)`      | Yes        |
+| `table.render()` cells + headers       | Yes        |
+| `stream.NDJSONStreamer.emit()`         | Safe via `json.dumps` (`ensure_ascii=True`) |
+| `stream.emit_event()`                  | Safe via `json.dumps` |
+| `json_yaml.dump_json()`                | Safe via `json.dumps` |
+| `json_yaml.dump_yaml()`                | Safe via `yaml.safe_dump` |
+| `age.format_age()`                     | N/A — int input |
+| `status.format_status()`               | N/A — input constrained to status vocab |
+
+The shared pattern lives in `_sanitize.py` and mirrors
+`cli/chat.py:_CONTROL_AND_BIDI_RE` so the coverage stays identical
+to the legacy parity contract from ATX #341 v3 / #455 W2.
 """
 
 from clawrium.cli.output.age import format_age

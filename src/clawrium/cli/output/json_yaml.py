@@ -18,6 +18,8 @@ from typing import Any, Mapping, Sequence
 
 import yaml
 
+from clawrium.cli.output._sanitize import sanitize
+
 
 def dump_json(rows: Sequence[Mapping[str, Any]]) -> str:
     """Serialize `rows` as a JSON array.
@@ -49,8 +51,15 @@ def dump_name(rows: Sequence[Mapping[str, Any]]) -> str:
     Each row MUST have `kind` and `name` keys. Missing keys raise
     `KeyError` — surfacing the problem to the caller is preferable to
     silently dropping records.
+
+    Both `kind` and `name` are bidi/control-char sanitized at write
+    time (#507 ATX iter-1 W2): names come from agent-registry-derived
+    strings and a crafted manifest could embed bidi overrides.
+    `dump_json()` and `dump_yaml()` are safe by serialization.
     """
-    lines = [f"{row['kind']}/{row['name']}" for row in rows]
+    lines = [
+        f"{sanitize(str(row['kind']))}/{sanitize(str(row['name']))}" for row in rows
+    ]
     if not lines:
         return ""
     return "\n".join(lines) + "\n"

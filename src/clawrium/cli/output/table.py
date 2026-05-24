@@ -11,9 +11,16 @@ Padding rule (plan §6.1 / Option B):
 
 This renderer is intentionally simple — no truncation, no wrapping. The
 goal is byte-stable, grep-friendly output that mirrors `kubectl get`.
+
+Every cell is bidi/control-char sanitized before width computation and
+write (#507 ATX iter-1 W1): future callers in bundles 3-4 will pass
+agent/host names sourced from `hosts.json`. Sanitizing at the renderer
+removes the drift trap where each caller must remember.
 """
 
 from typing import Sequence
+
+from clawrium.cli.output._sanitize import sanitize
 
 GAP = "   "  # 3 spaces between columns
 
@@ -35,8 +42,8 @@ def render(
     when at least one row is present. An empty result (no headers and
     no rows) returns the empty string.
     """
-    headers = [str(h) for h in headers]
-    norm_rows: list[list[str]] = [[str(cell) for cell in row] for row in rows]
+    headers = [sanitize(str(h)) for h in headers]
+    norm_rows: list[list[str]] = [[sanitize(str(cell)) for cell in row] for row in rows]
 
     if not headers and not norm_rows:
         return ""

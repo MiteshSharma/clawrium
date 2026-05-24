@@ -5,13 +5,25 @@ each with at least `resource`, `phase`, `state`, `ts` keys. Extra keys
 are passed through.
 
 `stream_action()` is a convenience for the default (non-JSON) mode —
-one human line per phase, e.g. `agent/wise-hypatia: installed`.
+one human line per phase, e.g. `agent/wise-hypatia: installed`. Both
+`resource` and `message` are bidi/control-char sanitized here (#507
+ATX iter-1 B2): they will carry server-supplied strings (agent names
+from hosts.json, ansible event text) once bundles 3-4 wire real
+lifecycle ops to this primitive.
+
+`NDJSONStreamer.emit()` and `emit_event()` are safe by serialization:
+`json.dumps(..., ensure_ascii=True)` escapes control chars as `\\uXXXX`
+in the output. Future audit point — if a caller passes a secret-valued
+extra kwarg, it would still be serialized to the stream; this is
+flagged for review when the first real caller lands in bundle 3.
 """
 
 import json
 import sys
 from datetime import datetime, timezone
 from typing import Any, IO, Mapping, Optional
+
+from clawrium.cli.output._sanitize import sanitize
 
 
 def _utc_now_rfc3339() -> str:
@@ -65,7 +77,7 @@ def stream_action(
     with whatever the underlying lifecycle code logs.
     """
     target = stream if stream is not None else sys.stdout
-    target.write(f"{resource}: {message}\n")
+    target.write(f"{sanitize(resource)}: {sanitize(message)}\n")
     target.flush()
 
 
