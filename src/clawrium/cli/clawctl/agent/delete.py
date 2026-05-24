@@ -11,7 +11,6 @@ import typer
 from clawrium.cli.clawctl._common import confirm_destructive
 from clawrium.cli.clawctl.agent._shared import safe_resolve_agent
 from clawrium.cli.output import emit_error, stream_action
-from clawrium.core.hosts import remove_agent_from_host
 from clawrium.core.lifecycle import LifecycleError, remove_agent
 
 
@@ -32,8 +31,14 @@ def delete(
     def on_event(stage: str, message: str) -> None:
         stream_action(resource=f"agent/{name}", message=f"[{stage}] {message}")
 
+    # ATX iter-1 B3: `remove_agent` can return `{"success": False}` without
+    # raising when the Ansible playbook fails (host unreachable, non-zero
+    # rc). Discarding the return value left orphaned remote agents while
+    # silently deleting the local record. `remove_agent` also already
+    # prunes the local record on success — the previous explicit second
+    # call was redundant.
     try:
-        remove_agent(
+        result = remove_agent(
             hostname=hostname,
             claw_name=agent_type,
             agent_name=agent_key,
@@ -42,9 +47,9 @@ def delete(
     except LifecycleError as exc:
         emit_error(f"remote cleanup failed: {exc}")
 
-    if not remove_agent_from_host(hostname, agent_key):
+    if not result.get("success"):
         emit_error(
-            f"failed to remove local record for {name!r}",
-            hint="check ~/.config/clawrium/hosts.json",
+            f"remote cleanup failed: {result.get('error') or 'unknown error'}",
+            hint=f"clawctl agent describe {name}",
         )
     stream_action(resource=f"agent/{name}", message="deleted")

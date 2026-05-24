@@ -18,6 +18,7 @@ from typing import Optional
 
 import typer
 
+from clawrium.cli.clawctl._common import validate_alias
 from clawrium.cli.clawctl.host._shared import display_name, hostname_key, safe_get_host
 from clawrium.cli.output import emit_error, render_table, stream_action
 from clawrium.core.hosts import alias_exists, update_host
@@ -54,8 +55,8 @@ def alias(
 
     if add:
         for value in add:
-            if not value or "=" in value or "/" in value:
-                emit_error(f"invalid alias {value!r}")
+            # Positive-whitelist + bidi rejection (ATX iter-1 W10, S1).
+            validate_alias(value)
             exists, conflict = alias_exists(value, exclude_hostname=canonical)
             if exists:
                 emit_error(

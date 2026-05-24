@@ -12,6 +12,7 @@ from typing import Optional
 
 import typer
 
+from clawrium.cli.clawctl._common import validate_alias
 from clawrium.cli.clawctl.host._shared import display_name, hostname_key, safe_get_host
 from clawrium.cli.output import emit_error, stream_action
 from clawrium.core.hosts import alias_exists, update_host
@@ -37,6 +38,7 @@ def edit(
         )
 
     if alias is not None:
+        validate_alias(alias)
         exists, conflict = alias_exists(alias, exclude_hostname=canonical)
         if exists:
             emit_error(

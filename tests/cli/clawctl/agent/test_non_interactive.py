@@ -62,8 +62,11 @@ def test_registry_describe_unknown_type_errors(fleet_dir) -> None:
 
 
 def test_logs_placeholder_emits_event(fleet_dir) -> None:
+    # ATX iter-1 B11: assert on real output content, not just exit code.
     result = runner.invoke(app, ["agent", "logs", "wise-hypatia", "--tail", "3"])
     assert result.exit_code == 0
+    assert "agent/wise-hypatia" in result.output
+    assert "logs placeholder" in result.output
 
 
 def test_logs_json_emits_json(fleet_dir) -> None:

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import typer
 
-from clawrium.cli.output import render_table
+from clawrium.cli.output import emit_error, render_table
 
 __all__ = ["registry_app"]
 
@@ -51,5 +51,9 @@ def describe(
             typer.echo(f"Name:         {entry['name']}")
             typer.echo(f"Description:  {entry['description']}")
             return
-    typer.echo(f"Profile {profile!r} not found.")
-    raise typer.Exit(code=1)
+    # ATX iter-1 W5: errors must go to stderr via `emit_error` so scripts
+    # probing stderr don't miss the failure.
+    emit_error(
+        f"host profile {profile!r} not found",
+        hint="clawctl host registry get",
+    )

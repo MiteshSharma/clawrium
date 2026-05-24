@@ -83,11 +83,17 @@ def sync(
         if use_json and streamer is not None:
             streamer.emit(resource=resource, phase=phase, state=state, **extra)
         else:
-            label = phase if state == "complete" else f"{phase} (state={state})"
+            label = phase if state in ("complete", "queued") else f"{phase} ({state})"
             stream_action(resource=resource, message=label)
 
     started = time.monotonic()
 
+    # ATX iter-1 W3/W4: do NOT pre-mark phases as `complete` before the
+    # underlying call runs — if `sync_agent` fails, terminals would show
+    # 5 "complete" lines followed by an error. Pre-emit as `queued` so
+    # NDJSON consumers can distinguish from the post-call `complete`
+    # summary. Bundle 5 will refactor `core/lifecycle.sync_agent` to
+    # emit per-phase events directly, removing the need for pre-emission.
     phase_keys = ("validate", "push", "restart", "repair", "verify")
     for key, label in zip(phase_keys, _PHASES):
         if key == "validate" and skip_validate:
@@ -97,7 +103,7 @@ def sync(
         if dry_run and key in ("push", "restart", "repair", "verify"):
             emit_phase(label, "skipped (dry-run)")
             continue
-        emit_phase(label, "complete" if use_json else "complete")
+        emit_phase(label, "queued")
 
     if dry_run:
         if use_json and streamer is not None:

@@ -41,10 +41,20 @@ def port_forward(
     except Exception as exc:
         emit_error(f"failed to open tunnel: {exc}")
 
+    # ATX iter-1 W7: `ensure_tunnel` can return None if the tunnel
+    # manager loses state (PID file missing, etc.). Without this guard
+    # the message rendered "forwarding localhost:None -> agent:8080".
+    if opened_local is None and local_port is None:
+        emit_error(
+            "tunnel manager returned no local port",
+            hint="check ~/.config/clawrium/tunnels/",
+        )
+
+    display_local = local_port if local_port is not None else opened_local
     stream_action(
         resource=f"agent/{name}",
         message=(
-            f"forwarding localhost:{local_port or opened_local} -> agent:{remote_port} "
+            f"forwarding localhost:{display_local} -> agent:{remote_port} "
             "(Ctrl-C to exit)"
         ),
     )

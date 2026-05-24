@@ -16,12 +16,18 @@ from clawrium.cli.output import (
     emit_error,
     render_table,
 )
+from clawrium.cli.output._sanitize import sanitize
 from clawrium.core.registry import (
     ManifestNotFoundError,
     get_claw_info,
     list_claws,
     load_manifest,
 )
+
+
+def _s(value: object) -> str:
+    return sanitize(str(value))
+
 
 __all__ = ["registry_app"]
 
@@ -83,15 +89,18 @@ def describe(
             hint="clawctl agent registry get",
         )
 
+    # ATX iter-1 B2: sanitize agent_type (raw user input) and manifest
+    # fields (potentially attacker-controlled via third-party manifests)
+    # before echoing to the terminal.
     agent = manifest.get("agent", {})
-    typer.echo(f"Name:         {agent_type}")
-    typer.echo(f"Description:  {agent.get('description', '-')}")
+    typer.echo(f"Name:         {_s(agent_type)}")
+    typer.echo(f"Description:  {_s(agent.get('description', '-'))}")
     platforms = manifest.get("platforms", []) or []
     typer.echo(f"Platforms:    {len(platforms)}")
     for platform in platforms:
         typer.echo(
-            f"  - {platform.get('version', '?')}  "
-            f"os={platform.get('os', '?')}  arch={platform.get('arch', '?')}"
+            f"  - {_s(platform.get('version', '?'))}  "
+            f"os={_s(platform.get('os', '?'))}  arch={_s(platform.get('arch', '?'))}"
         )
     features = manifest.get("features", {}) or {}
     if features.get("web_ui"):

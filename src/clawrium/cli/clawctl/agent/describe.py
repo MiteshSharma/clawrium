@@ -12,6 +12,18 @@ import typer
 from clawrium.cli.clawctl._common import OutputFormat
 from clawrium.cli.clawctl.agent._shared import agent_to_row, safe_resolve_agent
 from clawrium.cli.output import dump_json, dump_yaml, format_age, format_status
+from clawrium.cli.output._sanitize import sanitize
+
+
+def _s(value: object) -> str:
+    """Per-field sanitize (ATX iter-1 B1).
+
+    Agent describe is the worst exposure surface — config/identity/skills
+    fields are attacker-reachable via prior `configure` calls. Apply per
+    interpolation site; never on the joined block (sanitize collapses
+    `\\n` so a single call would compact the whole output to one line).
+    """
+    return sanitize(str(value))
 
 
 def describe(
@@ -32,31 +44,31 @@ def describe(
         return
 
     lines: list[str] = []
-    lines.append(f"Name:       {row['name']}")
+    lines.append(f"Name:       {_s(row['name'])}")
     lines.append("Kind:       agent")
-    lines.append(f"Type:       {row['type']}")
-    lines.append(f"Version:    {row['version'] or '-'}")
-    lines.append(f"Host:       {row['host']} ({row['address']})")
-    lines.append(f"Provider:   {row['provider'] or '-'}")
-    lines.append(f"Status:     {format_status(str(row['status']))}")
+    lines.append(f"Type:       {_s(row['type'])}")
+    lines.append(f"Version:    {_s(row['version'] or '-')}")
+    lines.append(f"Host:       {_s(row['host'])} ({_s(row['address'])})")
+    lines.append(f"Provider:   {_s(row['provider'] or '-')}")
+    lines.append(f"Status:     {format_status(_s(row['status']))}")
     lines.append(f"Age:        {format_age(int(row['age_seconds']))}")
-    lines.append(f"Installed:  {row['installed_at'] or '-'}")
+    lines.append(f"Installed:  {_s(row['installed_at'] or '-')}")
 
     config = claw_record.get("config", {}) or {}
     lines.append("")
     lines.append("Config:")
-    lines.append(f"  Port:    {row['port'] or '-'}")
+    lines.append(f"  Port:    {_s(row['port'] or '-')}")
     identity = config.get("identity") or config.get("identity_file") or "-"
-    lines.append(f"  Identity: {identity}")
+    lines.append(f"  Identity: {_s(identity)}")
 
     skills = (config.get("skills") or claw_record.get("skills") or []) or []
     lines.append("")
     lines.append(f"Skills ({len(skills)}):")
     for skill in skills:
         if isinstance(skill, dict):
-            lines.append(f"  {skill.get('name') or skill.get('ref', '?')}")
+            lines.append(f"  {_s(skill.get('name') or skill.get('ref', '?'))}")
         else:
-            lines.append(f"  {skill}")
+            lines.append(f"  {_s(skill)}")
 
     integrations = config.get("integrations") or claw_record.get("integrations") or {}
     if isinstance(integrations, dict):
@@ -66,7 +78,7 @@ def describe(
     lines.append("")
     lines.append(f"Integrations ({len(integration_names)}):")
     for integration in integration_names:
-        lines.append(f"  {integration}  (configured)")
+        lines.append(f"  {_s(integration)}  (configured)")
 
     channels = (config.get("channels") or claw_record.get("channels") or []) or []
     lines.append("")
@@ -74,9 +86,9 @@ def describe(
         lines.append(f"Channels ({len(channels)}):")
         for channel in channels:
             if isinstance(channel, dict):
-                lines.append(f"  {channel.get('name') or channel.get('type', '?')}")
+                lines.append(f"  {_s(channel.get('name') or channel.get('type', '?'))}")
             else:
-                lines.append(f"  {channel}")
+                lines.append(f"  {_s(channel)}")
     else:
         lines.append("Channels: none")
 
@@ -92,7 +104,7 @@ def describe(
         else:
             stage_state = str(info)
             completed = ""
-        completed_part = f"   ({completed})" if completed else ""
-        lines.append(f"  {stage:<10} {stage_state}{completed_part}")
+        completed_part = f"   ({_s(completed)})" if completed else ""
+        lines.append(f"  {stage:<10} {_s(stage_state)}{completed_part}")
 
     typer.echo("\n".join(lines))

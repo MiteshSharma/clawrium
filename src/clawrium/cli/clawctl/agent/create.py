@@ -52,9 +52,12 @@ def create(
     require_flag(host, flag="--host")
 
     if not agent_type or not host:
+        # ATX iter-1 W2: hint had stale wording suggesting `--yes`, which
+        # is the destructive-confirm skip — not the way to supply missing
+        # required flags.
         emit_error(
             "missing required flags",
-            hint="--type and --host are required (use --yes for non-interactive)",
+            hint="pass --type <type> and --host <host> on the command line",
         )
 
     try:

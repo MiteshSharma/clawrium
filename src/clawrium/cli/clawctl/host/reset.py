@@ -38,15 +38,18 @@ def reset(
     except Exception as exc:  # core.reset raises a variety of errors
         emit_error(f"failed to enumerate reset targets: {exc}")
 
-    stream_action(
-        resource=f"host/{name}",
-        message=(
-            f"would remove users={len(targets.users)} "
-            f"services={len(targets.services)} paths={len(targets.paths)}"
-        ),
-    )
-
+    # ATX iter-1 S3: confirm BEFORE printing the "would remove" summary
+    # on the destructive (non-dry-run) path. Previously the summary
+    # appeared before the guard fired, which read as if the action was
+    # already proceeding.
     if dry_run:
+        stream_action(
+            resource=f"host/{name}",
+            message=(
+                f"would remove users={len(targets.users)} "
+                f"services={len(targets.services)} paths={len(targets.paths)}"
+            ),
+        )
         return
 
     confirm_destructive(
@@ -55,6 +58,13 @@ def reset(
             "Removes services, users, and managed paths."
         ),
         yes=yes,
+    )
+    stream_action(
+        resource=f"host/{name}",
+        message=(
+            f"removing users={len(targets.users)} "
+            f"services={len(targets.services)} paths={len(targets.paths)}"
+        ),
     )
 
     try:

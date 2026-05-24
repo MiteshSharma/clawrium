@@ -24,6 +24,7 @@ from clawrium.cli.clawctl.agent._shared import safe_resolve_agent
 from clawrium.cli.output import emit_error, stream_action
 from clawrium.core.lifecycle import LifecycleError
 from clawrium.core.onboarding import (
+    OnboardingNotFoundError,
     OnboardingState,
     get_onboarding_state,
     run_stage,
@@ -85,7 +86,14 @@ def configure(
         resource=f"agent/{name}", message=f"configure stage={stage.value} on {hostname}"
     )
 
-    state = get_onboarding_state(hostname, agent_key)
+    # ATX iter-1 B4: `get_onboarding_state` raises `OnboardingNotFoundError`
+    # for any pre-onboarding-schema agent (or when install.py's Step 11
+    # non-fatally silently failed). Treat as PENDING and run the
+    # initialize path rather than letting the traceback escape.
+    try:
+        state = get_onboarding_state(hostname, agent_key)
+    except OnboardingNotFoundError:
+        state = OnboardingState.PENDING
     if state == OnboardingState.PENDING:
         from clawrium.core.onboarding import initialize_onboarding
 

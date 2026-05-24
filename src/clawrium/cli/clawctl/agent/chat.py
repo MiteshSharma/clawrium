@@ -13,8 +13,8 @@ from typing import Optional
 
 import typer
 
+from clawrium.cli.clawctl._stub import echo_not_implemented
 from clawrium.cli.clawctl.agent._shared import safe_resolve_agent
-from clawrium.cli.output import stream_action
 
 
 def chat(
@@ -33,11 +33,10 @@ def chat(
     """Start an interactive chat with an agent."""
     safe_resolve_agent(name)  # validates existence
     if once is not None:
-        stream_action(
-            resource=f"agent/{name}",
-            message="single-shot --once mode not yet wired in chat backend",
-        )
-        raise typer.Exit(code=0)
+        # ATX iter-1 W6: use canonical placeholder so probes match the
+        # contract asserted in tests/cli/test_app.py.
+        echo_not_implemented("agent", "chat --once")
+        return
     from clawrium.cli.chat import chat as _legacy_chat
 
     _legacy_chat(

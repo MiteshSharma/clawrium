@@ -10,17 +10,16 @@ from __future__ import annotations
 
 import typer
 
+from clawrium.cli.clawctl._stub import echo_not_implemented
 from clawrium.cli.clawctl.agent._shared import safe_resolve_agent
-from clawrium.cli.output import stream_action
 
 
 def edit(
     name: str = typer.Argument(..., help="Agent name."),
 ) -> None:
     """Open the agent record in $EDITOR (placeholder for bundle 3)."""
+    # ATX iter-1 W6: every placeholder must use the canonical
+    # `echo_not_implemented` so scripts probing for the standard string
+    # see consistent output across the surface.
     safe_resolve_agent(name)  # validates the agent exists
-    stream_action(
-        resource=f"agent/{name}",
-        message="edit in $EDITOR — not yet implemented (bundle 4)",
-    )
-    raise typer.Exit(code=0)
+    echo_not_implemented("agent", "edit")
