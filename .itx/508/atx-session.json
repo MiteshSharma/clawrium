@@ -1,12 +1,14 @@
 {
   "session_id": "bbt8dwjzk",
   "transport": "cli",
-  "commit_sha": "44dd0ea",
+  "commit_sha": "7826c61",
   "iteration": 3,
   "last_rating": 3,
   "last_blockers": [],
   "started_at": "2026-05-24T08:00:00Z",
-  "updated_at": "2026-05-24T09:00:00Z",
+  "updated_at": "2026-05-24T09:30:00Z",
+  "exhausted": true,
+  "post_iter3_fixes": "commit 7826c61 closes 2 code defects (W1 empty DNS label, W5 over-broad delete guard) + 4 test gaps (W4/W6/S1/S7) per iter-3 'path to 4/5' recommendations. No iter-4 review run — per skill contract iter-3 is the ceiling.",
   "iterations": [
     {
       "n": 1,
@@ -28,6 +30,17 @@
       "blockers": 0,
       "warnings": 7,
       "note": "all 11 iter-1 blockers confirmed fixed; test-coverage agent hit max-turns"
+    },
+    {
+      "n": 3,
+      "session_id": "bbt8dwjzk",
+      "commit_sha": "44dd0ea",
+      "rating": 3,
+      "cost_usd": 1.7891,
+      "duration_seconds": 688,
+      "blockers": 0,
+      "warnings": 7,
+      "note": "iter-2 closure verification; 2 code defects + 4 test gaps surfaced — all fixed in post-iter-3 cleanup commit 7826c61"
     }
   ]
 }
