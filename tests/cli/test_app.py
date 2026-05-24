@@ -60,10 +60,8 @@ def test_group_help_exits_zero(group: str) -> None:
 @pytest.mark.parametrize(
     "argv,expected",
     [
-        (["host", "create"], "Not implemented: host create"),
-        (["host", "get"], "Not implemented: host get"),
-        (["agent", "create"], "Not implemented: agent create"),
-        (["agent", "sync"], "Not implemented: agent sync"),
+        # Pattern A registry verbs are still stubbed in bundle 3 (#508).
+        # Bundle 4 (#509) replaces these with real implementations.
         (
             ["provider", "registry", "create"],
             "Not implemented: provider registry create",
@@ -75,6 +73,8 @@ def test_group_help_exits_zero(group: str) -> None:
         ),
         (["skill", "registry", "get"], "Not implemented: skill registry get"),
         (["mcp", "registry", "get"], "Not implemented: mcp registry get"),
+        # `agent exec` is intentionally a placeholder per plan §4.
+        (["agent", "exec", "any-name", "echo", "hi"], "Not implemented: agent exec"),
     ],
 )
 def test_stub_verb_emits_canonical_line(argv: list[str], expected: str) -> None:
