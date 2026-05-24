@@ -1442,7 +1442,7 @@ Exit: `0`
 
 ### Post-lifecycle agent ps (audit-* agents visible)
 
-### `clm agent ps`
+#### `clm agent ps`
 
 ```console
 $ clm agent ps
@@ -1946,7 +1946,7 @@ already reflects the cleanup).
 The pre-#435 `clm` top-level and `clm agent` surface, frozen so the
 post-#435 `clawctl` surface diffs against a structural baseline.
 
-### `clm --help`
+#### `clm --help`
 
 ```console
 $ clm --help
@@ -1976,7 +1976,7 @@ $ clm --help
 ```
 Exit: `0`
 
-### `clm agent --help`
+#### `clm agent --help`
 
 ```console
 $ clm agent --help
@@ -2008,7 +2008,7 @@ $ clm agent --help
 ```
 Exit: `0`
 
-### `clm agent logs --help`
+#### `clm agent logs --help`
 
 ```console
 $ clm agent logs --help
@@ -2029,7 +2029,7 @@ $ clm agent logs --help
 ```
 Exit: `0`
 
-### `clm integration --help`
+#### `clm integration --help`
 
 ```console
 $ clm integration --help
@@ -2053,7 +2053,7 @@ $ clm integration --help
 ```
 Exit: `0`
 
-### `clm integration show --help`
+#### `clm integration show --help`
 
 ```console
 $ clm integration show --help
@@ -2075,7 +2075,7 @@ $ clm integration show --help
 ```
 Exit: `0`
 
-### `clm integration credentials --help`
+#### `clm integration credentials --help`
 
 ```console
 $ clm integration credentials --help
@@ -2102,7 +2102,7 @@ $ clm integration credentials --help
 ```
 Exit: `0`
 
-### `clm agent secret list --help`
+#### `clm agent secret list --help`
 
 ```console
 $ clm agent secret list --help
@@ -2127,7 +2127,7 @@ Exit: `0`
 Iter2 reinstall — same install path as iter1, captured for completeness
 and to anchor the W8 intermediate-state ps below.
 
-### `clm agent install --type zeroclaw --host wolf-i --name audit-zeroclaw --yes`
+#### `clm agent install --type zeroclaw --host wolf-i --name audit-zeroclaw --yes`
 
 ```console
 $ clm agent install --type zeroclaw --host wolf-i --name audit-zeroclaw --yes
@@ -2269,7 +2269,7 @@ Success! zeroclaw v0.7.5 installed as 'audit-zeroclaw' on wolf-i
 ```
 Exit: `0`
 
-### `clm agent install --type hermes --host wolf-i --name audit-hermes --yes`
+#### `clm agent install --type hermes --host wolf-i --name audit-hermes --yes`
 
 ```console
 $ clm agent install --type hermes --host wolf-i --name audit-hermes --yes
@@ -2411,7 +2411,7 @@ Success! hermes v2026.5.7 installed as 'audit-hermes' on wolf-i
 ```
 Exit: `0`
 
-### `clm agent install --type openclaw --host wolf-i --name audit-openclaw --yes`
+#### `clm agent install --type openclaw --host wolf-i --name audit-openclaw --yes`
 
 ```console
 $ clm agent install --type openclaw --host wolf-i --name audit-openclaw --yes
@@ -2597,7 +2597,7 @@ or start yet applied to any audit-* agent. Surfaces the post-install
 status of each agent type so Bundle 5 can diff state transitions
 directly.
 
-### `clm agent ps`
+#### `clm agent ps`
 
 ```console
 $ clm agent ps
@@ -2631,14 +2631,32 @@ Exit: `0`
 ### `clm agent open <a>` baseline (B4)
 
 `clm agent open` does **not** exist in v26.5.2 — the AGENTS.md
-reference is forward-looking (likely part of issue #435's surface).
-Captured below as the baseline so Bundle 5's `clawctl agent open`
-introductions diff cleanly against three explicit `No such command`
-errors. Captured against `audit-zeroclaw` (zeroclaw, running),
-`audit-hermes` (hermes, configured/`ready (stopped)`), and
-`audit-openclaw` (openclaw, install-started, no onboarding).
+reference is forward-looking (part of issue #435's surface as
+`clawctl agent open`). Captured below as the baseline so Bundle 5's
+`clawctl agent open` introductions diff cleanly against three
+explicit `No such command` errors.
 
-### `clm agent open audit-zeroclaw`
+**State at capture time (post-iter2 configure+start, before iter2
+teardown — not captured as separate transcripts because iter1
+already covered configure/start, but state differs from the W8
+snapshot above):**
+
+- `audit-zeroclaw`: zeroclaw, `running` (configured + started in
+  iter2)
+- `audit-hermes`: hermes, `ready (stopped)` (iter2 configure
+  succeeded; iter2 start reported success but daemon ended stopped —
+  same behaviour as iter1; surfaced as an additional baseline
+  finding worth flagging in Bundle 5)
+- `audit-openclaw`: openclaw, `onboarding (0/4)` (iter2 configure
+  was not re-attempted; the agent remained in its post-install,
+  pre-onboarding state matching iter1 behaviour)
+
+Functionally the `No such command 'open'` error fires at CLI
+dispatch before any agent-state lookup, so the state above does not
+affect the captured output — it is documented purely for reviewer
+orientation.
+
+#### `clm agent open audit-zeroclaw`
 
 ```console
 $ clm agent open audit-zeroclaw
@@ -2650,7 +2668,7 @@ Try 'clm agent --help' for help.
 ```
 Exit: `2`
 
-### `clm agent open audit-hermes`
+#### `clm agent open audit-hermes`
 
 ```console
 $ clm agent open audit-hermes
@@ -2662,7 +2680,7 @@ Try 'clm agent --help' for help.
 ```
 Exit: `2`
 
-### `clm agent open audit-openclaw`
+#### `clm agent open audit-openclaw`
 
 ```console
 $ clm agent open audit-openclaw
