@@ -23,7 +23,7 @@
   <img src="docs/assets/clawrium-architecture.png" alt="Clawrium architecture - control node managing agents across hosts" width="100%" />
 </p>
 
-Clawrium uses Ansible under the hood for SSH-based orchestration. You run `clm` from your control machine, which talks to target hosts over SSH. No agents, no containers, no Kubernetes complexity - just processes running on hosts with a unified management layer.
+Clawrium uses Ansible under the hood for SSH-based orchestration. You run `clawctl` from your control machine, which talks to target hosts over SSH. No agents, no containers, no Kubernetes complexity - just processes running on hosts with a unified management layer.
 
 ## Why Clawrium
 
@@ -60,13 +60,13 @@ It is _not_ a hosted platform. There's no dashboard, no SaaS, no account signup.
 
 | Requirement | Why |
 |-------------|-----|
-| Python 3.10+ | Runtime for `clm` CLI |
+| Python 3.10+ | Runtime for `clawctl` CLI |
 | [uv](https://docs.astral.sh/uv/) | Fast Python package installer |
 | SSH access to a remote host | Clawrium manages agents over SSH |
 | API key (Anthropic, OpenAI, etc.) | Agents need inference providers |
 
 <p align="center">
-  <img src="docs/demos/agent-reprovision.gif" alt="Provisioning a new agent with clm" width="100%">
+  <img src="docs/demos/agent-reprovision.gif" alt="Provisioning a new agent with clawctl" width="100%">
 </p>
 
 ### Install & Run
@@ -76,7 +76,7 @@ It is _not_ a hosted platform. There's no dashboard, no SaaS, no account signup.
 uv tool install clawrium
 
 # Or run without installing
-uvx --from clawrium clm --help
+uvx --from clawrium clawctl --help
 ```
 
 For full installation instructions including how to install `uv`, see [docs/installation.md](docs/installation.md).
@@ -85,49 +85,49 @@ For full installation instructions including how to install `uv`, see [docs/inst
 
 ```bash
 # Initialize config
-clm init
+clawctl service init
 # → Created /home/user/.config/clawrium/config.yaml
 
 # Set up SSH to your host
-clm host init 192.168.1.100 --user myuser
+clawctl host create 192.168.1.100 --user myuser --bootstrap
 # → Checking SSH connectivity...
 # → SSH key copied to 192.168.1.100
 
 # Add the host to your fleet
-clm host add 192.168.1.100 --alias worker-1
+clawctl host create 192.168.1.100 --alias worker-1
 # → Host 'worker-1' added
 
 # Add an inference provider
-clm provider add anthropic --type anthropic
+clawctl provider registry create anthropic --type anthropic
 # → Enter API key: ********
 # → Provider 'anthropic' configured
 
 # Install OpenClaw agent
-clm agent install --type openclaw --host worker-1 --name my-assistant
+clawctl agent create my-assistant --type openclaw --host worker-1
 # → Installing openclaw on worker-1...
 # → Agent 'my-assistant' installed
 
 # Configure and start
-clm agent configure my-assistant
-clm agent start my-assistant
+clawctl agent configure my-assistant
+clawctl agent start my-assistant
 # → Agent 'my-assistant' started
 
 # Check fleet status
-clm ps
-# NAME           TYPE      PROVIDER  HOST      STATUS   UPTIME
-# my-assistant   openclaw  openai    worker-1  running  2m
+clawctl agent get
+# NAME           TYPE      PROVIDER  HOST      STATUS   AGE
+# my-assistant   openclaw  openai    worker-1  Running  2m
 
 # Chat with your agent
-clm chat my-assistant
+clawctl agent chat my-assistant
 # → Connected to my-assistant
 # → Type your message...
 
 # Or open the local web dashboard
-clm gui
+clawctl gui
 # → Clawrium GUI starting on http://127.0.0.1:36000 — press Ctrl+C to stop
 ```
 
-**You should see:** A running agent in `clm ps` output with status `running`.
+**You should see:** A running agent in `clawctl agent get` output with status `Running`.
 
 **→ Full setup guide: [ric03uec.github.io/clawrium](https://ric03uec.github.io/clawrium/)**
 
@@ -153,7 +153,7 @@ Other Linux distributions may work, but they are not currently part of the test 
 
 [OpenClaw](https://github.com/openclaw/openclaw) is officially supported and tested end-to-end.
 
-[Hermes](https://github.com/NousResearch/hermes-agent) (Nous Research) is supported in `🚧 In Development` status — install, configure, and a local OpenAI-compatible HTTP API on `127.0.0.1:8642` are wired end-to-end. `clm chat` and external messaging gateways are not yet supported for hermes. See the [Hermes Support Matrix](https://ric03uec.github.io/clawrium/docs/agent-support/hermes) for details.
+[Hermes](https://github.com/NousResearch/hermes-agent) (Nous Research) is supported in `🚧 In Development` status — install, configure, and a local OpenAI-compatible HTTP API on `127.0.0.1:8642` are wired end-to-end. `clawctl agent chat` and external messaging gateways are not yet supported for hermes. See the [Hermes Support Matrix](https://ric03uec.github.io/clawrium/docs/agent-support/hermes) for details.
 
 Additional agent types are planned.
 
@@ -173,7 +173,7 @@ No. Clawrium does not require Docker or Kubernetes. It manages agent processes o
 
 ### 6. Can I manage multiple hosts with different agent types?
 
-Yes. You can register multiple hosts and run different agent types on each host from the same `clm` control node.
+Yes. You can register multiple hosts and run different agent types on each host from the same `clawctl` control node.
 
 ### 7. Why doesn't it support x-agent and y-feature?
 

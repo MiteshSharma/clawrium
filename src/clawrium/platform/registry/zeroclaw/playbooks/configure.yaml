@@ -76,7 +76,7 @@
     # only restarts the daemon when content changes — ATX S1 fix.
     - name: Render ~/.zeroclaw/config.toml from template
       ansible.builtin.template:
-        src: "{{ template_path }}/config.toml.j2"
+        src: "{{ template_path }}/zeroclaw-config.toml.j2"
         dest: "/home/{{ agent_name }}/.zeroclaw/config.toml"
         owner: "{{ agent_name }}"
         group: "{{ agent_name }}"
@@ -90,7 +90,7 @@
         enabled: yes
         daemon_reload: yes
 
-    # systemd drop-in directory (#422). Hosts the clm-managed Environment=
+    # systemd drop-in directory (#422). Hosts the clawctl-managed Environment=
     # overlay without touching the install.yaml-dropped unit file. Drop-ins
     # are the systemd-standard mechanism per `man systemd.unit` "Drop-In".
     - name: Ensure systemd drop-in directory exists for zeroclaw service
@@ -109,8 +109,8 @@
     # picked up before /health/providers is probed.
     - name: Render zeroclaw GitHub-integration systemd drop-in
       ansible.builtin.template:
-        src: "{{ template_path }}/clm-env.conf.j2"
-        dest: "/etc/systemd/system/{{ agent_type }}-{{ agent_name }}.service.d/10-clm-env.conf"
+        src: "{{ template_path }}/zeroclaw-env.conf.j2"
+        dest: "/etc/systemd/system/{{ agent_type }}-{{ agent_name }}.service.d/10-zeroclaw-env.conf"
         owner: root
         group: root
         mode: "0600"
