@@ -61,6 +61,9 @@ BIDI_AND_CONTROL = [
     chr(0x202D),  # LRO -- added iter-2
     "\x00",  # NUL
     "\x07",  # BEL -- terminals will beep
+    "\t",  # TAB    -- added iter-3 (S2), explicitly stripped by docstring
+    "\n",  # LF     -- added iter-3 (S2), explicitly stripped by docstring
+    "\r",  # CR     -- added iter-3 (S2), explicitly stripped by docstring
     "\x1b",  # ESC -- starts ANSI sequences
     "\x7f",  # DEL
     "\x9b",  # CSI (C1)
@@ -188,6 +191,11 @@ class TestEmitEventSerialization:
         raw = buf.getvalue()
         assert RLO not in raw
         assert "\\u202e" in raw
+        # Round-trip: NDJSON consumer parses the line and recovers the
+        # codepoint as a value -- the display-safety decision is theirs
+        # (#507 iter-3 S4 round-trip assertion).
+        parsed = json.loads(raw.strip())
+        assert RLO in parsed["resource"]
 
 
 class TestDumpJsonSanitization:
@@ -202,17 +210,58 @@ class TestDumpJsonSanitization:
 
 
 class TestDumpYamlSanitization:
-    """yaml.safe_dump escapes control chars in scalar values."""
+    """`dump_yaml` recursively sanitizes string scalars (#507 iter-3 W2):
+    `yaml.safe_dump` does NOT escape LF, so we strip it (and every other
+    dangerous codepoint) at the primitive.
+    """
 
     def test_dangerous_codepoint_not_raw(self) -> None:
         out = dump_yaml([{"name": f"x{RLO}y"}])
-        # The raw codepoint should not appear verbatim in the YAML
-        # serialization (safe_dump escapes it).
         assert RLO not in out
-        # The parsed YAML still carries the codepoint -- consumers own
-        # display safety.
+        # After iter-3 sanitization, the parsed value has the codepoint
+        # replaced with a space (sanitize() collapses dangerous chars
+        # to a single space).
         parsed = yaml.safe_load(out)
-        assert RLO in parsed[0]["name"]
+        assert RLO not in parsed[0]["name"]
+        # The non-dangerous prefix and suffix survive.
+        assert parsed[0]["name"].startswith("x") and parsed[0]["name"].endswith("y")
+
+    def test_lf_in_name_is_stripped(self) -> None:
+        """`yaml.safe_dump` leaves literal LF in block scalars. A
+        crafted agent name containing `\\n` would produce multi-line
+        YAML from a field expected to be atomic — break shell scripts
+        that parse the YAML output line-by-line. `dump_yaml()` strips
+        LF via the recursive `_sanitize_value` helper.
+        """
+        out = dump_yaml([{"name": "wise\nhypatia"}])
+        # The literal LF inside the value must NOT survive in the
+        # serialized output (other than the trailing record-separator
+        # newlines yaml emits between fields).
+        parsed = yaml.safe_load(out)
+        assert "\n" not in parsed[0]["name"]
+        # The non-LF parts survive.
+        assert "wise" in parsed[0]["name"] and "hypatia" in parsed[0]["name"]
+
+    def test_nested_string_in_list_is_sanitized(self) -> None:
+        """`_sanitize_value` recurses into nested structures."""
+        out = dump_yaml([{"skills": [f"clawrium/tdd{RLO}", "openclaw/lint"]}])
+        assert RLO not in out
+
+
+class TestDumpJsonSanitizationLF:
+    """`json.dumps(..., ensure_ascii=True)` escapes LF as `\\n` (not as
+    a literal newline). Codified here so a regression cannot land
+    silently.
+    """
+
+    def test_lf_in_value_emerges_escaped(self) -> None:
+        out = dump_json([{"name": "wise\nhypatia"}])
+        # The raw LF inside the value must appear escaped, not
+        # injected as a real line break.
+        # (`\n` in JSON = the 2-character escape sequence backslash-n.)
+        assert "wise\\nhypatia" in out
+        parsed = json.loads(out)
+        assert parsed[0]["name"] == "wise\nhypatia"
 
 
 class TestDumpNameSanitization:
@@ -246,13 +295,15 @@ class TestFormatStatusSanitization:
         out = format_status(f"running{RLO}foo", force_color=True)
         assert RLO not in out
 
-    def test_known_token_is_unmodified_when_no_color(self) -> None:
-        # When color is disabled, known tokens pass through verbatim
-        # -- vocabulary constraint is the proof that no sanitization
-        # is needed.
-        import os
-
-        os.environ.pop("NO_COLOR", None)
-        buf = io.StringIO()
+    def test_known_token_is_unmodified_on_non_tty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On non-TTY, known vocabulary tokens pass through verbatim;
+        the vocabulary constraint is the proof that sanitization is
+        unnecessary on this code path. Use `monkeypatch` for env
+        isolation (#507 iter-3 S5).
+        """
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        buf = io.StringIO()  # not a TTY
         out = format_status("running", stream=buf)
         assert out == "running"
