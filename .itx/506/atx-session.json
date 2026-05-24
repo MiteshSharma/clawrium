@@ -1,0 +1,15 @@
+{
+  "session_id_iter_1": "217d1015-59e0-434b-ac89-3eb09ec8e346",
+  "task_id_iter_1": "27907d34-c29b-4e61-8082-fdb6086c83d0",
+  "session_id_iter_2": "6daef740-3880-4412-b715-bedfb3190251",
+  "task_id_iter_2": "a21bb380-67b9-44ba-b2c2-d6718c7ea4db",
+  "transport": "cli",
+  "commit_sha": "bfc0b4dc1299fa5af8a01afa3bb24072a6cabe6f",
+  "iteration": 2,
+  "last_rating": 4,
+  "last_blockers": [],
+  "remaining_warnings": ["W4-partial-iter2-addendum (fixed in iter2-cleanup commit)", "W-new-1-B4-state-prose (fixed)", "W-new-2-bare-logs-baseline (deferred to Bundle 5 PR per ATX recommendation)"],
+  "merge_eligible": true,
+  "started_at": "2026-05-24T03:24:13Z",
+  "updated_at": "2026-05-24T04:22:01Z"
+}
