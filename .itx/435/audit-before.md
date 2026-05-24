@@ -37,6 +37,54 @@ installed for its lifecycle pass, same teardown of `audit-*` only) so the
 two artifacts diff cleanly. See "Callouts" in the bundle PR for the
 documented decision.
 
+### Spec items 3, 7, 8 — intentionally unmet (regression baseline preserved instead)
+
+The issue's Definition of Done lists three items this capture does
+**not** satisfy literally; each is unmet on purpose:
+
+- **Item 3 (`clm agent ps` shows one of each agent type, all running).**
+  The post-lifecycle `agent ps` shows nine agents (six pre-existing +
+  three audit-*). All three audit types are present, but `audit-hermes`
+  was captured as `ready (stopped)` and `audit-openclaw` never
+  successfully onboarded (see "Known defects" below). All three agent
+  types ARE represented in `running` state via the pre-existing fleet
+  (`espresso`/hermes, `wolf-i`/openclaw, `clawrium-d01`/zeroclaw etc.).
+  Bundle 5 must reproduce these conditions for a clean diff.
+- **Item 7 (teardown verified, empty `agent ps`).** Only the three
+  audit-* agents are removed. The pre-existing six are preserved by
+  design.
+- **Item 8 (`clm host ps wolf-i` shows no agents at end of capture).**
+  Same reason as item 7. Post-teardown `clm host ps wolf-i` shows
+  the six pre-existing agents intact.
+
+### Known v26.5.2 defects surfaced by this capture (frozen as baseline)
+
+These behaviors are real bugs in `clm 26.5.2`. They are captured
+verbatim in the relevant sections below and called out inline. The
+diff against `audit-after.md` will validate whether Bundle 5 fixes or
+preserves each:
+
+- **`clm agent secret list <a>` crashes** with `ManifestNotFoundError`
+  for every agent — root cause traced to `secret.py:130` passing the
+  instance name where a manifest type is expected.
+- **`clm agent logs <a> --tail N` rejects `--tail`** (exit 2) — the
+  `logs` subcommand is `[Not yet implemented]`; `--tail` is the
+  documented target form for post-#435.
+- **`clm agent configure audit-openclaw --yes` fails at the provider
+  assignment step** — the providers list IS presented, but the
+  subsequent sync-to-agent call returns the bare string
+  `Configure playbook failed: failed` with no further diagnosis. The
+  `--yes` path therefore never persists a `provider_id` and onboarding
+  remains in `state=providers`.
+- **`clm agent sync <a>` exits 0 even on an unconfigured agent**
+  (audit-openclaw), while `start` and `restart` correctly exit 1 with
+  "onboarding incomplete" — state-machine asymmetry.
+- **`clm agent open <a>` does not exist** in v26.5.2 (exits with
+  `No such command 'open'`). The web-UI resolver in
+  `src/clawrium/core/web_ui.py` is reachable only through the GUI in
+  this baseline. Bundle 5 should diff against this baseline to confirm
+  the new `clawctl agent open` entrypoint.
+
 ---
 
 ## Header
@@ -109,8 +157,45 @@ NO_COLOR=1 TERM=dumb COLUMNS=140 bash -c "<command>" 2>&1
 ```
 
 This produces ANSI-free output at a consistent 140-column width. Bundle 5's
-`audit-after.md` MUST use the same conventions so the two files diff
-line-for-line.
+`audit-after.md` MUST use the same conventions.
+
+### Diff scope — what is line-for-line vs what is not
+
+The two files diff line-for-line **only** for content that does not embed
+volatile system state. The following classes of output are intentionally
+expected to differ between runs and must NOT be flagged as regressions:
+
+- **Ansible task JSON output** (every `clm agent install`, and any
+  lifecycle command whose transcript surfaces raw Ansible task results).
+  These blocks contain dozens of inherently volatile fields:
+  `delta`/`start`/`end` wall-clock timestamps, `cache_update_time`
+  epochs, SHA1/MD5 checksums, dynamically generated `/home/xclm/.ansible/tmp/...`
+  paths, async job IDs, UIDs/GIDs, and (for openclaw install) a ~200-field
+  systemd unit property dump (`ActiveEnterTimestamp`, `ExecMainPID`,
+  `InvocationID`, `MemoryPeak`, etc.). Diff at the task-name level, not
+  the raw-JSON level.
+- **Dynamic ports** in `clm agent ps` / `clm host ps` tables. clm
+  allocates per-instance ports in `40000..46999` for zeroclaw/openclaw
+  and `45000..46999` for hermes dashboards. Expect distinct values
+  every run.
+- **`Last Seen` timestamp** in `clm host ps wolf-i` — moves forward
+  every time clm touches the host.
+- **`Added`/`Installed` timestamps and onboarding `completed_at`**
+  fields embedded in CLI output — they reflect this capture's wall
+  clock, not v26.5.2 behavior.
+- **Device IDs, gateway tokens, private keys, pairing codes** — these
+  are regenerated on every fresh install and rotated on
+  configure/sync/restart.
+- **ANSI escape codes inside hermes installer subprocess output.**
+  Even though the capture helper sets `NO_COLOR=1`, the hermes
+  installer (uv/pip subprocess on the remote) re-introduces colour
+  codes that pass through Ansible's `stdout` field unmodified. Expect
+  identical-looking residual ANSI in `audit-after.md`.
+
+Tooling guidance: when diffing the two audits, exclude or normalize the
+above fields (a `sed` strip of the obvious volatile patterns is
+sufficient — there is no need for a custom diff tool). The diff that
+remains IS the regression contract.
 
 ## Read-only command transcripts (as-found fleet)
 
@@ -927,7 +1012,7 @@ commands (`secret list`, `memory show`, `integration list`, `skill list`,
 
 ### audit-zeroclaw (configure + start)
 
-### `clm agent configure audit-zeroclaw --yes`
+#### `clm agent configure audit-zeroclaw --yes`
 
 ```console
 $ clm agent configure audit-zeroclaw --yes
@@ -1001,7 +1086,7 @@ Run 'clm agent start audit-zeroclaw' to start your agent.
 ```
 Exit: `0`
 
-### `clm agent start audit-zeroclaw`
+#### `clm agent start audit-zeroclaw`
 
 ```console
 $ clm agent start audit-zeroclaw
@@ -1021,7 +1106,7 @@ Exit: `0`
 
 ### audit-hermes (configure + start)
 
-### `clm agent configure audit-hermes --yes`
+#### `clm agent configure audit-hermes --yes`
 
 ```console
 $ clm agent configure audit-hermes --yes
@@ -1098,7 +1183,7 @@ Run 'clm agent start audit-hermes' to start your agent.
 ```
 Exit: `0`
 
-### `clm agent start audit-hermes`
+#### `clm agent start audit-hermes`
 
 ```console
 $ clm agent start audit-hermes
@@ -1114,7 +1199,7 @@ Exit: `0`
 
 ### audit-openclaw (configure + start)
 
-### `clm agent configure audit-openclaw --yes`
+#### `clm agent configure audit-openclaw --yes`
 
 ```console
 $ clm agent configure audit-openclaw --yes
@@ -1149,15 +1234,22 @@ Onboarding failed at stage: providers
 Exit: `1`
 
 
-> **Note:** `audit-openclaw configure --yes` fails on this fleet with no
-> default provider auto-selected. The remaining lifecycle commands below
-> are still run sequentially to capture their verbatim behavior against
-> an unconfigured agent — this is intentional baseline data. See
-> Callouts on the PR for the documented decision.
+> **Known bug (preserved as baseline):** `audit-openclaw configure --yes`
+> fails at the provider assignment step. The providers list IS
+> presented in the transcript, but the subsequent "Syncing config to
+> agent..." call returns the bare string
+> `Configure playbook failed: failed` with no further diagnosis. The
+> `--yes` path therefore never persists a `provider_id`, leaving
+> `onboarding.state == providers`. As a side effect, the remaining
+> lifecycle commands below operate against an unconfigured agent —
+> `start` and `restart` correctly exit 1 with "onboarding incomplete",
+> but `sync` exits 0 (state-machine asymmetry, surfaced as a separate
+> baseline finding). The transcripts are still captured sequentially
+> as intentional baseline data — see Callouts on the PR for the
+> documented decision.
 
-#### audit-openclaw: `start` (against unconfigured agent)
 
-### `clm agent start audit-openclaw`
+#### `clm agent start audit-openclaw`
 
 ```console
 $ clm agent start audit-openclaw
@@ -1181,9 +1273,8 @@ To force start anyway (not recommended):
 Exit: `1`
 
 
-#### audit-openclaw: `sync`
 
-### `clm agent sync audit-openclaw`
+#### `clm agent sync audit-openclaw`
 
 ```console
 $ clm agent sync audit-openclaw
@@ -1201,9 +1292,8 @@ Syncing agent: audit-openclaw on wolf-i
 Exit: `0`
 
 
-#### audit-openclaw: `stop`
 
-### `clm agent stop audit-openclaw`
+#### `clm agent stop audit-openclaw`
 
 ```console
 $ clm agent stop audit-openclaw
@@ -1216,9 +1306,8 @@ Stopping agent: audit-openclaw on wolf-i
 Exit: `0`
 
 
-#### audit-openclaw: `restart`
 
-### `clm agent restart audit-openclaw`
+#### `clm agent restart audit-openclaw`
 
 ```console
 $ clm agent restart audit-openclaw
@@ -1236,9 +1325,8 @@ Exit: `1`
 ### audit-zeroclaw: sync / stop / restart
 
 
-#### audit-zeroclaw: `sync`
 
-### `clm agent sync audit-zeroclaw`
+#### `clm agent sync audit-zeroclaw`
 
 ```console
 $ clm agent sync audit-zeroclaw
@@ -1259,9 +1347,8 @@ Syncing agent: audit-zeroclaw on wolf-i
 Exit: `0`
 
 
-#### audit-zeroclaw: `stop`
 
-### `clm agent stop audit-zeroclaw`
+#### `clm agent stop audit-zeroclaw`
 
 ```console
 $ clm agent stop audit-zeroclaw
@@ -1274,9 +1361,8 @@ Stopping agent: audit-zeroclaw on wolf-i
 Exit: `0`
 
 
-#### audit-zeroclaw: `restart`
 
-### `clm agent restart audit-zeroclaw`
+#### `clm agent restart audit-zeroclaw`
 
 ```console
 $ clm agent restart audit-zeroclaw
@@ -1301,9 +1387,8 @@ Exit: `0`
 ### audit-hermes: sync / stop / restart
 
 
-#### audit-hermes: `sync`
 
-### `clm agent sync audit-hermes`
+#### `clm agent sync audit-hermes`
 
 ```console
 $ clm agent sync audit-hermes
@@ -1322,9 +1407,8 @@ Syncing agent: audit-hermes on wolf-i
 Exit: `0`
 
 
-#### audit-hermes: `stop`
 
-### `clm agent stop audit-hermes`
+#### `clm agent stop audit-hermes`
 
 ```console
 $ clm agent stop audit-hermes
@@ -1337,9 +1421,8 @@ Stopping agent: audit-hermes on wolf-i
 Exit: `0`
 
 
-#### audit-hermes: `restart`
 
-### `clm agent restart audit-hermes`
+#### `clm agent restart audit-hermes`
 
 ```console
 $ clm agent restart audit-hermes
@@ -1404,9 +1487,24 @@ For each audit-* agent: secret list, memory show, integration list,
 skill list, logs --tail 20. Captured while the agents are in their
 post-lifecycle state.
 
+> **Known bug (preserved as baseline):** `clm agent secret list <a>`
+> crashes with `ManifestNotFoundError: Agent type '<instance-name>'
+> not found in registry` for every agent below. The traceback points
+> at `secret.py:130` where `get_required_secrets(claw_type)` is called
+> with the instance name (`audit-zeroclaw`) instead of the manifest
+> type (`zeroclaw`). Bundle 5 must either show a successful table for
+> the same command (fix landed) or the same crash (carry-forward).
+>
+> **Known bug (preserved as baseline):** `clm agent logs <a> --tail N`
+> rejects `--tail` with `Error: No such option '--tail'` (exit 2) for
+> every agent below. `clm agent logs` itself is `[Not yet implemented]`
+> in v26.5.2 (see `clm agent logs --help` capture in the Iteration 2
+> addendum). Bundle 5 should show either a streaming/tail-N output or
+> a documented-and-implemented usage error.
+
 ### audit-zeroclaw
 
-### `clm agent secret list audit-zeroclaw`
+#### `clm agent secret list audit-zeroclaw`
 
 ```console
 $ clm agent secret list audit-zeroclaw
@@ -1455,7 +1553,7 @@ ManifestNotFoundError: Agent type 'audit-zeroclaw' not found in registry
 ```
 Exit: `1`
 
-### `clm agent memory show audit-zeroclaw`
+#### `clm agent memory show audit-zeroclaw`
 
 ```console
 $ clm agent memory show audit-zeroclaw
@@ -1475,7 +1573,7 @@ Total size: 2.2 KB
 ```
 Exit: `0`
 
-### `clm agent integration list audit-zeroclaw`
+#### `clm agent integration list audit-zeroclaw`
 
 ```console
 $ clm agent integration list audit-zeroclaw
@@ -1487,7 +1585,7 @@ Use 'clm agent integration add <agent> <integration>' to assign integrations
 ```
 Exit: `0`
 
-### `clm agent skill list audit-zeroclaw`
+#### `clm agent skill list audit-zeroclaw`
 
 ```console
 $ clm agent skill list audit-zeroclaw
@@ -1495,7 +1593,7 @@ No skills installed on audit-zeroclaw. Try clm agent skill install audit-zerocla
 ```
 Exit: `0`
 
-### `clm agent logs audit-zeroclaw --tail 20`
+#### `clm agent logs audit-zeroclaw --tail 20`
 
 ```console
 $ clm agent logs audit-zeroclaw --tail 20
@@ -1510,7 +1608,7 @@ Exit: `2`
 
 ### audit-hermes
 
-### `clm agent secret list audit-hermes`
+#### `clm agent secret list audit-hermes`
 
 ```console
 $ clm agent secret list audit-hermes
@@ -1559,7 +1657,7 @@ ManifestNotFoundError: Agent type 'audit-hermes' not found in registry
 ```
 Exit: `1`
 
-### `clm agent memory show audit-hermes`
+#### `clm agent memory show audit-hermes`
 
 ```console
 $ clm agent memory show audit-hermes
@@ -1575,7 +1673,7 @@ Total size: 537 B
 ```
 Exit: `0`
 
-### `clm agent integration list audit-hermes`
+#### `clm agent integration list audit-hermes`
 
 ```console
 $ clm agent integration list audit-hermes
@@ -1587,7 +1685,7 @@ Use 'clm agent integration add <agent> <integration>' to assign integrations
 ```
 Exit: `0`
 
-### `clm agent skill list audit-hermes`
+#### `clm agent skill list audit-hermes`
 
 ```console
 $ clm agent skill list audit-hermes
@@ -1595,7 +1693,7 @@ No skills installed on audit-hermes. Try clm agent skill install audit-hermes cl
 ```
 Exit: `0`
 
-### `clm agent logs audit-hermes --tail 20`
+#### `clm agent logs audit-hermes --tail 20`
 
 ```console
 $ clm agent logs audit-hermes --tail 20
@@ -1610,7 +1708,7 @@ Exit: `2`
 
 ### audit-openclaw
 
-### `clm agent secret list audit-openclaw`
+#### `clm agent secret list audit-openclaw`
 
 ```console
 $ clm agent secret list audit-openclaw
@@ -1659,7 +1757,7 @@ ManifestNotFoundError: Agent type 'audit-openclaw' not found in registry
 ```
 Exit: `1`
 
-### `clm agent memory show audit-openclaw`
+#### `clm agent memory show audit-openclaw`
 
 ```console
 $ clm agent memory show audit-openclaw
@@ -1676,7 +1774,7 @@ Total size: 0 B
 ```
 Exit: `0`
 
-### `clm agent integration list audit-openclaw`
+#### `clm agent integration list audit-openclaw`
 
 ```console
 $ clm agent integration list audit-openclaw
@@ -1688,7 +1786,7 @@ Use 'clm agent integration add <agent> <integration>' to assign integrations
 ```
 Exit: `0`
 
-### `clm agent skill list audit-openclaw`
+#### `clm agent skill list audit-openclaw`
 
 ```console
 $ clm agent skill list audit-openclaw
@@ -1696,7 +1794,7 @@ No skills installed on audit-openclaw. Try clm agent skill install audit-opencla
 ```
 Exit: `0`
 
-### `clm agent logs audit-openclaw --tail 20`
+#### `clm agent logs audit-openclaw --tail 20`
 
 ```console
 $ clm agent logs audit-openclaw --tail 20
@@ -1830,4 +1928,752 @@ Exit: `0`
 ---
 
 **Capture end (UTC):** 2026-05-24T03:42:22Z
+
+
+---
+
+## Iteration 2 addendum (post-ATX-review captures)
+
+Captured during a second pass triggered by ATX review iteration 1
+(rating 2/5). Adds command captures that were missing from the
+original pass and intermediate state snapshots required for diff
+clarity. Audit-* agents were re-installed for this section and
+removed at the end (the post-teardown fleet state shown above
+already reflects the cleanup).
+
+### Help-text captures (S1, S2, W5)
+
+The pre-#435 `clm` top-level and `clm agent` surface, frozen so the
+post-#435 `clawctl` surface diffs against a structural baseline.
+
+### `clm --help`
+
+```console
+$ clm --help
+                                                                                                                                            
+ Usage: clm [OPTIONS] COMMAND [ARGS]...                                                                                                     
+                                                                                                                                            
+ Clawrium - Manage your AI assistant fleet. Use 'clm agent' for agent management.                                                           
+                                                                                                                                            
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --version          Show version and exit                                                                                                 │
+│ --help             Show this message and exit.                                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ init         Initialize Clawrium and check dependencies.                                                                                 │
+│ ps           Quick fleet overview - show agents and hosts status.                                                                        │
+│ chat         Start interactive chat with an installed agent (use `clm ps` to find names).                                                │
+│ snapshot     Backup full system state.                                                                                                   │
+│ tui          Launch the interactive TUI dashboard.                                                                                       │
+│ gui          Launch the local web GUI dashboard.                                                                                         │
+│ agent        Manage AI agents in your fleet                                                                                              │
+│ host         Manage hosts in your fleet (infrastructure management)                                                                      │
+│ provider     Manage inference providers (LLM APIs)                                                                                       │
+│ integration  Manage external service integrations (GitHub, Atlassian, etc.)                                                              │
+│ skill        Browse the clawrium-managed skills catalog.                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+```
+Exit: `0`
+
+### `clm agent --help`
+
+```console
+$ clm agent --help
+                                                                                                                                            
+ Usage: clm agent [OPTIONS] COMMAND [ARGS]...                                                                                               
+                                                                                                                                            
+ Manage AI agents in your fleet                                                                                                             
+                                                                                                                                            
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ install      Install an agent on a host.                                                                                                 │
+│ ps           Show status of agents across hosts.                                                                                         │
+│ configure    Configure agent settings through an interactive wizard.                                                                     │
+│ remove       Remove an agent from a host.                                                                                                │
+│ start        Start an agent.                                                                                                             │
+│ stop         Stop an agent.                                                                                                              │
+│ restart      Restart an agent.                                                                                                           │
+│ sync         Sync configuration and optionally restart an agent.                                                                         │
+│ logs         View agent logs.                                                                                                            │
+│ secret       Manage secrets for agents                                                                                                   │
+│ memory       Inspect and manage memory for memory-capable agents                                                                         │
+│ integration  Manage integrations assigned to agents                                                                                      │
+│ registry     Browse available agent types                                                                                                │
+│ skill        Manage skills installed on an agent.                                                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+```
+Exit: `0`
+
+### `clm agent logs --help`
+
+```console
+$ clm agent logs --help
+                                                                                                                                            
+ Usage: clm agent logs [OPTIONS] CLAW_NAME                                                                                                  
+                                                                                                                                            
+ View agent logs.                                                                                                                           
+                                                                                                                                            
+ [Not yet implemented]                                                                                                                      
+                                                                                                                                            
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ *    claw_name      TEXT  Agent name to view logs for [required]                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+```
+Exit: `0`
+
+### `clm integration --help`
+
+```console
+$ clm integration --help
+                                                                                                                                            
+ Usage: clm integration [OPTIONS] COMMAND [ARGS]...                                                                                         
+                                                                                                                                            
+ Manage external service integrations (GitHub, Atlassian, etc.)                                                                             
+                                                                                                                                            
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ types        List supported integration types.                                                                                           │
+│ list         List all configured integrations.                                                                                           │
+│ add          Add a new external service integration.                                                                                     │
+│ show         Show details of a configured integration.                                                                                   │
+│ remove       Remove an integration configuration.                                                                                        │
+│ credentials  View or update credentials for an integration.                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+```
+Exit: `0`
+
+### `clm integration show --help`
+
+```console
+$ clm integration show --help
+                                                                                                                                            
+ Usage: clm integration show [OPTIONS] NAME                                                                                                 
+                                                                                                                                            
+ Show details of a configured integration.                                                                                                  
+                                                                                                                                            
+ Examples:                                                                                                                                  
+ clm integration show my-github                                                                                                             
+                                                                                                                                            
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Integration name to show [required]                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+```
+Exit: `0`
+
+### `clm integration credentials --help`
+
+```console
+$ clm integration credentials --help
+                                                                                                                                            
+ Usage: clm integration credentials [OPTIONS] NAME                                                                                          
+                                                                                                                                            
+ View or update credentials for an integration.                                                                                             
+                                                                                                                                            
+ Without --update, shows current credential status (masked).                                                                                
+ With --update, prompts for new values for all credentials.                                                                                 
+                                                                                                                                            
+ Examples:                                                                                                                                  
+     clm integration credentials my-github                                                                                                  
+     clm integration credentials my-github --update                                                                                         
+                                                                                                                                            
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Integration name [required]                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --update  -u        Update credentials (will prompt for all values)                                                                      │
+│ --help              Show this message and exit.                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+```
+Exit: `0`
+
+### `clm agent secret list --help`
+
+```console
+$ clm agent secret list --help
+                                                                                                                                            
+ Usage: clm agent secret list [OPTIONS] CLAW_NAME                                                                                           
+                                                                                                                                            
+ List secrets for an agent.                                                                                                                 
+                                                                                                                                            
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ *    claw_name      TEXT  Agent instance name [required]                                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+```
+Exit: `0`
+
+
+### Re-install transcripts (iter2)
+
+Iter2 reinstall — same install path as iter1, captured for completeness
+and to anchor the W8 intermediate-state ps below.
+
+### `clm agent install --type zeroclaw --host wolf-i --name audit-zeroclaw --yes`
+
+```console
+$ clm agent install --type zeroclaw --host wolf-i --name audit-zeroclaw --yes
+╭────────────────────────────────────────────────────────── Installation Summary ──────────────────────────────────────────────────────────╮
+│ Agent Type: zeroclaw                                                                                                                     │
+│ Version: 0.7.5                                                                                                                           │
+│ Host: wolf-i                                                                                                                             │
+│ Architecture: x86_64                                                                                                                     │
+│ Memory: 15.5GB                                                                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+No config file found; using defaults
+
+PLAY [all] *********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'wolf.tailf7742d.ts.net' is using the discovered Python interpreter at '/usr/bin/python3.12', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.20/reference_appendices/interpreter_discovery.html for more information.
+ok: [wolf.tailf7742d.ts.net]
+
+TASK [Kill stale apt lock holders] *********************************************
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/apt/lists/lock) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/apt/lists/lock"], "delta": "0:00:00.069836", "end": "2026-05-23 21:00:50.399477", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/apt/lists/lock", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:00:50.329641", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/dpkg/lock) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/dpkg/lock"], "delta": "0:00:00.066847", "end": "2026-05-23 21:00:50.882029", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/dpkg/lock", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:00:50.815182", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/dpkg/lock-frontend) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/dpkg/lock-frontend"], "delta": "0:00:00.066087", "end": "2026-05-23 21:00:51.392070", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/dpkg/lock-frontend", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:00:51.325983", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+
+TASK [Update apt cache] ********************************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+TASK [Check if node is installed] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "cmd": ["node", "--version"], "delta": "0:00:00.007244", "end": "2026-05-23 21:00:52.870434", "failed_when_result": false, "msg": "", "rc": 0, "start": "2026-05-23 21:00:52.863190", "stderr": "", "stderr_lines": [], "stdout": "v22.22.1", "stdout_lines": ["v22.22.1"]}
+
+TASK [Install required packages for NodeSource repository] *********************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Create keyrings directory] ***********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Download NodeSource GPG key] *********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Add NodeSource repository for Node.js 20] ********************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Install Node.js] *********************************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Install build-essential] *************************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+TASK [Install git and GitHub CLI] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+PLAY RECAP *********************************************************************
+wolf.tailf7742d.ts.net     : ok=6    changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0   
+No config file found; using defaults
+
+PLAY [all] *********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'wolf.tailf7742d.ts.net' is using the discovered Python interpreter at '/usr/bin/python3.12', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.20/reference_appendices/interpreter_discovery.html for more information.
+ok: [wolf.tailf7742d.ts.net]
+
+TASK [Validate architecture is supported] **************************************
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "ansible_architecture not in supported_architectures", "skip_reason": "Conditional result was False"}
+
+TASK [Normalize target ZeroClaw version (strip leading 'v')] *******************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"zeroclaw_target_version": "0.7.5"}, "changed": false}
+
+TASK [Resolve ZeroClaw release tag (always 'v'-prefixed)] **********************
+[DEPRECATION WARNING]: INJECT_FACTS_AS_VARS default to `True` is deprecated, top-level facts will not be auto injected after the change. This feature will be removed from ansible-core version 2.24.
+Origin: /home/devashish/.local/share/uv/tools/clawrium/lib/python3.13/site-packages/clawrium/platform/registry/zeroclaw/playbooks/install.yaml:14:19
+
+12       - aarch64
+13       - x86_64
+14     release_arch: "{{ arch_map[ansible_architecture] }}"
+                     ^ column 19
+
+Use `ansible_facts["fact_name"]` (no `ansible_` prefix) instead.
+
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"release_url": "https://github.com/zeroclaw-labs/zeroclaw/releases/download/v0.7.5/zeroclaw-x86_64-unknown-linux-gnu.tar.gz", "zeroclaw_target_tag": "v0.7.5"}, "changed": false}
+
+TASK [Create agent user] *******************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "comment": "", "create_home": true, "group": 1012, "home": "/home/audit-zeroclaw", "name": "audit-zeroclaw", "shell": "/usr/sbin/nologin", "state": "present", "system": false, "uid": 1012}
+
+TASK [Create bin directory] ****************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1012, "group": "audit-zeroclaw", "mode": "0755", "owner": "audit-zeroclaw", "path": "/home/audit-zeroclaw/bin", "size": 4096, "state": "directory", "uid": 1012}
+
+TASK [Discover zeroclaw binary at agent's install path] ************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "stat": {"exists": false}}
+
+TASK [Get installed zeroclaw version] ******************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "zeroclaw_binary_stat.stat.exists", "skip_reason": "Conditional result was False"}
+
+TASK [Parse installed zeroclaw version] ****************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "(zeroclaw_version_check.rc | default(1)) == 0", "skip_reason": "Conditional result was False"}
+
+TASK [Set install skip condition] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"zeroclaw_already_installed": false}, "changed": false}
+
+TASK [Mark install as skipped when already installed] **************************
+skipping: [wolf.tailf7742d.ts.net] => {"false_condition": "zeroclaw_already_installed"}
+
+TASK [Note that --force was supplied (overriding skip)] ************************
+skipping: [wolf.tailf7742d.ts.net] => {"false_condition": "zeroclaw_binary_stat.stat.exists"}
+
+TASK [Download zeroclaw binary] ************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum_dest": null, "checksum_src": "bb688658508de72a086304d9213bca6d5ffd9a2b", "dest": "/tmp/zeroclaw-x86_64-unknown-linux-gnu.tar.gz", "elapsed": 1, "gid": 0, "group": "root", "md5sum": "c3a14c3247973dd891f7bce18d1aca73", "mode": "0644", "msg": "OK (15812349 bytes)", "owner": "root", "size": 15812349, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595260.067752-1519474-115372506749734/tmpvzw77__d", "state": "file", "status_code": 200, "uid": 0, "url": "https://github.com/zeroclaw-labs/zeroclaw/releases/download/v0.7.5/zeroclaw-x86_64-unknown-linux-gnu.tar.gz"}
+
+TASK [Extract zeroclaw binary] *************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "dest": "/home/audit-zeroclaw/bin", "extract_results": {"cmd": ["/usr/bin/tar", "--extract", "-C", "/home/audit-zeroclaw/bin", "-z", "--owner=audit-zeroclaw", "--group=audit-zeroclaw", "-f", "/tmp/zeroclaw-x86_64-unknown-linux-gnu.tar.gz"], "err": "", "out": "", "rc": 0}, "gid": 1012, "group": "audit-zeroclaw", "handler": "TgzArchive", "mode": "0755", "owner": "audit-zeroclaw", "size": 4096, "src": "/tmp/zeroclaw-x86_64-unknown-linux-gnu.tar.gz", "state": "directory", "uid": 1012}
+
+TASK [Cleanup tarball] *********************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "path": "/tmp/zeroclaw-x86_64-unknown-linux-gnu.tar.gz", "state": "absent"}
+
+TASK [Create zeroclaw config directory] ****************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1012, "group": "audit-zeroclaw", "mode": "0700", "owner": "audit-zeroclaw", "path": "/home/audit-zeroclaw/.zeroclaw", "size": 4096, "state": "directory", "uid": 1012}
+
+TASK [Scaffold workspace directory] ********************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1012, "group": "audit-zeroclaw", "mode": "0700", "owner": "audit-zeroclaw", "path": "/home/audit-zeroclaw/.zeroclaw/workspace", "size": 4096, "state": "directory", "uid": 1012}
+
+TASK [Scaffold state directory] ************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1012, "group": "audit-zeroclaw", "mode": "0700", "owner": "audit-zeroclaw", "path": "/home/audit-zeroclaw/.zeroclaw/state", "size": 4096, "state": "directory", "uid": 1012}
+
+TASK [Create systemd service file (disabled, not started)] *********************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum": "8cdb4415394832fae557239a6717258fd9e19a56", "dest": "/etc/systemd/system/zeroclaw-audit-zeroclaw.service", "gid": 0, "group": "root", "md5sum": "0eec36b92a82858fdf84dbd6ee580130", "mode": "0644", "owner": "root", "size": 291, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595266.354721-1519683-222476361120786/.source.service", "state": "file", "uid": 0}
+
+TASK [Reload systemd to pick up unit file] *************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "name": null, "status": {}}
+
+TASK [Display install success] *************************************************
+ok: [wolf.tailf7742d.ts.net] => {
+    "msg": "ZeroClaw 0.7.5 installed for agent 'audit-zeroclaw'.\nService unit zeroclaw-audit-zeroclaw.service dropped (disabled, stopped).\nRun 'clm agent configure audit-zeroclaw' to render config.toml and start the daemon.\n"
+}
+
+PLAY RECAP *********************************************************************
+wolf.tailf7742d.ts.net     : ok=16   changed=9    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0   
+
+Success! zeroclaw v0.7.5 installed as 'audit-zeroclaw' on wolf-i
+```
+Exit: `0`
+
+### `clm agent install --type hermes --host wolf-i --name audit-hermes --yes`
+
+```console
+$ clm agent install --type hermes --host wolf-i --name audit-hermes --yes
+╭────────────────────────────────────────────────────────── Installation Summary ──────────────────────────────────────────────────────────╮
+│ Agent Type: hermes                                                                                                                       │
+│ Version: 2026.5.7                                                                                                                        │
+│ Host: wolf-i                                                                                                                             │
+│ Architecture: x86_64                                                                                                                     │
+│ Memory: 15.5GB                                                                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+No config file found; using defaults
+
+PLAY [all] *********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'wolf.tailf7742d.ts.net' is using the discovered Python interpreter at '/usr/bin/python3.12', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.20/reference_appendices/interpreter_discovery.html for more information.
+ok: [wolf.tailf7742d.ts.net]
+
+TASK [Kill stale apt lock holders] *********************************************
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/apt/lists/lock) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/apt/lists/lock"], "delta": "0:00:00.069266", "end": "2026-05-23 21:01:11.995970", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/apt/lists/lock", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:01:11.926704", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/dpkg/lock) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/dpkg/lock"], "delta": "0:00:00.070830", "end": "2026-05-23 21:01:12.503934", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/dpkg/lock", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:01:12.433104", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/dpkg/lock-frontend) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/dpkg/lock-frontend"], "delta": "0:00:00.067509", "end": "2026-05-23 21:01:13.044843", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/dpkg/lock-frontend", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:01:12.977334", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+
+TASK [Update apt cache] ********************************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+TASK [Check if node is installed] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "cmd": ["node", "--version"], "delta": "0:00:00.006575", "end": "2026-05-23 21:01:14.482159", "failed_when_result": false, "msg": "", "rc": 0, "start": "2026-05-23 21:01:14.475584", "stderr": "", "stderr_lines": [], "stdout": "v22.22.1", "stdout_lines": ["v22.22.1"]}
+
+TASK [Install required packages for NodeSource repository] *********************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Create keyrings directory] ***********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Download NodeSource GPG key] *********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Add NodeSource repository for Node.js 20] ********************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Install Node.js] *********************************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Install build-essential] *************************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+TASK [Install git and GitHub CLI] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+PLAY RECAP *********************************************************************
+wolf.tailf7742d.ts.net     : ok=6    changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0   
+No config file found; using defaults
+
+PLAY [all] *********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'wolf.tailf7742d.ts.net' is using the discovered Python interpreter at '/usr/bin/python3.12', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.20/reference_appendices/interpreter_discovery.html for more information.
+ok: [wolf.tailf7742d.ts.net]
+
+TASK [Normalize target Hermes version (strip leading 'v')] *********************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"hermes_target_version": "2026.5.7"}, "changed": false}
+
+TASK [Resolve Hermes git tag for installer (always 'v'-prefixed)] **************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"hermes_target_branch": "v2026.5.7"}, "changed": false}
+
+TASK [Create agent user] *******************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "comment": "", "create_home": true, "group": 1013, "home": "/home/audit-hermes", "name": "audit-hermes", "shell": "/usr/sbin/nologin", "state": "present", "system": false, "uid": 1013}
+
+TASK [Install hermes system dependencies (ripgrep, ffmpeg)] ********************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+TASK [Discover hermes binary at agent's user-local install path] ***************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "stat": {"exists": false}}
+
+TASK [Get installed hermes version] ********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "hermes_binary_stat.stat.exists", "skip_reason": "Conditional result was False"}
+
+TASK [Parse installed hermes version] ******************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "(hermes_version_check.rc | default(1)) == 0", "skip_reason": "Conditional result was False"}
+
+TASK [Set install skip condition] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"hermes_already_installed": false}, "changed": false}
+
+TASK [Mark install as skipped when already installed] **************************
+skipping: [wolf.tailf7742d.ts.net] => {"false_condition": "hermes_already_installed"}
+
+TASK [Note that --force was supplied (overriding skip)] ************************
+skipping: [wolf.tailf7742d.ts.net] => {"false_condition": "hermes_binary_stat.stat.exists"}
+
+TASK [Remove existing Hermes binary symlink (forced reinstall)] ****************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "force_install | default(false) | bool", "skip_reason": "Conditional result was False"}
+
+TASK [Download Hermes installer script] ****************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum_dest": null, "checksum_src": "da96e86998cf4ededd3fe30be9f3b002a2f866fe", "dest": "/home/audit-hermes/hermes-install.sh", "elapsed": 0, "gid": 1013, "group": "audit-hermes", "md5sum": "857999f68cac4441a6adaebf9b5a54f2", "mode": "0700", "msg": "OK (62237 bytes)", "owner": "audit-hermes", "size": 62237, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595282.136234-1520276-239495228897294/tmp0w8ppntq", "state": "file", "status_code": 200, "uid": 1013, "url": "https://raw.githubusercontent.com/NousResearch/hermes-agent/v2026.5.7/scripts/install.sh"}
+
+TASK [Install Hermes runtime (non-interactive)] ********************************
+ASYNC POLL on wolf.tailf7742d.ts.net: jid=j37785903598.513601 started=True finished=False
+ASYNC POLL on wolf.tailf7742d.ts.net: jid=j37785903598.513601 started=True finished=False
+ASYNC POLL on wolf.tailf7742d.ts.net: jid=j37785903598.513601 started=True finished=False
+ASYNC OK on wolf.tailf7742d.ts.net: jid=j37785903598.513601
+[WARNING]: Module remote_tmp /home/audit-hermes/.ansible/tmp did not exist and was created with a mode of 0700, this may cause issues when running as another user. To avoid this, create the remote_tmp dir with the correct permissions manually
+changed: [wolf.tailf7742d.ts.net] => {"ansible_job_id": "j37785903598.513601", "changed": true, "cmd": ["/bin/bash", "/home/audit-hermes/hermes-install.sh", "--skip-setup", "--branch", "v2026.5.7", "--hermes-home", "/home/audit-hermes/.hermes", "--dir", "/home/audit-hermes/.hermes/code"], "delta": "0:01:36.867077", "end": "2026-05-23 21:03:00.762972", "finished": true, "msg": "", "rc": 0, "results_file": "/home/audit-hermes/.ansible_async/j37785903598.513601", "start": "2026-05-23 21:01:23.895895", "started": true, "stderr": "Downloading cpython-3.11.15-linux-x86_64-gnu (download) (29.8MiB)\n Downloaded cpython-3.11.15-linux-x86_64-gnu (download)\nInstalled Python 3.11.15 in 2.02s\n + cpython-3.11.15-linux-x86_64-gnu (python3.11)\nwarning: `/home/audit-hermes/.local/bin` is not on your PATH. To use installed Python executables, add the directory to your PATH.\nCloning into '/home/audit-hermes/.hermes/code'...\nNote: switching to '498bfc7bc12a937621b4215312049b1000726df3'.\n\nYou are in 'detached HEAD' state. You can look around, make experimental\nchanges and commit them, and you can discard any commits you make in this\nstate without impacting any branches by switching back to a branch.\n\nIf you want to create a new branch to retain commits you create, you may\ndo so (now or later) by using -c with the switch command. Example:\n\n  git switch -c <new-branch-name>\n\nOr undo this operation with:\n\n  git switch -\n\nTurn off this advice by setting config variable advice.detachedHead to false\n\nUsing CPython 3.11.15\nCreating virtual environment at: venv\n/home/audit-hermes/hermes-install.sh: line 180: /dev/tty: No such device or address\n/home/audit-hermes/hermes-install.sh: line 181: /dev/tty: No such device or address\nsudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper\nsudo: a password is required", "stderr_lines": ["Downloading cpython-3.11.15-linux-x86_64-gnu (download) (29.8MiB)", " Downloaded cpython-3.11.15-linux-x86_64-gnu (download)", "Installed Python 3.11.15 in 2.02s", " + cpython-3.11.15-linux-x86_64-gnu (python3.11)", "warning: `/home/audit-hermes/.local/bin` is not on your PATH. To use installed Python executables, add the directory to your PATH.", "Cloning into '/home/audit-hermes/.hermes/code'...", "Note: switching to '498bfc7bc12a937621b4215312049b1000726df3'.", "", "You are in 'detached HEAD' state. You can look around, make experimental", "changes and commit them, and you can discard any commits you make in this", "state without impacting any branches by switching back to a branch.", "", "If you want to create a new branch to retain commits you create, you may", "do so (now or later) by using -c with the switch command. Example:", "", "  git switch -c <new-branch-name>", "", "Or undo this operation with:", "", "  git switch -", "", "Turn off this advice by setting config variable advice.detachedHead to false", "", "Using CPython 3.11.15", "Creating virtual environment at: venv", "/home/audit-hermes/hermes-install.sh: line 180: /dev/tty: No such device or address", "/home/audit-hermes/hermes-install.sh: line 181: /dev/tty: No such device or address", "sudo: a terminal is required to read the password; either use the -S option to read from standard input or configure an askpass helper", "sudo: a password is required"], "stdout": "\n\u001b[0;35m\u001b[1m\n┌─────────────────────────────────────────────────────────┐\n│             ⚕ Hermes Agent Installer                    │\n├─────────────────────────────────────────────────────────┤\n│  An open source AI agent by Nous Research.              │\n└─────────────────────────────────────────────────────────┘\n\u001b[0m\n\u001b[0;32m✓\u001b[0m Detected: linux (ubuntu)\n\u001b[0;36m→\u001b[0m Install directory: /home/audit-hermes/.hermes/code (explicit)\n\u001b[0;36m→\u001b[0m Checking for uv package manager...\n\u001b[0;32m✓\u001b[0m uv found (uv 0.10.10)\n\u001b[0;36m→\u001b[0m Checking Python 3.11...\n\u001b[0;36m→\u001b[0m Python 3.11 not found, installing via uv...\n\u001b[0;32m✓\u001b[0m Python installed: Python 3.11.15\n\u001b[0;36m→\u001b[0m Checking Git...\n\u001b[0;32m✓\u001b[0m Git 2.43.0 found\n\u001b[0;36m→\u001b[0m Checking Node.js (for browser tools)...\n\u001b[0;32m✓\u001b[0m Node.js v22.22.1 found\n\u001b[0;36m→\u001b[0m Checking ripgrep (fast file search)...\n\u001b[0;32m✓\u001b[0m ripgrep 14.1.0 found\n\u001b[0;36m→\u001b[0m Checking ffmpeg (TTS voice messages)...\n\u001b[0;32m✓\u001b[0m ffmpeg 6.1.1-3ubuntu5 found\n\u001b[0;36m→\u001b[0m Installing to /home/audit-hermes/.hermes/code...\n\u001b[0;36m→\u001b[0m Trying SSH clone...\n\u001b[0;36m→\u001b[0m SSH failed, trying HTTPS...\n\u001b[0;32m✓\u001b[0m Cloned via HTTPS\n\u001b[0;32m✓\u001b[0m Repository ready\n\u001b[0;36m→\u001b[0m Creating virtual environment with Python 3.11...\n\u001b[0;32m✓\u001b[0m Virtual environment ready (Python 3.11)\n\u001b[0;36m→\u001b[0m Installing dependencies...\n\u001b[0;36m→\u001b[0m Some build tools may be needed for Python packages...\n\u001b[0;36m→\u001b[0m sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt.\n\u001b[0;36m→\u001b[0m Hermes Agent itself does not require or retain root access.\n\u001b[0;32m✓\u001b[0m Build tools installed\n\u001b[0;32m✓\u001b[0m Main package installed\n\u001b[0;32m✓\u001b[0m All dependencies installed\n\u001b[0;36m→\u001b[0m Installing Node.js dependencies (browser tools)...\n✅ Browser tools ready. Run: python run_agent.py --help\n\u001b[0;32m✓\u001b[0m Node.js dependencies installed\n\u001b[0;36m→\u001b[0m Installing browser engine (Playwright Chromium)...\n\u001b[0;36m→\u001b[0m Playwright may request sudo to install browser system dependencies (shared libraries).\n\u001b[0;36m→\u001b[0m This is standard Playwright setup — Hermes itself does not require root access.\nInstalling dependencies...\nSwitching to root user to install dependencies...\nFailed to install browsers\nError: Installation process exited with code: 1\n\u001b[0;33m⚠\u001b[0m Playwright browser installation failed — browser tools will not work.\n\u001b[0;33m⚠\u001b[0m Try running manually: cd /home/audit-hermes/.hermes/code && npx playwright install --with-deps chromium\n\u001b[0;32m✓\u001b[0m Browser engine setup complete\n\u001b[0;36m→\u001b[0m Installing TUI dependencies...\n\u001b[0;32m✓\u001b[0m TUI dependencies installed\n\u001b[0;36m→\u001b[0m Setting up hermes command...\n\u001b[0;32m✓\u001b[0m Installed hermes launcher → ~/.local/bin/hermes\n\u001b[0;32m✓\u001b[0m Added ~/.local/bin to PATH in /home/audit-hermes/.bashrc\n\u001b[0;32m✓\u001b[0m hermes command ready\n\u001b[0;36m→\u001b[0m Setting up configuration files...\n\u001b[0;32m✓\u001b[0m Created ~/.hermes/.env from template\n\u001b[0;32m✓\u001b[0m Created ~/.hermes/config.yaml from template\n\u001b[0;32m✓\u001b[0m Created ~/.hermes/SOUL.md (edit to customize personality)\n\u001b[0;32m✓\u001b[0m Configuration directory ready: ~/.hermes/\n\u001b[0;36m→\u001b[0m Syncing bundled skills to ~/.hermes/skills/ ...\nSyncing bundled skills into ~/.hermes/skills/ ...\n  + xurl\n  + openhue\n  + youtube-content\n  + gif-search\n  + heartmula\n  + spotify\n  + songsee\n  + notion\n  + powerpoint\n  + linear\n  + maps\n  + google-workspace\n  + nano-pdf\n  + ocr-and-documents\n  + airtable\n  + huggingface-hub\n  + dspy\n  + audiocraft-audio-generation\n  + segment-anything-model\n  + outlines\n  + serving-llms-vllm\n  + obliteratus\n  + llama-cpp\n  + unsloth\n  + axolotl\n  + fine-tuning-with-trl\n  + evaluating-llms-harness\n  + weights-and-biases\n  + apple-notes\n  + findmy\n  + imessage\n  + apple-reminders\n  + polymarket\n  + llm-wiki\n  + arxiv\n  + research-paper-writing\n  + blogwatcher\n  + godmode\n  + jupyter-live-kernel\n  + claude-code\n  + opencode\n  + hermes-agent\n  + codex\n  + himalaya\n  + native-mcp\n  + minecraft-modpack-server\n  + pokemon-player\n  + yuanbao\n  + python-debugpy\n  + writing-plans\n  + systematic-debugging\n  + hermes-agent-skill-authoring\n  + test-driven-development\n  + node-inspect-debugger\n  + requesting-code-review\n  + plan\n  + spike\n  + debugging-hermes-tui-commands\n  + subagent-driven-development\n  + kanban-worker\n  + webhook-subscriptions\n  + kanban-orchestrator\n  + dogfood\n  + github-auth\n  + github-pr-workflow\n  + github-repo-management\n  + github-code-review\n  + codebase-inspection\n  + github-issues\n  + touchdesigner-mcp\n  + popular-web-designs\n  + p5js\n  + comfyui\n  + baoyu-comic\n  + sketch\n  + ideation\n  + claude-design\n  + pixel-art\n  + baoyu-infographic\n  + manim-video\n  + pretext\n  + excalidraw\n  + ascii-video\n  + songwriting-and-ai-music\n  + architecture-diagram\n  + humanizer\n  + ascii-art\n  + design-md\n  + obsidian\n\nDone: 89 new, 0 updated, 0 unchanged. 89 total bundled.\n\u001b[0;32m✓\u001b[0m Skills synced to ~/.hermes/skills/\n\u001b[0;36m→\u001b[0m Skipping setup wizard (--skip-setup)\n\n\u001b[0;32m\u001b[1m\n┌─────────────────────────────────────────────────────────┐\n│              ✓ Installation Complete!                   │\n└─────────────────────────────────────────────────────────┘\n\u001b[0m\n\n\u001b[0;36m\u001b[1m📁 Your files:\u001b[0m\n\n   \u001b[0;33mConfig:\u001b[0m    /home/audit-hermes/.hermes/config.yaml\n   \u001b[0;33mAPI Keys:\u001b[0m  /home/audit-hermes/.hermes/.env\n   \u001b[0;33mData:\u001b[0m      /home/audit-hermes/.hermes/cron/, sessions/, logs/\n   \u001b[0;33mCode:\u001b[0m      /home/audit-hermes/.hermes/code\n\n\u001b[0;36m─────────────────────────────────────────────────────────\u001b[0m\n\n\u001b[0;36m\u001b[1m🚀 Commands:\u001b[0m\n\n   \u001b[0;32mhermes\u001b[0m              Start chatting\n   \u001b[0;32mhermes setup\u001b[0m        Configure API keys & settings\n   \u001b[0;32mhermes config\u001b[0m       View/edit configuration\n   \u001b[0;32mhermes config edit\u001b[0m  Open config in editor\n   \u001b[0;32mhermes gateway install\u001b[0m Install gateway service (messaging + cron)\n   \u001b[0;32mhermes update\u001b[0m       Update to latest version\n\n\u001b[0;36m─────────────────────────────────────────────────────────\u001b[0m\n\n\u001b[0;33m⚡ Reload your shell to use 'hermes' command:\u001b[0m\n\n   source ~/.bashrc   # or ~/.zshrc", "stdout_lines": ["", "\u001b[0;35m\u001b[1m", "┌─────────────────────────────────────────────────────────┐", "│             ⚕ Hermes Agent Installer                    │", "├─────────────────────────────────────────────────────────┤", "│  An open source AI agent by Nous Research.              │", "└─────────────────────────────────────────────────────────┘", "\u001b[0m", "\u001b[0;32m✓\u001b[0m Detected: linux (ubuntu)", "\u001b[0;36m→\u001b[0m Install directory: /home/audit-hermes/.hermes/code (explicit)", "\u001b[0;36m→\u001b[0m Checking for uv package manager...", "\u001b[0;32m✓\u001b[0m uv found (uv 0.10.10)", "\u001b[0;36m→\u001b[0m Checking Python 3.11...", "\u001b[0;36m→\u001b[0m Python 3.11 not found, installing via uv...", "\u001b[0;32m✓\u001b[0m Python installed: Python 3.11.15", "\u001b[0;36m→\u001b[0m Checking Git...", "\u001b[0;32m✓\u001b[0m Git 2.43.0 found", "\u001b[0;36m→\u001b[0m Checking Node.js (for browser tools)...", "\u001b[0;32m✓\u001b[0m Node.js v22.22.1 found", "\u001b[0;36m→\u001b[0m Checking ripgrep (fast file search)...", "\u001b[0;32m✓\u001b[0m ripgrep 14.1.0 found", "\u001b[0;36m→\u001b[0m Checking ffmpeg (TTS voice messages)...", "\u001b[0;32m✓\u001b[0m ffmpeg 6.1.1-3ubuntu5 found", "\u001b[0;36m→\u001b[0m Installing to /home/audit-hermes/.hermes/code...", "\u001b[0;36m→\u001b[0m Trying SSH clone...", "\u001b[0;36m→\u001b[0m SSH failed, trying HTTPS...", "\u001b[0;32m✓\u001b[0m Cloned via HTTPS", "\u001b[0;32m✓\u001b[0m Repository ready", "\u001b[0;36m→\u001b[0m Creating virtual environment with Python 3.11...", "\u001b[0;32m✓\u001b[0m Virtual environment ready (Python 3.11)", "\u001b[0;36m→\u001b[0m Installing dependencies...", "\u001b[0;36m→\u001b[0m Some build tools may be needed for Python packages...", "\u001b[0;36m→\u001b[0m sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt.", "\u001b[0;36m→\u001b[0m Hermes Agent itself does not require or retain root access.", "\u001b[0;32m✓\u001b[0m Build tools installed", "\u001b[0;32m✓\u001b[0m Main package installed", "\u001b[0;32m✓\u001b[0m All dependencies installed", "\u001b[0;36m→\u001b[0m Installing Node.js dependencies (browser tools)...", "✅ Browser tools ready. Run: python run_agent.py --help", "\u001b[0;32m✓\u001b[0m Node.js dependencies installed", "\u001b[0;36m→\u001b[0m Installing browser engine (Playwright Chromium)...", "\u001b[0;36m→\u001b[0m Playwright may request sudo to install browser system dependencies (shared libraries).", "\u001b[0;36m→\u001b[0m This is standard Playwright setup — Hermes itself does not require root access.", "Installing dependencies...", "Switching to root user to install dependencies...", "Failed to install browsers", "Error: Installation process exited with code: 1", "\u001b[0;33m⚠\u001b[0m Playwright browser installation failed — browser tools will not work.", "\u001b[0;33m⚠\u001b[0m Try running manually: cd /home/audit-hermes/.hermes/code && npx playwright install --with-deps chromium", "\u001b[0;32m✓\u001b[0m Browser engine setup complete", "\u001b[0;36m→\u001b[0m Installing TUI dependencies...", "\u001b[0;32m✓\u001b[0m TUI dependencies installed", "\u001b[0;36m→\u001b[0m Setting up hermes command...", "\u001b[0;32m✓\u001b[0m Installed hermes launcher → ~/.local/bin/hermes", "\u001b[0;32m✓\u001b[0m Added ~/.local/bin to PATH in /home/audit-hermes/.bashrc", "\u001b[0;32m✓\u001b[0m hermes command ready", "\u001b[0;36m→\u001b[0m Setting up configuration files...", "\u001b[0;32m✓\u001b[0m Created ~/.hermes/.env from template", "\u001b[0;32m✓\u001b[0m Created ~/.hermes/config.yaml from template", "\u001b[0;32m✓\u001b[0m Created ~/.hermes/SOUL.md (edit to customize personality)", "\u001b[0;32m✓\u001b[0m Configuration directory ready: ~/.hermes/", "\u001b[0;36m→\u001b[0m Syncing bundled skills to ~/.hermes/skills/ ...", "Syncing bundled skills into ~/.hermes/skills/ ...", "  + xurl", "  + openhue", "  + youtube-content", "  + gif-search", "  + heartmula", "  + spotify", "  + songsee", "  + notion", "  + powerpoint", "  + linear", "  + maps", "  + google-workspace", "  + nano-pdf", "  + ocr-and-documents", "  + airtable", "  + huggingface-hub", "  + dspy", "  + audiocraft-audio-generation", "  + segment-anything-model", "  + outlines", "  + serving-llms-vllm", "  + obliteratus", "  + llama-cpp", "  + unsloth", "  + axolotl", "  + fine-tuning-with-trl", "  + evaluating-llms-harness", "  + weights-and-biases", "  + apple-notes", "  + findmy", "  + imessage", "  + apple-reminders", "  + polymarket", "  + llm-wiki", "  + arxiv", "  + research-paper-writing", "  + blogwatcher", "  + godmode", "  + jupyter-live-kernel", "  + claude-code", "  + opencode", "  + hermes-agent", "  + codex", "  + himalaya", "  + native-mcp", "  + minecraft-modpack-server", "  + pokemon-player", "  + yuanbao", "  + python-debugpy", "  + writing-plans", "  + systematic-debugging", "  + hermes-agent-skill-authoring", "  + test-driven-development", "  + node-inspect-debugger", "  + requesting-code-review", "  + plan", "  + spike", "  + debugging-hermes-tui-commands", "  + subagent-driven-development", "  + kanban-worker", "  + webhook-subscriptions", "  + kanban-orchestrator", "  + dogfood", "  + github-auth", "  + github-pr-workflow", "  + github-repo-management", "  + github-code-review", "  + codebase-inspection", "  + github-issues", "  + touchdesigner-mcp", "  + popular-web-designs", "  + p5js", "  + comfyui", "  + baoyu-comic", "  + sketch", "  + ideation", "  + claude-design", "  + pixel-art", "  + baoyu-infographic", "  + manim-video", "  + pretext", "  + excalidraw", "  + ascii-video", "  + songwriting-and-ai-music", "  + architecture-diagram", "  + humanizer", "  + ascii-art", "  + design-md", "  + obsidian", "", "Done: 89 new, 0 updated, 0 unchanged. 89 total bundled.", "\u001b[0;32m✓\u001b[0m Skills synced to ~/.hermes/skills/", "\u001b[0;36m→\u001b[0m Skipping setup wizard (--skip-setup)", "", "\u001b[0;32m\u001b[1m", "┌─────────────────────────────────────────────────────────┐", "│              ✓ Installation Complete!                   │", "└─────────────────────────────────────────────────────────┘", "\u001b[0m", "", "\u001b[0;36m\u001b[1m📁 Your files:\u001b[0m", "", "   \u001b[0;33mConfig:\u001b[0m    /home/audit-hermes/.hermes/config.yaml", "   \u001b[0;33mAPI Keys:\u001b[0m  /home/audit-hermes/.hermes/.env", "   \u001b[0;33mData:\u001b[0m      /home/audit-hermes/.hermes/cron/, sessions/, logs/", "   \u001b[0;33mCode:\u001b[0m      /home/audit-hermes/.hermes/code", "", "\u001b[0;36m─────────────────────────────────────────────────────────\u001b[0m", "", "\u001b[0;36m\u001b[1m🚀 Commands:\u001b[0m", "", "   \u001b[0;32mhermes\u001b[0m              Start chatting", "   \u001b[0;32mhermes setup\u001b[0m        Configure API keys & settings", "   \u001b[0;32mhermes config\u001b[0m       View/edit configuration", "   \u001b[0;32mhermes config edit\u001b[0m  Open config in editor", "   \u001b[0;32mhermes gateway install\u001b[0m Install gateway service (messaging + cron)", "   \u001b[0;32mhermes update\u001b[0m       Update to latest version", "", "\u001b[0;36m─────────────────────────────────────────────────────────\u001b[0m", "", "\u001b[0;33m⚡ Reload your shell to use 'hermes' command:\u001b[0m", "", "   source ~/.bashrc   # or ~/.zshrc"]}
+
+TASK [Clean up installer script] ***********************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "path": "/home/audit-hermes/hermes-install.sh", "state": "absent"}
+
+TASK [Create Hermes config directory] ******************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1013, "group": "audit-hermes", "mode": "0700", "owner": "audit-hermes", "path": "/home/audit-hermes/.hermes", "size": 4096, "state": "directory", "uid": 1013}
+
+TASK [Create empty Hermes environment file (preserved across re-installs)] *****
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "dest": "/home/audit-hermes/.hermes/.env", "src": "/home/devashish/.ansible/tmp/ansible-local-1520107xcerhf9c/.jc_52p9m"}
+
+TASK [Enforce 0600 permissions on Hermes environment file] *********************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1013, "group": "audit-hermes", "mode": "0600", "owner": "audit-hermes", "path": "/home/audit-hermes/.hermes/.env", "size": 21610, "state": "file", "uid": 1013}
+
+TASK [Create Hermes memories directory] ****************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1013, "group": "audit-hermes", "mode": "0700", "owner": "audit-hermes", "path": "/home/audit-hermes/.hermes/memories", "size": 4096, "state": "directory", "uid": 1013}
+
+TASK [Create systemd service file (disabled, not started)] *********************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum": "5e2484049c86e18e63c6656da16b88160498093b", "dest": "/etc/systemd/system/hermes-audit-hermes.service", "gid": 0, "group": "root", "md5sum": "9410301ab80f533592b9f0bbe8c83db8", "mode": "0644", "owner": "root", "size": 333, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595409.7583148-1524183-102445187271966/.source.service", "state": "file", "uid": 0}
+
+TASK [Reload systemd to pick up unit file] *************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "name": null, "status": {}}
+
+TASK [Display install success] *************************************************
+ok: [wolf.tailf7742d.ts.net] => {
+    "msg": "Hermes 2026.5.7 installed for agent 'audit-hermes'.\nService unit hermes-audit-hermes.service dropped (disabled, stopped).\nRun `clm agent configure audit-hermes` to provision a provider and start the gateway.\n"
+}
+
+RUNNING HANDLER [Reload systemd] ***********************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "name": null, "status": {}}
+
+PLAY RECAP *********************************************************************
+wolf.tailf7742d.ts.net     : ok=18   changed=8    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0   
+
+Success! hermes v2026.5.7 installed as 'audit-hermes' on wolf-i
+```
+Exit: `0`
+
+### `clm agent install --type openclaw --host wolf-i --name audit-openclaw --yes`
+
+```console
+$ clm agent install --type openclaw --host wolf-i --name audit-openclaw --yes
+╭────────────────────────────────────────────────────────── Installation Summary ──────────────────────────────────────────────────────────╮
+│ Agent Type: openclaw                                                                                                                     │
+│ Version: 2026.4.2                                                                                                                        │
+│ Host: wolf-i                                                                                                                             │
+│ Architecture: x86_64                                                                                                                     │
+│ Memory: 15.5GB                                                                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+No config file found; using defaults
+
+PLAY [all] *********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'wolf.tailf7742d.ts.net' is using the discovered Python interpreter at '/usr/bin/python3.12', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.20/reference_appendices/interpreter_discovery.html for more information.
+ok: [wolf.tailf7742d.ts.net]
+
+TASK [Kill stale apt lock holders] *********************************************
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/apt/lists/lock) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/apt/lists/lock"], "delta": "0:00:00.071189", "end": "2026-05-23 21:03:36.689179", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/apt/lists/lock", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:03:36.617990", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/dpkg/lock) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/dpkg/lock"], "delta": "0:00:00.068940", "end": "2026-05-23 21:03:37.297638", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/dpkg/lock", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:03:37.228698", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+ok: [wolf.tailf7742d.ts.net] => (item=/var/lib/dpkg/lock-frontend) => {"ansible_loop_var": "item", "changed": false, "cmd": ["fuser", "-k", "/var/lib/dpkg/lock-frontend"], "delta": "0:00:00.068869", "end": "2026-05-23 21:03:37.839854", "failed_when_result": false, "failed_when_suppressed_exception": "(traceback unavailable)", "item": "/var/lib/dpkg/lock-frontend", "msg": "non-zero return code", "rc": 1, "start": "2026-05-23 21:03:37.770985", "stderr": "", "stderr_lines": [], "stdout": "", "stdout_lines": []}
+
+TASK [Update apt cache] ********************************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+TASK [Check if node is installed] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "cmd": ["node", "--version"], "delta": "0:00:00.006311", "end": "2026-05-23 21:03:39.578792", "failed_when_result": false, "msg": "", "rc": 0, "start": "2026-05-23 21:03:39.572481", "stderr": "", "stderr_lines": [], "stdout": "v22.22.1", "stdout_lines": ["v22.22.1"]}
+
+TASK [Install required packages for NodeSource repository] *********************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Create keyrings directory] ***********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Download NodeSource GPG key] *********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Add NodeSource repository for Node.js 20] ********************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Install Node.js] *********************************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "node_check.rc != 0", "skip_reason": "Conditional result was False"}
+
+TASK [Install build-essential] *************************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+TASK [Install git and GitHub CLI] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"cache_update_time": 1779593268, "cache_updated": false, "changed": false}
+
+PLAY RECAP *********************************************************************
+wolf.tailf7742d.ts.net     : ok=6    changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0   
+No config file found; using defaults
+
+PLAY [all] *********************************************************************
+
+TASK [Gathering Facts] *********************************************************
+[WARNING]: Host 'wolf.tailf7742d.ts.net' is using the discovered Python interpreter at '/usr/bin/python3.12', but future installation of another Python interpreter could cause a different interpreter to be discovered. See https://docs.ansible.com/ansible-core/2.20/reference_appendices/interpreter_discovery.html for more information.
+ok: [wolf.tailf7742d.ts.net]
+
+TASK [Normalize target OpenClaw version] ***************************************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"openclaw_target_version": "2026.4.2"}, "changed": false}
+
+TASK [Create agent user] *******************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "comment": "", "create_home": true, "group": 1014, "home": "/home/audit-openclaw", "name": "audit-openclaw", "shell": "/bin/bash", "state": "present", "system": false, "uid": 1014}
+
+TASK [Check per-agent openclaw binary] *****************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "stat": {"exists": false}}
+
+TASK [Discover openclaw binary in PATH] ****************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "cmd": ["which", "openclaw"], "delta": "0:00:00.003034", "end": "2026-05-23 21:03:46.543501", "failed_when_result": false, "msg": "", "rc": 0, "start": "2026-05-23 21:03:46.540467", "stderr": "", "stderr_lines": [], "stdout": "/usr/local/bin/openclaw", "stdout_lines": ["/usr/local/bin/openclaw"]}
+
+TASK [Resolve openclaw binary (per-agent preferred, PATH fallback)] ************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"openclaw_discovered_binary": "/usr/local/bin/openclaw"}, "changed": false}
+
+TASK [Validate discovered binary path] *****************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "(openclaw_discovered_binary | length) > 0 and not (openclaw_discovered_binary.startswith('/usr/local/bin/') or\n     openclaw_discovered_binary.startswith('/usr/bin/') or\n     openclaw_discovered_binary.startswith('/home/'))\n", "skip_reason": "Conditional result was False"}
+
+TASK [Get installed openclaw version] ******************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "cmd": ["/usr/local/bin/openclaw", "--version"], "delta": "0:00:00.121171", "end": "2026-05-23 21:03:47.203200", "failed_when_result": false, "msg": "", "rc": 0, "start": "2026-05-23 21:03:47.082029", "stderr": "", "stderr_lines": [], "stdout": "OpenClaw 2026.3.13 (61d171a)", "stdout_lines": ["OpenClaw 2026.3.13 (61d171a)"]}
+
+TASK [Parse installed openclaw version] ****************************************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"openclaw_installed_version": "2026.3.13"}, "changed": false}
+
+TASK [Set install skip condition] **********************************************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"openclaw_already_installed": false, "openclaw_runtime_binary": "/usr/local/bin/openclaw"}, "changed": false}
+
+TASK [Mark install as skipped when already installed] **************************
+skipping: [wolf.tailf7742d.ts.net] => {"false_condition": "openclaw_already_installed"}
+
+TASK [Note that --force was supplied (overriding skip)] ************************
+skipping: [wolf.tailf7742d.ts.net] => {"false_condition": "force_install | default(false) | bool"}
+
+TASK [Download OpenClaw installer script] **************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum_dest": null, "checksum_src": "dd70e5e4401b6d631c50e6bdcdfbbca23464fdf1", "dest": "/home/audit-openclaw/openclaw-install.sh", "elapsed": 0, "gid": 1014, "group": "audit-openclaw", "md5sum": "399298ea827b715409201bb59307f133", "mode": "0700", "msg": "OK (26738 bytes)", "owner": "audit-openclaw", "size": 26738, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595427.4608543-1524781-203175596156224/tmpmi1l8wam", "state": "file", "status_code": 200, "uid": 1014, "url": "https://openclaw.ai/install-cli.sh"}
+
+TASK [Install OpenClaw CLI runtime] ********************************************
+[WARNING]: Module remote_tmp /home/audit-openclaw/.ansible/tmp did not exist and was created with a mode of 0700, this may cause issues when running as another user. To avoid this, create the remote_tmp dir with the correct permissions manually
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "cmd": ["/bin/bash", "/home/audit-openclaw/openclaw-install.sh", "--prefix", "/home/audit-openclaw/.openclaw", "--install-method", "npm", "--version", "2026.4.2", "--no-onboard"], "delta": "0:01:08.737580", "end": "2026-05-23 21:04:57.341605", "msg": "", "rc": 0, "start": "2026-05-23 21:03:48.604025", "stderr": "npm notice\nnpm notice New major version of npm available! 10.9.4 -> 11.15.0\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v11.15.0\nnpm notice To update run: npm install -g npm@11.15.0\nnpm notice", "stderr_lines": ["npm notice", "npm notice New major version of npm available! 10.9.4 -> 11.15.0", "npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.15.0", "npm notice To update run: npm install -g npm@11.15.0", "npm notice"], "stdout": "Installing Node 22.22.0 (user-space)...\nInstalling OpenClaw (2026.4.2)...\n\nadded 472 packages in 1m\nOpenClaw installed (OpenClaw 2026.4.2 (d74a122)).", "stdout_lines": ["Installing Node 22.22.0 (user-space)...", "Installing OpenClaw (2026.4.2)...", "", "added 472 packages in 1m", "OpenClaw installed (OpenClaw 2026.4.2 (d74a122))."]}
+
+TASK [Clean up installer script] ***********************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "path": "/home/audit-openclaw/openclaw-install.sh", "state": "absent"}
+
+TASK [Create workspace directory] **********************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1014, "group": "audit-openclaw", "mode": "0700", "owner": "audit-openclaw", "path": "/home/audit-openclaw/workspace", "size": 4096, "state": "directory", "uid": 1014}
+
+TASK [Create OpenClaw config directory] ****************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "gid": 1014, "group": "audit-openclaw", "mode": "0700", "owner": "audit-openclaw", "path": "/home/audit-openclaw/.openclaw", "size": 4096, "state": "directory", "uid": 1014}
+
+TASK [Calculate unique port (40000-42000 range)] *******************************
+ok: [wolf.tailf7742d.ts.net] => {"ansible_facts": {"openclaw_port": 40612}, "changed": false}
+
+TASK [Write openclaw config from template] *************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum": "3ab0781d599943bd856a987d44d145d41b249579", "dest": "/home/audit-openclaw/.openclaw/openclaw.json", "gid": 1014, "group": "audit-openclaw", "md5sum": "54da959f914a8086caf7a8e4d33bda5a", "mode": "0600", "owner": "audit-openclaw", "size": 1055, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595499.1994913-1526708-98425113375815/.source.json", "state": "file", "uid": 1014}
+
+TASK [Write exec approvals policy from template] *******************************
+changed: [wolf.tailf7742d.ts.net] => {"censored": "the output has been hidden due to the fact that 'no_log: true' was specified for this result", "changed": true}
+
+TASK [Verify exec approvals JSON is valid] *************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "cmd": ["python3", "-m", "json.tool", "/home/audit-openclaw/.openclaw/exec-approvals.json"], "delta": "0:00:00.043777", "end": "2026-05-23 21:05:01.638552", "msg": "", "rc": 0, "start": "2026-05-23 21:05:01.594775", "stderr": "", "stderr_lines": [], "stdout": "{\n    \"version\": 1,\n    \"defaults\": {\n        \"security\": \"full\",\n        \"ask\": \"off\",\n        \"askFallback\": \"full\",\n        \"autoAllowSkills\": false\n    }\n}", "stdout_lines": ["{", "    \"version\": 1,", "    \"defaults\": {", "        \"security\": \"full\",", "        \"ask\": \"off\",", "        \"askFallback\": \"full\",", "        \"autoAllowSkills\": false", "    }", "}"]}
+
+TASK [Create environment file for agent] ***************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum": "da39a3ee5e6b4b0d3255bfef95601890afd80709", "dest": "/home/audit-openclaw/.openclaw/env", "gid": 1014, "group": "audit-openclaw", "md5sum": "d41d8cd98f00b204e9800998ecf8427e", "mode": "0600", "owner": "audit-openclaw", "size": 0, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595501.7441127-1526797-155741217062752/.source", "state": "file", "uid": 1014}
+
+TASK [Create systemd service file] *********************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum": "03157cd39147163a5b8960f4a0ea98bdcad103b0", "dest": "/etc/systemd/system/openclaw-audit-openclaw.service", "gid": 0, "group": "root", "md5sum": "dfad988ba86b2d25c76ab4f7cc3b22ce", "mode": "0644", "owner": "root", "size": 354, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595502.7917416-1526838-144101235155345/.source.service", "state": "file", "uid": 0}
+
+TASK [Restart openclaw service on ExecStart change] ****************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "enabled": true, "name": "openclaw-audit-openclaw", "state": "started", "status": {"ActiveEnterTimestamp": "Sat 2026-05-23 20:38:13 PDT", "ActiveEnterTimestampMonotonic": "6598118115363", "ActiveExitTimestamp": "Sat 2026-05-23 20:38:19 PDT", "ActiveExitTimestampMonotonic": "6598123708146", "ActiveState": "failed", "After": "basic.target system.slice sysinit.target -.mount network.target home.mount systemd-journald.socket", "AllowIsolate": "no", "AssertResult": "yes", "AssertTimestamp": "Sat 2026-05-23 20:38:13 PDT", "AssertTimestampMonotonic": "6598118097530", "Before": "shutdown.target", "BlockIOAccounting": "no", "BlockIOWeight": "[not set]", "CPUAccounting": "yes", "CPUAffinityFromNUMA": "no", "CPUQuotaPerSecUSec": "infinity", "CPUQuotaPeriodUSec": "infinity", "CPUSchedulingPolicy": "0", "CPUSchedulingPriority": "0", "CPUSchedulingResetOnFork": "no", "CPUShares": "[not set]", "CPUUsageNSec": "7514173000", "CPUWeight": "[not set]", "CacheDirectoryMode": "0755", "CanFreeze": "yes", "CanIsolate": "no", "CanReload": "no", "CanStart": "yes", "CanStop": "yes", "CapabilityBoundingSet": "cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf cap_checkpoint_restore", "CleanResult": "success", "CollectMode": "inactive", "ConditionResult": "yes", "ConditionTimestamp": "Sat 2026-05-23 20:38:13 PDT", "ConditionTimestampMonotonic": "6598118097528", "ConfigurationDirectoryMode": "0755", "Conflicts": "shutdown.target", "ControlGroupId": "0", "ControlPID": "0", "CoredumpFilter": "0x33", "CoredumpReceive": "no", "DefaultDependencies": "yes", "DefaultMemoryLow": "0", "DefaultMemoryMin": "0", "DefaultStartupMemoryLow": "0", "Delegate": "no", "Description": "OpenClaw AI Assistant (audit-openclaw)", "DevicePolicy": "auto", "DynamicUser": "no", "EnvironmentFiles": "/home/audit-openclaw/.openclaw/env (ignore_errors=no)", "ExecMainCode": "1", "ExecMainExitTimestamp": "Sat 2026-05-23 20:38:19 PDT", "ExecMainExitTimestampMonotonic": "6598123856252", "ExecMainPID": "498041", "ExecMainStartTimestamp": "Sat 2026-05-23 20:38:13 PDT", "ExecMainStartTimestampMonotonic": "6598118115134", "ExecMainStatus": "1", "ExecStart": "{ path=/usr/local/bin/openclaw ; argv[]=/usr/local/bin/openclaw gateway run --allow-unconfigured ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }", "ExecStartEx": "{ path=/usr/local/bin/openclaw ; argv[]=/usr/local/bin/openclaw gateway run --allow-unconfigured ; flags= ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }", "ExitType": "main", "ExtensionImagePolicy": "root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent", "FailureAction": "none", "FileDescriptorStoreMax": "0", "FileDescriptorStorePreserve": "restart", "FinalKillSignal": "9", "FragmentPath": "/etc/systemd/system/openclaw-audit-openclaw.service", "FreezerState": "running", "GID": "[not set]", "GuessMainPID": "yes", "IOAccounting": "no", "IOReadBytes": "[not set]", "IOReadOperations": "[not set]", "IOSchedulingClass": "2", "IOSchedulingPriority": "4", "IOWeight": "[not set]", "IOWriteBytes": "[not set]", "IOWriteOperations": "[not set]", "IPAccounting": "no", "IPEgressBytes": "[no data]", "IPEgressPackets": "[no data]", "IPIngressBytes": "[no data]", "IPIngressPackets": "[no data]", "Id": "openclaw-audit-openclaw.service", "IgnoreOnIsolate": "no", "IgnoreSIGPIPE": "yes", "InactiveEnterTimestamp": "Sat 2026-05-23 20:38:19 PDT", "InactiveEnterTimestampMonotonic": "6598123856404", "InactiveExitTimestamp": "Sat 2026-05-23 20:38:13 PDT", "InactiveExitTimestampMonotonic": "6598118115363", "InvocationID": "8218c8973fa54c1db4dd3828d140e18d", "JobRunningTimeoutUSec": "infinity", "JobTimeoutAction": "none", "JobTimeoutUSec": "infinity", "KeyringMode": "private", "KillMode": "control-group", "KillSignal": "15", "LimitAS": "infinity", "LimitASSoft": "infinity", "LimitCORE": "infinity", "LimitCORESoft": "0", "LimitCPU": "infinity", "LimitCPUSoft": "infinity", "LimitDATA": "infinity", "LimitDATASoft": "infinity", "LimitFSIZE": "infinity", "LimitFSIZESoft": "infinity", "LimitLOCKS": "infinity", "LimitLOCKSSoft": "infinity", "LimitMEMLOCK": "8388608", "LimitMEMLOCKSoft": "8388608", "LimitMSGQUEUE": "819200", "LimitMSGQUEUESoft": "819200", "LimitNICE": "0", "LimitNICESoft": "0", "LimitNOFILE": "524288", "LimitNOFILESoft": "1024", "LimitNPROC": "62947", "LimitNPROCSoft": "62947", "LimitRSS": "infinity", "LimitRSSSoft": "infinity", "LimitRTPRIO": "0", "LimitRTPRIOSoft": "0", "LimitRTTIME": "infinity", "LimitRTTIMESoft": "infinity", "LimitSIGPENDING": "62947", "LimitSIGPENDINGSoft": "62947", "LimitSTACK": "infinity", "LimitSTACKSoft": "8388608", "LoadState": "loaded", "LockPersonality": "no", "LogLevelMax": "-1", "LogRateLimitBurst": "0", "LogRateLimitIntervalUSec": "0", "LogsDirectoryMode": "0755", "MainPID": "0", "ManagedOOMMemoryPressure": "auto", "ManagedOOMMemoryPressureLimit": "0", "ManagedOOMPreference": "none", "ManagedOOMSwap": "auto", "MemoryAccounting": "yes", "MemoryAvailable": "11604840448", "MemoryCurrent": "[not set]", "MemoryDenyWriteExecute": "no", "MemoryHigh": "infinity", "MemoryKSM": "no", "MemoryLimit": "infinity", "MemoryLow": "0", "MemoryMax": "infinity", "MemoryMin": "0", "MemoryPeak": "280276992", "MemoryPressureThresholdUSec": "200ms", "MemoryPressureWatch": "auto", "MemorySwapCurrent": "[not set]", "MemorySwapMax": "infinity", "MemorySwapPeak": "0", "MemoryZSwapCurrent": "[not set]", "MemoryZSwapMax": "infinity", "MountAPIVFS": "no", "MountImagePolicy": "root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent", "NFileDescriptorStore": "0", "NRestarts": "0", "NUMAPolicy": "n/a", "Names": "openclaw-audit-openclaw.service", "NeedDaemonReload": "no", "Nice": "0", "NoNewPrivileges": "no", "NonBlocking": "no", "NotifyAccess": "none", "OOMPolicy": "stop", "OOMScoreAdjust": "0", "OnFailureJobMode": "replace", "OnSuccessJobMode": "fail", "Perpetual": "no", "PrivateDevices": "no", "PrivateIPC": "no", "PrivateMounts": "no", "PrivateNetwork": "no", "PrivateTmp": "no", "PrivateUsers": "no", "ProcSubset": "all", "ProtectClock": "no", "ProtectControlGroups": "no", "ProtectHome": "no", "ProtectHostname": "no", "ProtectKernelLogs": "no", "ProtectKernelModules": "no", "ProtectKernelTunables": "no", "ProtectProc": "default", "ProtectSystem": "no", "RefuseManualStart": "no", "RefuseManualStop": "no", "ReloadResult": "success", "ReloadSignal": "1", "RemainAfterExit": "no", "RemoveIPC": "no", "Requires": "sysinit.target home.mount -.mount system.slice", "RequiresMountsFor": "/home/audit-openclaw/workspace", "Restart": "always", "RestartKillSignal": "15", "RestartMaxDelayUSec": "infinity", "RestartMode": "normal", "RestartSteps": "0", "RestartUSec": "5s", "RestartUSecNext": "5s", "RestrictNamespaces": "no", "RestrictRealtime": "no", "RestrictSUIDSGID": "no", "Result": "exit-code", "RootDirectoryStartOnly": "no", "RootEphemeral": "no", "RootImagePolicy": "root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent", "RuntimeDirectoryMode": "0755", "RuntimeDirectoryPreserve": "no", "RuntimeMaxUSec": "infinity", "RuntimeRandomizedExtraUSec": "0", "SameProcessGroup": "no", "SecureBits": "0", "SendSIGHUP": "no", "SendSIGKILL": "yes", "SetLoginEnvironment": "no", "Slice": "system.slice", "StandardError": "inherit", "StandardInput": "null", "StandardOutput": "journal", "StartLimitAction": "none", "StartLimitBurst": "5", "StartLimitIntervalUSec": "10s", "StartupBlockIOWeight": "[not set]", "StartupCPUShares": "[not set]", "StartupCPUWeight": "[not set]", "StartupIOWeight": "[not set]", "StartupMemoryHigh": "infinity", "StartupMemoryLow": "0", "StartupMemoryMax": "infinity", "StartupMemorySwapMax": "infinity", "StartupMemoryZSwapMax": "infinity", "StateChangeTimestamp": "Sat 2026-05-23 20:38:19 PDT", "StateChangeTimestampMonotonic": "6598123856404", "StateDirectoryMode": "0755", "StatusErrno": "0", "StopWhenUnneeded": "no", "SubState": "failed", "SuccessAction": "none", "SurviveFinalKillSignal": "no", "SyslogFacility": "3", "SyslogLevel": "6", "SyslogLevelPrefix": "yes", "SyslogPriority": "30", "SystemCallErrorNumber": "2147483646", "TTYReset": "no", "TTYVHangup": "no", "TTYVTDisallocate": "no", "TasksAccounting": "yes", "TasksCurrent": "[not set]", "TasksMax": "18884", "TimeoutAbortUSec": "1min 30s", "TimeoutCleanUSec": "infinity", "TimeoutStartFailureMode": "terminate", "TimeoutStartUSec": "1min 30s", "TimeoutStopFailureMode": "terminate", "TimeoutStopUSec": "1min 30s", "TimerSlackNSec": "50000", "Transient": "no", "Type": "simple", "UID": "[not set]", "UMask": "0022", "UnitFilePreset": "enabled", "UnitFileState": "disabled", "User": "audit-openclaw", "UtmpMode": "init", "WatchdogSignal": "6", "WatchdogTimestampMonotonic": "0", "WatchdogUSec": "0", "WorkingDirectory": "/home/audit-openclaw/workspace"}}
+
+TASK [Enable and start openclaw service] ***************************************
+ok: [wolf.tailf7742d.ts.net] => {"changed": false, "enabled": true, "name": "openclaw-audit-openclaw", "state": "started", "status": {"ActiveEnterTimestamp": "Sat 2026-05-23 21:05:05 PDT", "ActiveEnterTimestampMonotonic": "6599729872414", "ActiveExitTimestamp": "Sat 2026-05-23 20:38:19 PDT", "ActiveExitTimestampMonotonic": "6598123708146", "ActiveState": "active", "After": "systemd-journald.socket sysinit.target home.mount network.target basic.target system.slice -.mount", "AllowIsolate": "no", "AssertResult": "yes", "AssertTimestamp": "Sat 2026-05-23 21:05:05 PDT", "AssertTimestampMonotonic": "6599729864140", "Before": "shutdown.target multi-user.target", "BlockIOAccounting": "no", "BlockIOWeight": "[not set]", "CPUAccounting": "yes", "CPUAffinityFromNUMA": "no", "CPUQuotaPerSecUSec": "infinity", "CPUQuotaPeriodUSec": "infinity", "CPUSchedulingPolicy": "0", "CPUSchedulingPriority": "0", "CPUSchedulingResetOnFork": "no", "CPUShares": "[not set]", "CPUUsageNSec": "1714386000", "CPUWeight": "[not set]", "CacheDirectoryMode": "0755", "CanFreeze": "yes", "CanIsolate": "no", "CanReload": "no", "CanStart": "yes", "CanStop": "yes", "CapabilityBoundingSet": "cap_chown cap_dac_override cap_dac_read_search cap_fowner cap_fsetid cap_kill cap_setgid cap_setuid cap_setpcap cap_linux_immutable cap_net_bind_service cap_net_broadcast cap_net_admin cap_net_raw cap_ipc_lock cap_ipc_owner cap_sys_module cap_sys_rawio cap_sys_chroot cap_sys_ptrace cap_sys_pacct cap_sys_admin cap_sys_boot cap_sys_nice cap_sys_resource cap_sys_time cap_sys_tty_config cap_mknod cap_lease cap_audit_write cap_audit_control cap_setfcap cap_mac_override cap_mac_admin cap_syslog cap_wake_alarm cap_block_suspend cap_audit_read cap_perfmon cap_bpf cap_checkpoint_restore", "CleanResult": "success", "CollectMode": "inactive", "ConditionResult": "yes", "ConditionTimestamp": "Sat 2026-05-23 21:05:05 PDT", "ConditionTimestampMonotonic": "6599729864138", "ConfigurationDirectoryMode": "0755", "Conflicts": "shutdown.target", "ControlGroup": "/system.slice/openclaw-audit-openclaw.service", "ControlGroupId": "25607266", "ControlPID": "0", "CoredumpFilter": "0x33", "CoredumpReceive": "no", "DefaultDependencies": "yes", "DefaultMemoryLow": "0", "DefaultMemoryMin": "0", "DefaultStartupMemoryLow": "0", "Delegate": "no", "Description": "OpenClaw AI Assistant (audit-openclaw)", "DevicePolicy": "auto", "DynamicUser": "no", "EnvironmentFiles": "/home/audit-openclaw/.openclaw/env (ignore_errors=no)", "ExecMainCode": "0", "ExecMainExitTimestampMonotonic": "0", "ExecMainPID": "516384", "ExecMainStartTimestamp": "Sat 2026-05-23 21:05:05 PDT", "ExecMainStartTimestampMonotonic": "6599729872164", "ExecMainStatus": "0", "ExecStart": "{ path=/usr/local/bin/openclaw ; argv[]=/usr/local/bin/openclaw gateway run --allow-unconfigured ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }", "ExecStartEx": "{ path=/usr/local/bin/openclaw ; argv[]=/usr/local/bin/openclaw gateway run --allow-unconfigured ; flags= ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }", "ExitType": "main", "ExtensionImagePolicy": "root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent", "FailureAction": "none", "FileDescriptorStoreMax": "0", "FileDescriptorStorePreserve": "restart", "FinalKillSignal": "9", "FragmentPath": "/etc/systemd/system/openclaw-audit-openclaw.service", "FreezerState": "running", "GID": "1014", "GuessMainPID": "yes", "IOAccounting": "no", "IOReadBytes": "[not set]", "IOReadOperations": "[not set]", "IOSchedulingClass": "2", "IOSchedulingPriority": "4", "IOWeight": "[not set]", "IOWriteBytes": "[not set]", "IOWriteOperations": "[not set]", "IPAccounting": "no", "IPEgressBytes": "[no data]", "IPEgressPackets": "[no data]", "IPIngressBytes": "[no data]", "IPIngressPackets": "[no data]", "Id": "openclaw-audit-openclaw.service", "IgnoreOnIsolate": "no", "IgnoreSIGPIPE": "yes", "InactiveEnterTimestamp": "Sat 2026-05-23 20:38:19 PDT", "InactiveEnterTimestampMonotonic": "6598123856404", "InactiveExitTimestamp": "Sat 2026-05-23 21:05:05 PDT", "InactiveExitTimestampMonotonic": "6599729872414", "InvocationID": "f9049c1b5ad0463ca2ac2b861749d132", "JobRunningTimeoutUSec": "infinity", "JobTimeoutAction": "none", "JobTimeoutUSec": "infinity", "KeyringMode": "private", "KillMode": "control-group", "KillSignal": "15", "LimitAS": "infinity", "LimitASSoft": "infinity", "LimitCORE": "infinity", "LimitCORESoft": "0", "LimitCPU": "infinity", "LimitCPUSoft": "infinity", "LimitDATA": "infinity", "LimitDATASoft": "infinity", "LimitFSIZE": "infinity", "LimitFSIZESoft": "infinity", "LimitLOCKS": "infinity", "LimitLOCKSSoft": "infinity", "LimitMEMLOCK": "8388608", "LimitMEMLOCKSoft": "8388608", "LimitMSGQUEUE": "819200", "LimitMSGQUEUESoft": "819200", "LimitNICE": "0", "LimitNICESoft": "0", "LimitNOFILE": "524288", "LimitNOFILESoft": "1024", "LimitNPROC": "62947", "LimitNPROCSoft": "62947", "LimitRSS": "infinity", "LimitRSSSoft": "infinity", "LimitRTPRIO": "0", "LimitRTPRIOSoft": "0", "LimitRTTIME": "infinity", "LimitRTTIMESoft": "infinity", "LimitSIGPENDING": "62947", "LimitSIGPENDINGSoft": "62947", "LimitSTACK": "infinity", "LimitSTACKSoft": "8388608", "LoadState": "loaded", "LockPersonality": "no", "LogLevelMax": "-1", "LogRateLimitBurst": "0", "LogRateLimitIntervalUSec": "0", "LogsDirectoryMode": "0755", "MainPID": "516384", "ManagedOOMMemoryPressure": "auto", "ManagedOOMMemoryPressureLimit": "0", "ManagedOOMPreference": "none", "ManagedOOMSwap": "auto", "MemoryAccounting": "yes", "MemoryAvailable": "11508674560", "MemoryCurrent": "152596480", "MemoryDenyWriteExecute": "no", "MemoryHigh": "infinity", "MemoryKSM": "no", "MemoryLimit": "infinity", "MemoryLow": "0", "MemoryMax": "infinity", "MemoryMin": "0", "MemoryPeak": "152633344", "MemoryPressureThresholdUSec": "200ms", "MemoryPressureWatch": "auto", "MemorySwapCurrent": "0", "MemorySwapMax": "infinity", "MemorySwapPeak": "0", "MemoryZSwapCurrent": "0", "MemoryZSwapMax": "infinity", "MountAPIVFS": "no", "MountImagePolicy": "root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent", "NFileDescriptorStore": "0", "NRestarts": "0", "NUMAPolicy": "n/a", "Names": "openclaw-audit-openclaw.service", "NeedDaemonReload": "no", "Nice": "0", "NoNewPrivileges": "no", "NonBlocking": "no", "NotifyAccess": "none", "OOMPolicy": "stop", "OOMScoreAdjust": "0", "OnFailureJobMode": "replace", "OnSuccessJobMode": "fail", "Perpetual": "no", "PrivateDevices": "no", "PrivateIPC": "no", "PrivateMounts": "no", "PrivateNetwork": "no", "PrivateTmp": "no", "PrivateUsers": "no", "ProcSubset": "all", "ProtectClock": "no", "ProtectControlGroups": "no", "ProtectHome": "no", "ProtectHostname": "no", "ProtectKernelLogs": "no", "ProtectKernelModules": "no", "ProtectKernelTunables": "no", "ProtectProc": "default", "ProtectSystem": "no", "RefuseManualStart": "no", "RefuseManualStop": "no", "ReloadResult": "success", "ReloadSignal": "1", "RemainAfterExit": "no", "RemoveIPC": "no", "Requires": "system.slice home.mount sysinit.target -.mount", "RequiresMountsFor": "/home/audit-openclaw/workspace", "Restart": "always", "RestartKillSignal": "15", "RestartMaxDelayUSec": "infinity", "RestartMode": "normal", "RestartSteps": "0", "RestartUSec": "5s", "RestartUSecNext": "5s", "RestrictNamespaces": "no", "RestrictRealtime": "no", "RestrictSUIDSGID": "no", "Result": "success", "RootDirectoryStartOnly": "no", "RootEphemeral": "no", "RootImagePolicy": "root=verity+signed+encrypted+unprotected+absent:usr=verity+signed+encrypted+unprotected+absent:home=encrypted+unprotected+absent:srv=encrypted+unprotected+absent:tmp=encrypted+unprotected+absent:var=encrypted+unprotected+absent", "RuntimeDirectoryMode": "0755", "RuntimeDirectoryPreserve": "no", "RuntimeMaxUSec": "infinity", "RuntimeRandomizedExtraUSec": "0", "SameProcessGroup": "no", "SecureBits": "0", "SendSIGHUP": "no", "SendSIGKILL": "yes", "SetLoginEnvironment": "no", "Slice": "system.slice", "StandardError": "inherit", "StandardInput": "null", "StandardOutput": "journal", "StartLimitAction": "none", "StartLimitBurst": "5", "StartLimitIntervalUSec": "10s", "StartupBlockIOWeight": "[not set]", "StartupCPUShares": "[not set]", "StartupCPUWeight": "[not set]", "StartupIOWeight": "[not set]", "StartupMemoryHigh": "infinity", "StartupMemoryLow": "0", "StartupMemoryMax": "infinity", "StartupMemorySwapMax": "infinity", "StartupMemoryZSwapMax": "infinity", "StateChangeTimestamp": "Sat 2026-05-23 21:05:05 PDT", "StateChangeTimestampMonotonic": "6599729872414", "StateDirectoryMode": "0755", "StatusErrno": "0", "StopWhenUnneeded": "no", "SubState": "running", "SuccessAction": "none", "SurviveFinalKillSignal": "no", "SyslogFacility": "3", "SyslogLevel": "6", "SyslogLevelPrefix": "yes", "SyslogPriority": "30", "SystemCallErrorNumber": "2147483646", "TTYReset": "no", "TTYVHangup": "no", "TTYVTDisallocate": "no", "TasksAccounting": "yes", "TasksCurrent": "14", "TasksMax": "18884", "TimeoutAbortUSec": "1min 30s", "TimeoutCleanUSec": "infinity", "TimeoutStartFailureMode": "terminate", "TimeoutStartUSec": "1min 30s", "TimeoutStopFailureMode": "terminate", "TimeoutStopUSec": "1min 30s", "TimerSlackNSec": "50000", "Transient": "no", "Type": "simple", "UID": "1014", "UMask": "0022", "UnitFilePreset": "enabled", "UnitFileState": "enabled", "User": "audit-openclaw", "UtmpMode": "init", "WantedBy": "multi-user.target", "WatchdogSignal": "6", "WatchdogTimestampMonotonic": "0", "WatchdogUSec": "0", "WorkingDirectory": "/home/audit-openclaw/workspace"}}
+
+TASK [Wait for gateway port to be listening] ***********************************
+ok: [wolf.tailf7742d.ts.net -> localhost] => {"changed": false, "elapsed": 24, "match_groupdict": {}, "match_groups": [], "path": null, "port": 40612, "search_regex": null, "state": "started"}
+
+TASK [Read gateway authentication token from config file] **********************
+ok: [wolf.tailf7742d.ts.net] => {"censored": "the output has been hidden due to the fact that 'no_log: true' was specified for this result", "changed": false}
+
+TASK [Parse gateway token from config] *****************************************
+ok: [wolf.tailf7742d.ts.net] => {"censored": "the output has been hidden due to the fact that 'no_log: true' was specified for this result", "changed": false}
+
+TASK [Validate gateway token format] *******************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "gateway_token_result_stdout is not defined or gateway_token_result_stdout | length < 32 or not (gateway_token_result_stdout is regex('^[a-zA-Z0-9_-]+$'))", "skip_reason": "Conditional result was False"}
+
+TASK [Copy device pairing script] **********************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "checksum": "de98a7e90a1640675b8454bf6b538aa34650626e", "dest": "/home/audit-openclaw/pair_device.mjs", "gid": 1014, "group": "audit-openclaw", "md5sum": "dad2220cdb88526b9d9855e07fcceaaa", "mode": "0700", "owner": "audit-openclaw", "size": 5993, "src": "/home/xclm/.ansible/tmp/ansible-tmp-1779595532.2782943-1527681-175401960827757/.source.mjs", "state": "file", "uid": 1014}
+
+TASK [Install ws package for pairing script] ***********************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "cmd": ["npm", "install", "ws"], "delta": "0:00:00.431689", "end": "2026-05-23 21:05:33.955469", "msg": "", "rc": 0, "start": "2026-05-23 21:05:33.523780", "stderr": "", "stderr_lines": [], "stdout": "\nadded 1 package in 354ms", "stdout_lines": ["", "added 1 package in 354ms"]}
+
+TASK [Run device pairing via localhost] ****************************************
+changed: [wolf.tailf7742d.ts.net] => {"censored": "the output has been hidden due to the fact that 'no_log: true' was specified for this result", "changed": true}
+
+TASK [Parse device credentials] ************************************************
+ok: [wolf.tailf7742d.ts.net] => {"censored": "the output has been hidden due to the fact that 'no_log: true' was specified for this result", "changed": false}
+
+TASK [Validate device credentials] *********************************************
+skipping: [wolf.tailf7742d.ts.net] => {"changed": false, "false_condition": "device_credentials.deviceToken is not defined or device_credentials.deviceToken | length < 10", "skip_reason": "Conditional result was False"}
+
+TASK [Clean up pairing script] *************************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "path": "/home/audit-openclaw/pair_device.mjs", "state": "absent"}
+
+TASK [Clean up node_modules from pairing] **************************************
+changed: [wolf.tailf7742d.ts.net] => {"changed": true, "path": "/home/audit-openclaw/node_modules", "state": "absent"}
+
+TASK [Save all credentials to fact for retrieval] ******************************
+ok: [wolf.tailf7742d.ts.net] => {"censored": "the output has been hidden due to the fact that 'no_log: true' was specified for this result", "changed": false}
+
+PLAY RECAP *********************************************************************
+wolf.tailf7742d.ts.net     : ok=32   changed=16   unreachable=0    failed=0    skipped=5    rescued=0    ignored=0   
+
+Success! openclaw v2026.4.2 installed as 'audit-openclaw' on wolf-i
+```
+Exit: `0`
+
+
+### Intermediate state — `clm agent ps` after install, before configure (W8)
+
+Captured immediately after the three installs above, with no configure
+or start yet applied to any audit-* agent. Surfaces the post-install
+status of each agent type so Bundle 5 can diff state transitions
+directly.
+
+### `clm agent ps`
+
+```console
+$ clm agent ps
+
+
+                                                       Agent Fleet Status                                                       
+┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ Name           ┃ Agent Type ┃ Provider   ┃ Host   ┃ Address                ┃ Port  ┃ Version  ┃ Status          ┃ Installed  ┃
+┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ audit-hermes   │ hermes     │ -          │ wolf-i │ wolf.tailf7742d.ts.net │ -     │ 2026.5.7 │ pending onboard │ 2026-05-24 │
+│ audit-openclaw │ openclaw   │ -          │ wolf-i │ wolf.tailf7742d.ts.net │ 40612 │ 2026.4.2 │ running         │ 2026-05-24 │
+│ audit-zeroclaw │ zeroclaw   │ -          │ wolf-i │ wolf.tailf7742d.ts.net │ -     │ 0.7.5    │ pending onboard │ 2026-05-24 │
+│ clawrium-d01   │ zeroclaw   │ openrouter │ wolf-i │ wolf.tailf7742d.ts.net │ 41429 │ 0.7.5    │ running         │ 2026-05-19 │
+│ espresso       │ hermes     │ ollama     │ wolf-i │ wolf.tailf7742d.ts.net │ 41583 │ 2026.5.7 │ running         │ 2026-05-11 │
+│ maurice        │ hermes     │ openrouter │ wolf-i │ wolf.tailf7742d.ts.net │ 40317 │ 2026.5.7 │ running         │ 2026-05-22 │
+│ nemotron-alpha │ zeroclaw   │ ollama     │ wolf-i │ wolf.tailf7742d.ts.net │ 40919 │ 0.7.5    │ running         │ 2026-05-22 │
+│ nemotron-beta  │ zeroclaw   │ ollama     │ wolf-i │ wolf.tailf7742d.ts.net │ 40971 │ 0.7.5    │ running         │ 2026-05-20 │
+│ wolf-i         │ openclaw   │ bedrock    │ wolf-i │ wolf.tailf7742d.ts.net │ 40198 │ 2026.4.2 │ running         │ 2026-04-11 │
+└────────────────┴────────────┴────────────┴────────┴────────────────────────┴───────┴──────────┴─────────────────┴────────────┘
+
+
+audit-hermes on wolf-i:
+  No onboarding data available
+
+audit-zeroclaw on wolf-i:
+  No onboarding data available
+```
+Exit: `0`
+
+
+### `clm agent open <a>` baseline (B4)
+
+`clm agent open` does **not** exist in v26.5.2 — the AGENTS.md
+reference is forward-looking (likely part of issue #435's surface).
+Captured below as the baseline so Bundle 5's `clawctl agent open`
+introductions diff cleanly against three explicit `No such command`
+errors. Captured against `audit-zeroclaw` (zeroclaw, running),
+`audit-hermes` (hermes, configured/`ready (stopped)`), and
+`audit-openclaw` (openclaw, install-started, no onboarding).
+
+### `clm agent open audit-zeroclaw`
+
+```console
+$ clm agent open audit-zeroclaw
+Usage: clm agent [OPTIONS] COMMAND [ARGS]...
+Try 'clm agent --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ No such command 'open'.                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+Exit: `2`
+
+### `clm agent open audit-hermes`
+
+```console
+$ clm agent open audit-hermes
+Usage: clm agent [OPTIONS] COMMAND [ARGS]...
+Try 'clm agent --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ No such command 'open'.                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+Exit: `2`
+
+### `clm agent open audit-openclaw`
+
+```console
+$ clm agent open audit-openclaw
+Usage: clm agent [OPTIONS] COMMAND [ARGS]...
+Try 'clm agent --help' for help.
+╭─ Error ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ No such command 'open'.                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+Exit: `2`
+
+
+**Capture end (iter2, UTC):** 2026-05-24T04:14:27Z
 
