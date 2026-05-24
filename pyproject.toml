@@ -38,7 +38,7 @@ dependencies = [
 ]
 
 [project.scripts]
-clm = "clawrium.cli.main:app"
+clawctl = "clawrium.cli:app"
 
 [build-system]
 requires = ["hatchling"]
