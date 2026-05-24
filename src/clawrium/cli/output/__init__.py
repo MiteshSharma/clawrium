@@ -16,20 +16,25 @@ this module. The contract is documented in `.itx/435/00_PLAN.md` §6
 This module imports nothing from `clawrium.core.*`; it deals only with
 rendering primitives.
 
-Sanitization contract (#507 ATX iter-1):
+Sanitization contract (#507 ATX iter-1/2/3):
 
 | Primitive                              | Sanitizes? |
 |----------------------------------------|------------|
-| `errors.emit_error(message, hint)`     | Yes        |
-| `stream.stream_action(resource, msg)`  | Yes        |
-| `json_yaml.dump_name(kind, name)`      | Yes        |
-| `table.render()` cells + headers       | Yes        |
-| `stream.NDJSONStreamer.emit()`         | Safe via `json.dumps` (`ensure_ascii=True`) |
-| `stream.emit_event()`                  | Safe via `json.dumps` |
-| `json_yaml.dump_json()`                | Safe via `json.dumps` |
-| `json_yaml.dump_yaml()`                | Safe via `yaml.safe_dump` |
+| `errors.emit_error(message, hint)`     | Yes |
+| `stream.stream_action(resource, msg)`  | Yes |
+| `json_yaml.dump_name(kind, name)`      | Yes |
+| `json_yaml.dump_yaml()` string scalars | Yes (recursive, via `_sanitize_value`) |
+| `table.render()` cells + headers       | Yes |
+| `stream.NDJSONStreamer.emit()`         | Safe via `json.dumps(..., ensure_ascii=True)` |
+| `stream.emit_event()`                  | Safe via `json.dumps(..., ensure_ascii=True)` |
+| `json_yaml.dump_json()`                | Safe via `json.dumps(..., ensure_ascii=True)` |
+| `status.format_status()`               | Yes (unknown-token path; known vocab tokens are identity-returned) |
 | `age.format_age()`                     | N/A — int input |
-| `status.format_status()`               | N/A — input constrained to status vocab |
+
+`sanitize()` IS NOT a secret redactor — see `_sanitize.py` module
+docstring. Callers must never pass secret-valued strings to any
+output primitive; the safety boundary lives at the call site that
+decides what to log.
 
 The shared pattern lives in `_sanitize.py` and mirrors
 `cli/chat.py:_CONTROL_AND_BIDI_RE` so the coverage stays identical

@@ -27,10 +27,16 @@ that decides what to log, not at the writer that flushes it.
 
 Sanitization is applied at every primitive that writes a raw string
 to a terminal stream: `emit_error()`, `stream_action()`, `dump_name()`,
-`render_table()` cells, and `format_status()`. `NDJSONStreamer.emit()`,
-`emit_event()`, `dump_json()`, and `dump_yaml()` are safe by
-serialization (json.dumps with `ensure_ascii=True` and yaml.safe_dump
-escape control characters in their output).
+`render_table()` cells, and `format_status()` (unknown-token path).
+`NDJSONStreamer.emit()`, `emit_event()`, and `dump_json()` are safe
+by serialization (`json.dumps(..., ensure_ascii=True)` escapes every
+non-ASCII codepoint as `\\uXXXX`).
+
+`dump_yaml()` is the exception: `yaml.safe_dump` quotes most C0/C1
+control chars but does NOT escape LF (`U+000A`) -- it emits a block
+scalar with the literal newline. To preserve parity with the other
+primitives, `dump_yaml()` recursively sanitizes every string scalar
+before passing to PyYAML (#507 ATX iter-3 W2).
 """
 
 import re

@@ -88,22 +88,18 @@ For full installation instructions including how to install `uv`, see [docs/inst
 clawctl service init
 # → Created /home/user/.config/clawrium/config.yaml
 
-# Set up SSH to your host
-clawctl host create 192.168.1.100 --user myuser --bootstrap
+# Set up SSH to your host (one step — bootstrap key + add)
+clawctl host create 192.168.1.100 --user myuser --alias worker-1 --bootstrap
 # → Checking SSH connectivity...
 # → SSH key copied to 192.168.1.100
-
-# Add the host to your fleet
-clawctl host create 192.168.1.100 --alias worker-1
 # → Host 'worker-1' added
 
-# Add an inference provider
-clawctl provider registry create anthropic --type anthropic
-# → Enter API key: ********
+# Register an inference provider
+clawctl provider registry create anthropic --type anthropic --api-key-stdin
 # → Provider 'anthropic' configured
 
 # Install OpenClaw agent
-clawctl agent create my-assistant --type openclaw --host worker-1
+clawctl agent create my-assistant --type openclaw --host worker-1 --provider anthropic
 # → Installing openclaw on worker-1...
 # → Agent 'my-assistant' installed
 
@@ -114,8 +110,8 @@ clawctl agent start my-assistant
 
 # Check fleet status
 clawctl agent get
-# NAME           TYPE      PROVIDER  HOST      STATUS   AGE
-# my-assistant   openclaw  openai    worker-1  Running  2m
+# NAME           TYPE       HOST       PROVIDER    STATUS    AGE
+# my-assistant   openclaw   worker-1   anthropic   running   2m
 
 # Chat with your agent
 clawctl agent chat my-assistant
@@ -127,7 +123,7 @@ clawctl gui
 # → Clawrium GUI starting on http://127.0.0.1:36000 — press Ctrl+C to stop
 ```
 
-**You should see:** A running agent in `clawctl agent get` output with status `Running`.
+**You should see:** A running agent in `clawctl agent get` output with status `running`.
 
 **→ Full setup guide: [ric03uec.github.io/clawrium](https://ric03uec.github.io/clawrium/)**
 
