@@ -8,6 +8,7 @@ import yaml
 from typer.testing import CliRunner
 
 from clawrium.cli import app
+from clawrium.cli.clawctl.agent._shared import _first_provider
 
 runner = CliRunner()
 
@@ -70,3 +71,54 @@ def test_describe_json(fleet_dir) -> None:
     parsed = json.loads(result.output)
     assert parsed[0]["name"] == "wise-hypatia"
     assert parsed[0]["kind"] == "agent"
+
+
+# ---------------------------------------------------------------------------
+# _first_provider read-order coverage
+#
+# Resolution order (see _shared.py:_first_provider docstring):
+#   1. claw_record["providers"]                       # attach list (new)
+#   2. claw_record["config"]["provider"]["name"]      # materialization layer
+#   3. claw_record["config"]["providers"]             # vestigial plural
+# ---------------------------------------------------------------------------
+
+
+def test_first_provider_prefers_attach_list_string():
+    record = {
+        "providers": ["clawrium-glm51"],
+        "config": {"provider": {"name": "ignored-stale-value"}},
+    }
+    assert _first_provider(record) == "clawrium-glm51"
+
+
+def test_first_provider_prefers_attach_list_dict_entry():
+    record = {"providers": [{"name": "clawrium-glm51", "type": "openrouter"}]}
+    assert _first_provider(record) == "clawrium-glm51"
+
+
+def test_first_provider_falls_back_to_materialized_config_provider():
+    # Covers every pre-Pattern-A install on disk: config.provider is the
+    # singular dict written by sync_agent / configure_agent. Without this
+    # fallback, `clawctl agent describe` showed `Provider: -` for every
+    # legacy agent.
+    record = {"config": {"provider": {"name": "clawrium-glm51"}}}
+    assert _first_provider(record) == "clawrium-glm51"
+
+
+def test_first_provider_skips_empty_attach_list_then_uses_materialization():
+    record = {
+        "providers": [],
+        "config": {"provider": {"name": "clawrium-glm51"}},
+    }
+    assert _first_provider(record) == "clawrium-glm51"
+
+
+def test_first_provider_returns_none_when_nothing_present():
+    assert _first_provider({}) is None
+    assert _first_provider({"config": {}}) is None
+    assert _first_provider({"config": {"provider": {}}}) is None
+
+
+def test_first_provider_vestigial_plural_path_still_resolves():
+    record = {"config": {"providers": {"legacy-name": {"type": "ollama"}}}}
+    assert _first_provider(record) == "legacy-name"

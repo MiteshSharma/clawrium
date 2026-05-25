@@ -109,8 +109,34 @@ def agent_to_row(
 
 
 def _first_provider(claw_record: dict) -> Optional[str]:
-    """Best-effort: surface the first configured provider name."""
+    """Surface the first attached provider name for the describe/get row.
+
+    Read order:
+    1. `claw_record["providers"]` — the new attach list (Pattern A; #426/#509).
+       Single-provider invariant is enforced at attach time, so index 0 is
+       the canonical name.
+    2. `claw_record["config"]["provider"]["name"]` — the materialization
+       layer written by `sync_agent` (lifecycle.py:945-992). Present on
+       every agent ever installed; used as last-known-good when the
+       attach list hasn't been populated yet (pre-Pattern-A installs).
+    3. `claw_record["config"]["providers"]` — vestigial plural-key path
+       kept for any handwritten or third-party record that uses it.
+    """
+    attached = claw_record.get("providers")
+    if isinstance(attached, list) and attached:
+        first = attached[0]
+        if isinstance(first, str):
+            return first
+        if isinstance(first, dict):
+            return first.get("name")
+
     config = claw_record.get("config", {}) or {}
+    materialized = config.get("provider")
+    if isinstance(materialized, dict):
+        name = materialized.get("name")
+        if name:
+            return name
+
     providers = config.get("providers") or {}
     if isinstance(providers, dict) and providers:
         return next(iter(providers.keys()))
