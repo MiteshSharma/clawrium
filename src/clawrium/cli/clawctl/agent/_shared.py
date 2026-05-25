@@ -114,21 +114,31 @@ def _first_provider(claw_record: dict) -> Optional[str]:
     Read order:
     1. `claw_record["providers"]` — the new attach list (Pattern A; #426/#509).
        Single-provider invariant is enforced at attach time, so index 0 is
-       the canonical name.
+       the canonical name. Accepts both `["name"]` (string entries) and
+       `[{"name": "..."}]` (dict entries) shapes.
     2. `claw_record["config"]["provider"]["name"]` — the materialization
-       layer written by `sync_agent` (lifecycle.py:945-992). Present on
-       every agent ever installed; used as last-known-good when the
-       attach list hasn't been populated yet (pre-Pattern-A installs).
+       layer written by `sync_agent` (lifecycle.py:945-992) on every
+       successful sync/configure with a provider attached. Absent on
+       fresh `clawctl agent create` records (config={}) and on agents
+       whose last configure call failed.
     3. `claw_record["config"]["providers"]` — vestigial plural-key path
        kept for any handwritten or third-party record that uses it.
+       Accepts dict (`{name: {...}}`) or list (`[name, ...]` /
+       `[{"name": "..."}, ...]`) shapes.
+
+    Falsy results from earlier tiers fall through to the next so a
+    malformed record (e.g. a dict attach-list entry without a `name`
+    key) cannot silently swallow the materialization fallback.
     """
     attached = claw_record.get("providers")
     if isinstance(attached, list) and attached:
         first = attached[0]
-        if isinstance(first, str):
+        if isinstance(first, str) and first:
             return first
         if isinstance(first, dict):
-            return first.get("name")
+            name = first.get("name")
+            if name:
+                return name
 
     config = claw_record.get("config", {}) or {}
     materialized = config.get("provider")
