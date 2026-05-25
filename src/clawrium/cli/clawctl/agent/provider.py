@@ -96,6 +96,19 @@ def attach(
     if name in current:
         typer.echo(f"agent/{agent}: provider {name!r} already attached")
         return
+    # Issue #426: single-provider invariant. Once an agent has a
+    # provider attached, refuse a second attachment with a clear
+    # remediation pointer. `sync` materializes the attachment into
+    # `config.provider`; multiple attachments would silently ambiguate
+    # which one wins at reconcile time.
+    if current:
+        emit_error(
+            f"agent '{agent}' already has provider {current[0]!r} attached",
+            hint=(
+                f"detach first: clawctl agent provider detach {current[0]} "
+                f"--agent {agent}"
+            ),
+        )
     current.append(name)
     if not _set_attached_providers(hostname, agent_key, current):
         emit_error(f"failed to attach provider {name!r} to agent {agent!r}")
@@ -121,6 +134,10 @@ def detach(
     current.remove(name)
     if not _set_attached_providers(hostname, agent_key, current):
         emit_error(f"failed to detach provider {name!r} from agent {agent!r}")
+    # Issue #426 design decision: detach does NOT strip
+    # `agent.config.provider`. The provider config persists across
+    # sync runs as last-known-good so the remote keeps functioning
+    # until the user explicitly attaches a replacement.
     typer.echo(f"agent/{agent}: detached provider {name!r}")
 
 

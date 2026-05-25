@@ -942,6 +942,52 @@ def sync_agent(
         raise LifecycleError(f"Agent '{target}' not installed on '{hostname}'")
     agent_key, agent_type, claw_record = resolved
 
+    # Issue #426: bridge `agent.providers` (the attach list written by
+    # `clawctl agent provider attach`) → `config.provider` (the dict the
+    # Ansible templates render). The Pattern A surface from #509 records
+    # attachments as metadata only; sync is the declarative reconcile
+    # point that materializes those attachments into the agent's config
+    # before pushing to the remote. `detach` intentionally does NOT strip
+    # `config.provider` — once a provider lands in config it is
+    # last-known-good across subsequent syncs (design decision on #426).
+    attached_providers = claw_record.get("providers") or []
+    provider_overlay: dict | None = None
+    provider_name_for_state: str | None = None
+    if attached_providers:
+        if len(attached_providers) > 1:
+            # `attach` enforces the single-provider invariant; reaching
+            # this branch means hosts.json was hand-edited. Fail loudly
+            # rather than silently picking index 0.
+            raise LifecycleError(
+                f"agent '{agent_key}' has {len(attached_providers)} providers "
+                f"attached; single-provider invariant requires exactly one. "
+                f"Detach extras with 'clawctl agent provider detach <name> "
+                f"--agent {agent_key}'."
+            )
+        from clawrium.core.providers.storage import get_provider
+
+        provider_name = attached_providers[0]
+        provider_record = get_provider(provider_name)
+        if provider_record is None:
+            raise LifecycleError(
+                f"attached provider '{provider_name}' not registered. "
+                f"Run 'clawctl provider registry get' to list available providers."
+            )
+        # Shape mirrors the legacy `_sync_provider_config` builder
+        # (src/clawrium/cli/agent.py:360-374) so configure_agent's
+        # validation block (~lines 1266-1296) accepts the dict unchanged.
+        provider_overlay = {
+            "name": provider_record.get("name", ""),
+            "type": provider_record.get("type", "ollama"),
+            "endpoint": provider_record.get("endpoint", ""),
+            "default_model": provider_record.get("default_model", ""),
+        }
+        if provider_record.get("context_window"):
+            provider_overlay["context_window"] = provider_record["context_window"]
+        if provider_record.get("max_tokens"):
+            provider_overlay["max_tokens"] = provider_record["max_tokens"]
+        provider_name_for_state = provider_name
+
     onboarding = claw_record.get("onboarding", {})
     state_value = onboarding.get("state", "pending")
 
@@ -950,18 +996,61 @@ def sync_agent(
     except ValueError:
         state = OnboardingState.PENDING
 
+    # Issue #426: when a fresh agent (state=PENDING) has an attached
+    # provider, advance the state machine through the `providers` stage
+    # so the PENDING-rejection check below passes. This is what makes
+    # `create → attach → sync` work without an intermediate manual
+    # `configure --stage providers` step. Re-sync after attach swap
+    # routes through update_stage_metadata per legacy precedent
+    # (_run_providers_stage:498-509 in cli/agent.py).
+    if provider_name_for_state and state == OnboardingState.PENDING:
+        from clawrium.core.onboarding import (
+            InvalidTransitionError,
+            StageStatus,
+            complete_stage,
+            update_stage_metadata,
+        )
+
+        try:
+            complete_stage(
+                hostname,
+                agent_key,
+                "providers",
+                StageStatus.COMPLETE,
+                {"provider_id": provider_name_for_state},
+            )
+        except InvalidTransitionError:
+            update_stage_metadata(
+                hostname,
+                agent_key,
+                "providers",
+                {"provider_id": provider_name_for_state},
+            )
+        state = OnboardingState.PROVIDERS
+
     if state == OnboardingState.PENDING:
         raise LifecycleError(
             f"Cannot sync {agent_key}: onboarding not started (state={state_value}). "
-            f"Run 'clm agent configure {agent_key}' first."
+            f"Attach a provider first: 'clawctl agent provider attach <name> "
+            f"--agent {agent_key}'."
         )
 
     existing_config = claw_record.get("config", {})
     if not existing_config:
         raise LifecycleError(
             f"No configuration found for {agent_key}. "
-            f"Run 'clm agent configure {agent_key}' first."
+            f"Attach a provider first: 'clawctl agent provider attach <name> "
+            f"--agent {agent_key}'."
         )
+
+    # Issue #426: overlay materialized provider onto existing config.
+    # configure_agent persists the merged dict into
+    # hosts.json.agents.<key>.config via its updater closure (line ~1709)
+    # after Ansible succeeds, satisfying the persistence-across-syncs
+    # contract.
+    if provider_overlay is not None:
+        existing_config = dict(existing_config)
+        existing_config["provider"] = provider_overlay
 
     emit("sync", f"Configuring {agent_key}...")
     config_success, config_error = configure_agent(
