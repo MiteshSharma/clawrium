@@ -102,12 +102,20 @@ def describe(
             # Stage records are written by core/onboarding.py under the
             # key `status` ("complete" / "skipped" / "failed") — see
             # complete_stage (line 327) and initialize_onboarding
-            # (lines 451-457). The `or info.get("state")` fallback is a
-            # read-compat shim for handwritten or third-party records
-            # that use the old key shape; covered by
-            # `test_describe_stage_state_key_fallback` in
-            # tests/cli/clawctl/agent/test_get_describe.py.
-            stage_state = info.get("status") or info.get("state") or "pending"
+            # (lines 451-457). The `state` fallback is a read-compat
+            # shim for handwritten or third-party records that use the
+            # old key shape; covered by
+            # `test_describe_stage_state_key_fallback`.
+            #
+            # Explicit `is not None` check (not `or`-chain) so a
+            # handwritten record with `{"status": ""}` is treated as
+            # "status key present but empty" → renders "pending"
+            # rather than silently falling through to the state-key
+            # shim. ATX iter-3 W-N-2.
+            raw_status = info.get("status")
+            if raw_status is None:
+                raw_status = info.get("state")
+            stage_state = raw_status or "pending"
             completed = info.get("completed_at", "")
         else:
             stage_state = str(info)
