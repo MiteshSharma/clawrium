@@ -1017,6 +1017,10 @@ def sync_agent(
     # VALIDATE or earlier) can advance the agent the rest of the way.
     # Idempotent operations inside the walk swallow InvalidTransitionError
     # when state is already past a given stage. ATX iter-2 B-ITER2-1.
+    # Pre-initialize `walk_completed` so a future refactor adding an
+    # early-return path can't cause a NameError at the PENDING gate.
+    # ATX iter-3 S2.
+    walk_completed = False
     if provider_name_for_state and state != OnboardingState.READY:
         from clawrium.core.onboarding import (
             InvalidTransitionError,
@@ -1119,9 +1123,6 @@ def sync_agent(
         walk_completed = True
         state = _OS.VALIDATE  # furthest the pre-configure walk advances
 
-    else:
-        walk_completed = False
-
     if state == OnboardingState.PENDING and not walk_completed:
         raise LifecycleError(
             f"Cannot sync {agent_key}: onboarding not started (state={state_value}). "
@@ -1179,14 +1180,50 @@ def sync_agent(
     # sync; state can be repaired by a subsequent sync after manual
     # configure of stuck stages).
     from clawrium.core.onboarding import (
+        AgentNotFoundError as _ANF_post,
+        InvalidTransitionError as _ITE_post,
+        OnboardingNotFoundError as _ONF_post,
         OnboardingState as _OS_post,
         transition_state as _transition_post,
     )
 
     try:
         _transition_post(hostname, agent_key, _OS_post.READY)
-    except Exception:
+    except _ITE_post:
+        # Stuck mid-walk at PROVIDERS/IDENTITY/CHANNELS, or idempotent
+        # READY→READY. No recovery via re-sync; agent is configured
+        # remotely, only the local state pointer is stale. Silent is
+        # correct — start_agent will surface the non-READY state.
+        # ATX iter-3 W-NEW-1.
         pass
+    except (_ANF_post, _ONF_post) as exc:
+        # Registry incoherence: the agent or onboarding record vanished
+        # between configure_agent succeeding and the READY write. No
+        # recovery via re-sync (same error will fire) — distinct
+        # remediation from the IO-failure branch below. ATX iter-5
+        # W2-NEW carry-forward.
+        emit(
+            "sync",
+            f"warning: registry record missing for {agent_key} after "
+            f"configure: {exc!s}. Inspect hosts.json manually before "
+            f"running clawctl agent start.",
+        )
+    except Exception as exc:
+        # Storage / IO failure (PermissionError, etc.) writing the
+        # READY pointer. Don't fail the sync — configure_agent already
+        # succeeded — but surface the gap. Re-sync IS the right
+        # remediation here. ATX iter-3 W-NEW-1.
+        #
+        # Note: emit raw exception string. Rendering-library escaping
+        # is the consumer's job (see clawctl/agent/sync.py:on_event
+        # and cli/agent.py:on_event for the boundary). ATX iter-5
+        # B1-iter5 (rich.markup.escape moved out of core).
+        emit(
+            "sync",
+            f"warning: could not write state=READY to hosts.json: "
+            f"{exc!s}. Agent is configured remotely; re-run sync to "
+            f"commit state.",
+        )
 
     emit("sync", f"Sync complete for {agent_key}")
 
