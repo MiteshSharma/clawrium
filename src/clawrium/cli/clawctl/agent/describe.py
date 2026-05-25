@@ -99,7 +99,12 @@ def describe(
     for stage in ("providers", "identity", "channels", "validate"):
         info = stages.get(stage, {})
         if isinstance(info, dict):
-            stage_state = info.get("state", "pending")
+            # Stage records are written by core/onboarding.py:complete_stage
+            # under the key `status` ("complete" / "skipped" / "failed").
+            # `state` has never existed on a stage record — the legacy
+            # default of "pending" masked the read of a nonexistent key
+            # for every agent that ever completed onboarding.
+            stage_state = info.get("status") or info.get("state") or "pending"
             completed = info.get("completed_at", "")
         else:
             stage_state = str(info)

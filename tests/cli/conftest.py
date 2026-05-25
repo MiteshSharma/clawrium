@@ -70,10 +70,10 @@ def fleet_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                     "onboarding": {
                         "state": "ready",
                         "stages": {
-                            "providers": {"state": "complete"},
-                            "identity": {"state": "complete"},
-                            "channels": {"state": "skipped"},
-                            "validate": {"state": "complete"},
+                            "providers": {"status": "complete"},
+                            "identity": {"status": "complete"},
+                            "channels": {"status": "skipped"},
+                            "validate": {"status": "complete"},
                         },
                     },
                     "config": {},

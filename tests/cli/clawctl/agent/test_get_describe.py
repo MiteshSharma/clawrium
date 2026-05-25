@@ -59,6 +59,26 @@ def test_describe_includes_onboarding(fleet_dir) -> None:
     assert "validate" in result.output
 
 
+def test_describe_renders_completed_stage_status(fleet_dir) -> None:
+    # Regression: describe.py read `info.get("state")` while stage records
+    # are written by core/onboarding.py:complete_stage under `status`.
+    # Every completed agent rendered every stage as "pending". The fixture
+    # also had `state`, so no test caught the mismatch end-to-end until
+    # both sides were aligned on the real key (`status`).
+    result = runner.invoke(app, ["agent", "describe", "wise-hypatia"])
+    assert result.exit_code == 0
+    onboarding_block = result.output.split("Onboarding:", 1)[1]
+    assert "complete" in onboarding_block
+    assert "skipped" in onboarding_block
+    # Should NOT show pending for a stage that has a recorded status.
+    # (Empty stages would still default to pending; the fixture has none.)
+    pending_count = onboarding_block.lower().count("pending")
+    assert pending_count == 0, (
+        f"onboarding block reported {pending_count} pending stage(s) but "
+        f"fixture has all stages with explicit status; block was:\n{onboarding_block}"
+    )
+
+
 def test_describe_unknown_agent_errors(fleet_dir) -> None:
     result = runner.invoke(app, ["agent", "describe", "nope"])
     assert result.exit_code != 0
