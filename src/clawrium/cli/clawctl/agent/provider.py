@@ -86,7 +86,13 @@ def attach(
     name: str = typer.Argument(..., help="Provider name to attach."),
     agent: str = typer.Option(..., "--agent", help="Agent instance name."),
 ) -> None:
-    """Attach a registered provider to an agent."""
+    """Attach a registered provider to an agent.
+
+    The attachment is metadata only at this point — the provider config
+    is materialized onto the remote agent on the next `clawctl agent
+    sync`. Single-provider invariant: detach the current provider
+    before attaching a different one. See #426.
+    """
     _safe_get_provider(name)
     host, _agent_type, _claw = safe_resolve_agent(agent)
     hostname = host["hostname"]
@@ -96,6 +102,19 @@ def attach(
     if name in current:
         typer.echo(f"agent/{agent}: provider {name!r} already attached")
         return
+    # Issue #426: single-provider invariant. Once an agent has a
+    # provider attached, refuse a second attachment with a clear
+    # remediation pointer. `sync` materializes the attachment into
+    # `config.provider`; multiple attachments would silently ambiguate
+    # which one wins at reconcile time.
+    if current:
+        emit_error(
+            f"agent '{agent}' already has provider {current[0]!r} attached",
+            hint=(
+                f"detach first: clawctl agent provider detach {current[0]} "
+                f"--agent {agent}"
+            ),
+        )
     current.append(name)
     if not _set_attached_providers(hostname, agent_key, current):
         emit_error(f"failed to attach provider {name!r} to agent {agent!r}")
@@ -107,7 +126,14 @@ def detach(
     name: str = typer.Argument(..., help="Provider name to detach."),
     agent: str = typer.Option(..., "--agent", help="Agent instance name."),
 ) -> None:
-    """Detach a provider from an agent."""
+    """Detach a provider from an agent.
+
+    Note: the provider config previously materialized into the agent's
+    `config.provider` block is preserved as last-known-good across
+    syncs. To switch providers, attach a replacement and run
+    `clawctl agent sync`; the new provider will overwrite the old.
+    See #426.
+    """
     host, _agent_type, _claw = safe_resolve_agent(agent)
     hostname = host["hostname"]
     agent_key = resolve_agent_key(host, agent)
@@ -121,6 +147,10 @@ def detach(
     current.remove(name)
     if not _set_attached_providers(hostname, agent_key, current):
         emit_error(f"failed to detach provider {name!r} from agent {agent!r}")
+    # Issue #426 design decision: detach does NOT strip
+    # `agent.config.provider`. The provider config persists across
+    # sync runs as last-known-good so the remote keeps functioning
+    # until the user explicitly attaches a replacement.
     typer.echo(f"agent/{agent}: detached provider {name!r}")
 
 
