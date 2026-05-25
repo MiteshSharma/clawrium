@@ -111,7 +111,7 @@ def agent_to_row(
 def _first_provider(claw_record: dict) -> Optional[str]:
     """Surface the first attached provider name for the describe/get row.
 
-    Read order:
+    Read order (falsy/malformed at any tier falls through to the next):
     1. `claw_record["providers"]` — the new attach list (Pattern A; #426/#509).
        Single-provider invariant is enforced at attach time, so index 0 is
        the canonical name. Accepts both `["name"]` (string entries) and
@@ -123,36 +123,56 @@ def _first_provider(claw_record: dict) -> Optional[str]:
        whose last configure call failed.
     3. `claw_record["config"]["providers"]` — vestigial plural-key path
        kept for any handwritten or third-party record that uses it.
-       Accepts dict (`{name: {...}}`) or list (`[name, ...]` /
-       `[{"name": "..."}, ...]`) shapes.
+       Accepts dict (`{name: {...}}`) and list (`[name, ...]` /
+       `[{"name": "..."}, ...]`) shapes. Terminal tier — anything
+       malformed here returns None (no further fallback).
 
-    Falsy results from earlier tiers fall through to the next so a
-    malformed record (e.g. a dict attach-list entry without a `name`
-    key) cannot silently swallow the materialization fallback.
+    String entries are validated against `PROVIDER_NAME_PATTERN` (the
+    same pattern enforced at write time by `validate_provider_name`).
+    Mismatches fall through rather than render — this closes the
+    write-time/read-time validation asymmetry against handwritten
+    records that contain markup or other non-conforming characters.
     """
+    from clawrium.core.providers.storage import PROVIDER_NAME_PATTERN
+
+    def _accept(value: object) -> Optional[str]:
+        """Return value if it's a non-empty, pattern-matching string."""
+        if isinstance(value, str) and value and PROVIDER_NAME_PATTERN.match(value):
+            return value
+        return None
+
     attached = claw_record.get("providers")
     if isinstance(attached, list) and attached:
         first = attached[0]
-        if isinstance(first, str) and first:
-            return first
+        accepted = _accept(first)
+        if accepted:
+            return accepted
         if isinstance(first, dict):
-            name = first.get("name")
-            if name:
-                return name
+            accepted = _accept(first.get("name"))
+            if accepted:
+                return accepted
 
     config = claw_record.get("config", {}) or {}
     materialized = config.get("provider")
     if isinstance(materialized, dict):
-        name = materialized.get("name")
-        if name:
-            return name
+        accepted = _accept(materialized.get("name"))
+        if accepted:
+            return accepted
 
     providers = config.get("providers") or {}
     if isinstance(providers, dict) and providers:
-        return next(iter(providers.keys()))
-    if isinstance(providers, list) and providers:
+        # Dict key path: validate the key the same way as other tiers
+        # so e.g. `{"[bold]x[/]": {...}}` doesn't render markup.
+        accepted = _accept(next(iter(providers.keys())))
+        if accepted:
+            return accepted
+    elif isinstance(providers, list) and providers:
         first = providers[0]
+        accepted = _accept(first)
+        if accepted:
+            return accepted
         if isinstance(first, dict):
-            return first.get("name")
-        return str(first)
+            accepted = _accept(first.get("name"))
+            if accepted:
+                return accepted
     return None

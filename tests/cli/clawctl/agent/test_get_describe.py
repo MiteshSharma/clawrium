@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import yaml
 from typer.testing import CliRunner
@@ -11,6 +12,14 @@ from clawrium.cli import app
 from clawrium.cli.clawctl.agent._shared import _first_provider
 
 runner = CliRunner()
+
+
+def _patch_fleet_agent(fleet_dir, mutator) -> None:
+    """Load hosts.json, apply mutator to the wise-hypatia agent record, save."""
+    hosts_path = Path(fleet_dir) / "hosts.json"
+    hosts = json.loads(hosts_path.read_text())
+    mutator(hosts[0]["agents"]["openclaw"])
+    hosts_path.write_text(json.dumps(hosts, indent=2))
 
 
 def test_get_default_columns(fleet_dir) -> None:
@@ -180,71 +189,59 @@ def test_first_provider_never_synced_agent_shape():
 # ---------------------------------------------------------------------------
 
 
-def test_describe_stage_status_key_wins_over_state_key(
-    fleet_dir, monkeypatch
-) -> None:
-    # B2: when both `status` and `state` are present, `status` must win.
-    # The fixture's wise-hypatia agent gets a stage that carries both
-    # keys; the rendered output should contain the `status` value, not
-    # the `state` value.
-    import json
-    from pathlib import Path
+# Stage status `status` primary read — B2 discriminating tests
+# ---------------------------------------------------------------------------
 
-    hosts_path = Path(fleet_dir) / "hosts.json"
-    hosts = json.loads(hosts_path.read_text())
-    hosts[0]["agents"]["openclaw"]["onboarding"]["stages"]["providers"] = {
-        "status": "complete",
-        "state": "legacy-should-be-ignored",
-    }
-    hosts_path.write_text(json.dumps(hosts, indent=2))
+
+def test_describe_stage_status_key_wins_over_state_key(fleet_dir) -> None:
+    # B2: when both `status` and `state` are present, `status` must win.
+    def mutate(agent):
+        agent["onboarding"]["stages"]["providers"] = {
+            "status": "complete",
+            "state": "legacy-should-be-ignored",
+        }
+
+    _patch_fleet_agent(fleet_dir, mutate)
 
     result = runner.invoke(app, ["agent", "describe", "wise-hypatia"])
     assert result.exit_code == 0
     onboarding_block = result.output.split("Onboarding:", 1)[1]
     assert "legacy-should-be-ignored" not in onboarding_block
-    # The providers line should render the status value.
     providers_line = next(
         line for line in onboarding_block.splitlines() if "providers" in line
     )
     assert "complete" in providers_line
 
 
-def test_describe_stage_state_key_fallback(fleet_dir) -> None:
-    # W3: the `or info.get("state")` shim is kept for handwritten /
-    # third-party records that use the old key shape. Make it live and
-    # intentional by asserting it renders correctly when only `state`
-    # is present.
-    import json
-    from pathlib import Path
+def test_describe_stage_status_only_no_state_fallback(fleet_dir) -> None:
+    # W-B (iter-2): if `info.get("status")` is removed from describe.py,
+    # this test fails — the `state` fallback returns None, default
+    # "pending" wins, and the assertion below catches the regression.
+    # Discriminates the primary-read failure mode without relying on
+    # the two-key fixture or the empty-dict fixture (both of which
+    # would silently pass with only the `state` fallback).
+    def mutate(agent):
+        agent["onboarding"]["stages"]["providers"] = {"status": "complete"}
 
-    hosts_path = Path(fleet_dir) / "hosts.json"
-    hosts = json.loads(hosts_path.read_text())
-    hosts[0]["agents"]["openclaw"]["onboarding"]["stages"]["validate"] = {
-        "state": "complete",  # only `state`, no `status`
-    }
-    hosts_path.write_text(json.dumps(hosts, indent=2))
+    _patch_fleet_agent(fleet_dir, mutate)
 
     result = runner.invoke(app, ["agent", "describe", "wise-hypatia"])
     assert result.exit_code == 0
     onboarding_block = result.output.split("Onboarding:", 1)[1]
-    validate_line = next(
-        line for line in onboarding_block.splitlines() if "validate" in line
+    providers_line = next(
+        line for line in onboarding_block.splitlines() if "providers" in line
     )
-    assert "complete" in validate_line
+    assert "complete" in providers_line
+    assert "pending" not in providers_line
 
 
-def test_describe_stage_missing_status_defaults_to_pending(
-    fleet_dir,
-) -> None:
+def test_describe_stage_missing_status_defaults_to_pending(fleet_dir) -> None:
     # B2: a stage record with neither `status` nor `state` falls back
     # to the default `pending`.
-    import json
-    from pathlib import Path
+    def mutate(agent):
+        agent["onboarding"]["stages"]["identity"] = {}
 
-    hosts_path = Path(fleet_dir) / "hosts.json"
-    hosts = json.loads(hosts_path.read_text())
-    hosts[0]["agents"]["openclaw"]["onboarding"]["stages"]["identity"] = {}
-    hosts_path.write_text(json.dumps(hosts, indent=2))
+    _patch_fleet_agent(fleet_dir, mutate)
 
     result = runner.invoke(app, ["agent", "describe", "wise-hypatia"])
     assert result.exit_code == 0
@@ -255,18 +252,42 @@ def test_describe_stage_missing_status_defaults_to_pending(
     assert "pending" in identity_line
 
 
-def test_describe_provider_line_renders_attach_list_name(fleet_dir) -> None:
-    # CLI-level coverage for the Provider column: previously only the
-    # unit-level _first_provider tests asserted the read-order chain.
-    # The fixture's wise-hypatia agent gets a provider attached; the
-    # rendered output must contain that name on the Provider line.
-    import json
-    from pathlib import Path
+# ---------------------------------------------------------------------------
+# Backward-compatibility shim — `state`-key fallback for handwritten records
+# ---------------------------------------------------------------------------
 
-    hosts_path = Path(fleet_dir) / "hosts.json"
-    hosts = json.loads(hosts_path.read_text())
-    hosts[0]["agents"]["openclaw"]["providers"] = ["clawrium-glm51"]
-    hosts_path.write_text(json.dumps(hosts, indent=2))
+
+def test_describe_stage_state_key_fallback(fleet_dir) -> None:
+    # W3 (iter-1): the `or info.get("state")` shim is kept for
+    # handwritten / third-party records that use the old key shape.
+    # Make it live and intentional by asserting it renders correctly
+    # when only `state` is present. This is NOT a B2 discriminator —
+    # see `test_describe_stage_status_only_no_state_fallback` for that.
+    def mutate(agent):
+        agent["onboarding"]["stages"]["validate"] = {"state": "complete"}
+
+    _patch_fleet_agent(fleet_dir, mutate)
+
+    result = runner.invoke(app, ["agent", "describe", "wise-hypatia"])
+    assert result.exit_code == 0
+    onboarding_block = result.output.split("Onboarding:", 1)[1]
+    validate_line = next(
+        line for line in onboarding_block.splitlines() if "validate" in line
+    )
+    assert "complete" in validate_line
+
+
+# ---------------------------------------------------------------------------
+# Provider column CLI-level coverage
+# ---------------------------------------------------------------------------
+
+
+def test_describe_provider_line_renders_attach_list_name(fleet_dir) -> None:
+    # CLI-level coverage for the Provider column.
+    def mutate(agent):
+        agent["providers"] = ["clawrium-glm51"]
+
+    _patch_fleet_agent(fleet_dir, mutate)
 
     result = runner.invoke(app, ["agent", "describe", "wise-hypatia"])
     assert result.exit_code == 0
@@ -274,3 +295,73 @@ def test_describe_provider_line_renders_attach_list_name(fleet_dir) -> None:
         line for line in result.output.splitlines() if line.startswith("Provider:")
     )
     assert "clawrium-glm51" in provider_line
+
+
+# ---------------------------------------------------------------------------
+# Tier-3 vestigial-list path safety (W-A iter-2)
+# ---------------------------------------------------------------------------
+
+
+def test_first_provider_tier3_list_dict_without_name_returns_none():
+    # W-A: tier-3 list-of-dicts with a nameless entry. Used to fall
+    # through `return first.get("name")` returning None; now explicit.
+    record = {"config": {"providers": [{"type": "ollama"}]}}
+    assert _first_provider(record) is None
+
+
+def test_first_provider_tier3_list_none_entry_does_not_render_None_string():
+    # W-A: `return str(first)` would have produced the literal string
+    # "None" in the PROVIDER column. Must return None instead.
+    record = {"config": {"providers": [None]}}
+    assert _first_provider(record) is None
+
+
+def test_first_provider_tier3_list_int_entry_does_not_coerce():
+    # W-A: integer entry should not render as "42" in the PROVIDER
+    # column.
+    record = {"config": {"providers": [42]}}
+    assert _first_provider(record) is None
+
+
+# ---------------------------------------------------------------------------
+# Type-safety on tier-1 dict `name` value (W-C iter-2)
+# ---------------------------------------------------------------------------
+
+
+def test_first_provider_dict_name_value_is_non_string_falls_through():
+    # W-C: a dict attach-list entry whose `name` is itself a dict
+    # would have rendered as a Python repr in the PROVIDER column.
+    # Now falls through to the materialization tier.
+    record = {
+        "providers": [{"name": {"nested": "bad"}}],
+        "config": {"provider": {"name": "clawrium-glm51"}},
+    }
+    assert _first_provider(record) == "clawrium-glm51"
+
+
+# ---------------------------------------------------------------------------
+# Format validation on string entries (W-D iter-2 — defense-in-depth)
+# ---------------------------------------------------------------------------
+
+
+def test_first_provider_string_attach_with_markup_falls_through():
+    # W-D: a handwritten attach entry containing Rich/markdown markup
+    # (`[bold]x[/]`) does not match PROVIDER_NAME_PATTERN at write
+    # time but historically passed the read-time check. Now read-time
+    # also validates the pattern, falling through to the materialized
+    # value so a malformed attach record cannot inject characters
+    # into the PROVIDER column.
+    record = {
+        "providers": ["[bold]atk[/]"],
+        "config": {"provider": {"name": "clawrium-glm51"}},
+    }
+    assert _first_provider(record) == "clawrium-glm51"
+
+
+def test_first_provider_string_attach_with_invalid_chars_falls_through():
+    # W-D: pattern rejects names with `/`, `:`, etc. — falls through.
+    record = {
+        "providers": ["evil/path"],
+        "config": {"provider": {"name": "clawrium-glm51"}},
+    }
+    assert _first_provider(record) == "clawrium-glm51"
