@@ -64,19 +64,22 @@ def fleet_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                     "installed_at": _utcnow(),
                     "status": "installed",
                     "onboarding": {
+                        # Outer `state` is the state-machine pointer
+                        # (core/onboarding.py:228). Per-stage records use
+                        # `status` (core/onboarding.py:327, 451-457).
                         "state": "ready",
                         "stages": {
                             "providers": {
-                                "state": "complete",
+                                "status": "complete",
                                 "completed_at": _utcnow(),
                             },
                             "identity": {
-                                "state": "complete",
+                                "status": "complete",
                                 "completed_at": _utcnow(),
                             },
-                            "channels": {"state": "skipped"},
+                            "channels": {"status": "skipped"},
                             "validate": {
-                                "state": "complete",
+                                "status": "complete",
                                 "completed_at": _utcnow(),
                             },
                         },
