@@ -9,6 +9,10 @@ and forwarded to the local terminal.
 Unknown options pass through (Typer `ignore_unknown_options`), so
 `clawctl agent exec myagent --version` works without a `--` separator;
 `--` may still be used to disambiguate.
+
+Exception: `--help` is intercepted by Typer and shows clawctl's own
+help. Use `clawctl agent exec myagent -- --help` to forward `--help`
+to the remote binary (ATX iter-2 NW3).
 """
 
 from __future__ import annotations

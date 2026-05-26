@@ -50,6 +50,17 @@
         msg: "openclaw binary not found on host (checked {{ per_agent_binary }} and PATH)"
       when: (resolved_binary | length) == 0
 
+    - name: Reject `..` segments in resolved binary path
+      # `startswith('/usr/local/bin/')` can be bypassed by a path like
+      # `/usr/local/bin/../../tmp/evil` (ATX iter-2 NW1). Reject any
+      # path containing a `..` segment outright; symlinks are still
+      # honored at exec time because `command:` follows them.
+      ansible.builtin.fail:
+        msg: "Resolved openclaw binary contains '..' path segment: {{ resolved_binary }}"
+      when: ('/../' in resolved_binary)
+            or resolved_binary.endswith('/..')
+            or resolved_binary.startswith('../')
+
     - name: Validate resolved binary path (allowlist)
       ansible.builtin.fail:
         msg: "Resolved openclaw binary at unsafe path: {{ resolved_binary }}"

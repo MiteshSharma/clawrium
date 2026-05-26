@@ -170,6 +170,18 @@ def test_exec_strips_bidi_from_remote_stdout(
     assert "okdanger" in result.output
 
 
+def test_exec_strips_bidi_from_remote_stderr(
+    fleet_dir, stdin_not_tty, stub_exec
+):
+    """ATX iter-2 NW5: stderr path must also be sanitized."""
+    stub_exec["_stdout"] = ""
+    stub_exec["_stderr"] = "err" + chr(0x202E) + "line\n"
+    result = runner.invoke(app, ["agent", "exec", "wise-hypatia", "--", "x"])
+    assert result.exit_code == 0
+    assert chr(0x202E) not in result.output
+    assert "errline" in result.output
+
+
 def test_exec_preserves_remote_newlines(fleet_dir, stdin_not_tty, stub_exec):
     """sanitize_passthrough must not strip \\n the way sanitize() does."""
     stub_exec["_stdout"] = "line1\nline2\nline3\n"

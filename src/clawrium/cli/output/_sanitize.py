@@ -88,23 +88,20 @@ def sanitize(value: str) -> str:
 # exec`) that forward agent-controlled output verbatim and must
 # preserve whitespace including \n/\t/\r. Literal bidi codepoints
 # MUST NOT appear in this source -- same hygiene rule as above.
-def _build_bidi_only_pattern() -> str:
-    parts = [
-        (0x061C, 0x061C),
-        (0x200B, 0x200F),
-        (0x2028, 0x2029),
-        (0x202A, 0x202E),
-        (0x2060, 0x2060),
-        (0x2066, 0x2069),
-        (0xFEFF, 0xFEFF),
-    ]
-    body = "".join(
-        f"{chr(lo)}-{chr(hi)}" if lo != hi else chr(lo) for lo, hi in parts
-    )
-    return "[" + body + "]"
-
-
-_BIDI_ONLY_RE = re.compile(_build_bidi_only_pattern())
+_BIDI_ONLY_RE = re.compile(
+    # \uXXXX escapes only -- the test_source_is_pure_ascii guard
+    # mirrors the same hygiene rule applied to _CONTROL_AND_BIDI_RE
+    # above (ATX iter-2 NW4).
+    "["
+    "\u061c"
+    "\u200b-\u200f"
+    "\u2028-\u2029"
+    "\u202a-\u202e"
+    "\u2060"
+    "\u2066-\u2069"
+    "\ufeff"
+    "]"
+)
 
 
 def sanitize_passthrough(value: str) -> str:

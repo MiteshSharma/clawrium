@@ -213,7 +213,16 @@ def run_agent_exec(
             _logs_dir() / f"exec-{claw_type}-{host_display}-{timestamp}-{suffix}"
         )
         log_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(log_dir, 0o700)
+        try:
+            os.chmod(log_dir, 0o700)
+        except OSError:
+            # Don't leave an orphaned dir on disk if chmod fails
+            # (ATX iter-2 NW6).
+            try:
+                log_dir.rmdir()
+            except OSError:
+                pass
+            raise
     except OSError as e:
         return "", f"Failed to set up runner workdir: {e}", 255
 
