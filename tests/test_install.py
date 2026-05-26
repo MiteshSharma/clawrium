@@ -2243,7 +2243,8 @@ def test_install_hermes_persists_zero_bind_in_hosts_json(monkeypatch, tmp_path):
     api_server = final["agents"]["hermes-test"]["config"]["api_server"]
     assert api_server["enabled"] is True
     assert api_server["host"] == "0.0.0.0"
-    assert api_server["port"] == 8642
+    # Issue #533: per-instance port from the 8600..8699 window.
+    assert 8600 <= api_server["port"] <= 8699
     # B3 invariant: bearer never lands in hosts.json
     assert "key" not in api_server
 

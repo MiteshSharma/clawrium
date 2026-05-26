@@ -140,9 +140,9 @@
         group: "{{ agent_name }}"
         mode: "0700"
 
-    - name: Calculate unique port (40000-42000 range)
+    - name: Resolve per-instance gateway port from inventory (issue #533)
       ansible.builtin.set_fact:
-        openclaw_port: "{{ 40000 + ((agent_name | hash('md5') | int(base=16)) % 2000) }}"
+        openclaw_port: "{{ config.gateway.port }}"
 
     # Skip on already-installed path: rewriting openclaw.json would rotate the
     # gateway token in the running daemon and invalidate the credentials cached
@@ -155,6 +155,12 @@
         group: "{{ agent_name }}"
         mode: "0600"
       when: not openclaw_already_installed
+      # ATX iter-1 B1: openclaw.json embeds the gateway bearer token.
+      # Every other secret-touching task in this playbook already carries
+      # `no_log: true`; this template write must too so `-v` ansible-runner
+      # logs don't leak the rendered file path / contents into the artifact
+      # directory.
+      no_log: true
 
     - name: Write exec approvals policy from template
       ansible.builtin.template:
@@ -254,6 +260,11 @@
         - gateway_token_result_stdout is not defined or
           gateway_token_result_stdout | length < 32 or
           not (gateway_token_result_stdout is regex('^[a-zA-Z0-9_-]+$'))
+      # ATX iter-2 B1: every adjacent task touching gateway_token_result_stdout
+      # carries no_log: true. At -v / -vvv, ansible-runner writes the
+      # evaluated when-condition into the artifacts directory before
+      # _cleanup_ansible_artifacts runs.
+      no_log: true
 
     - name: Copy device pairing script
       ansible.builtin.copy:
@@ -293,6 +304,9 @@
       when:
         - not openclaw_already_installed
         - device_credentials.deviceToken is not defined or device_credentials.deviceToken | length < 10
+      # ATX iter-1 W5: consistency with surrounding `no_log: true` tasks.
+      # `when` clause evaluation may surface the token length in verbose logs.
+      no_log: true
 
     - name: Clean up pairing script
       ansible.builtin.file:
@@ -307,6 +321,11 @@
     - name: Save all credentials to fact for retrieval
       ansible.builtin.set_fact:
         openclaw_gateway_token: "{{ gateway_token_result_stdout }}"
+        # ATX iter-1 W4: scheme is hardcoded `ws://`. Operators fronting the
+        # gateway with TLS need `wss://` here; today they get a confusing
+        # connection error from `clm chat <openclaw>`. Tracked as a known
+        # limitation; safe to address in a follow-up since openclaw deploys
+        # are LAN-only today (no TLS termination in the documented topology).
         openclaw_gateway_url: "ws://{{ ansible_host }}:{{ openclaw_port }}"
         openclaw_device_id: "{{ device_credentials.deviceId }}"
         openclaw_device_token: "{{ device_credentials.deviceToken }}"

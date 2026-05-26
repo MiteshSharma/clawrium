@@ -2282,7 +2282,168 @@ class TestHermesBindMigration:
         assert success is True, error
         sent = captured["inventory"]["all"]["vars"]["config"]
         assert sent["api_server"]["host"] == "0.0.0.0"
+        # Issue #533: legacy-shape reconstruction picks a per-instance port
+        # in 8600..8699 and persists it back. ATX iter-2 W1: prefers 8642
+        # (the literal that pre-#533 hermes daemons are actually bound to)
+        # when free on the host, so the running daemon is what `clm chat`
+        # reaches without a daemon restart.
+        assert 8600 <= sent["api_server"]["port"] <= 8699
+        assert sent["api_server"]["port"] == 8642  # 8642 was free on this host
+
+
+class TestHermesApiServerPortIssue533:
+    """Tests for the api_server port validation/reconstruction branches added
+    in issue #533. See ATX iter-2 W1 (legacy reconstruct) and W6 (range check
+    on persisted port)."""
+
+    def _persisted_key_secret(self, key: str) -> dict:
+        return {"HERMES_API_SERVER_KEY": {"value": key}}
+
+    def test_configure_rejects_out_of_range_persisted_port_picks_fresh(
+        self, tmp_path: Path
+    ):
+        """ATX iter-2 W6: a hand-edited hosts.json with `api_server.port=22`
+        must NOT be forwarded to Ansible. lifecycle.py warns and picks a
+        fresh port in 8600..8699 via _pick_per_instance_port."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agents": {
+                "hermes-test": {
+                    "type": "hermes",
+                    "agent_name": "hermes-test",
+                    "config": {
+                        "api_server": {
+                            "enabled": True,
+                            "host": "0.0.0.0",
+                            "port": 22,  # privileged port, hand-edited
+                        }
+                    },
+                }
+            },
+        }
+        config_data = {
+            "provider": {"name": "p", "type": "openrouter", "default_model": "x"},
+        }
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        captured = {}
+
+        def fake_run(**kwargs):
+            captured["inventory"] = kwargs["inventory"]
+            mock = MagicMock()
+            mock.status = "successful"
+            mock.events = []
+            return mock
+
+        with (
+            patch("clawrium.core.lifecycle.get_host", return_value=host),
+            patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ),
+            patch("clawrium.core.lifecycle.ansible_runner.run", side_effect=fake_run),
+            patch("clawrium.core.lifecycle.update_host", return_value=True),
+            patch(
+                "clawrium.core.lifecycle.get_instance_secrets",
+                return_value=self._persisted_key_secret("b" * 64),
+            ),
+        ):
+            success, error = configure_agent(
+                "test-host", "hermes", config_data, agent_name="hermes-test"
+            )
+
+        assert success is True, error
+        sent = captured["inventory"]["all"]["vars"]["config"]
+        assert 8600 <= sent["api_server"]["port"] <= 8699
+        assert sent["api_server"]["port"] != 22
+
+    def test_configure_legacy_no_api_server_prefers_8642(self, tmp_path: Path):
+        """ATX iter-2 W1: legacy hermes records without an api_server block
+        are reconstructed with port=8642 (the pre-#533 literal that the live
+        daemon is bound to) when 8642 is free, plus update_host persists the
+        block back so subsequent configures are stable. B3 invariant: the
+        persisted block must NOT contain the bearer `key` field."""
+        host = {
+            "hostname": "test-host",
+            "key_id": "test",
+            "agents": {
+                "hermes-test": {
+                    "type": "hermes",
+                    "agent_name": "hermes-test",
+                    "config": {},  # no api_server block at all
+                }
+            },
+        }
+        config_data = {
+            "provider": {"name": "p", "type": "openrouter", "default_model": "x"},
+        }
+        key_path = tmp_path / "key"
+        key_path.write_text("k")
+        playbook = tmp_path / "configure.yaml"
+        playbook.write_text("---\n")
+
+        captured = {"inventory": None, "update_calls": []}
+
+        def fake_run(**kwargs):
+            captured["inventory"] = kwargs["inventory"]
+            mock = MagicMock()
+            mock.status = "successful"
+            mock.events = []
+            return mock
+
+        def fake_update_host(_hostname, updater):
+            h_copy = {
+                "hostname": "test-host",
+                "agents": {
+                    "hermes-test": {
+                        "type": "hermes",
+                        "agent_name": "hermes-test",
+                        "config": {},
+                    }
+                },
+            }
+            mutated = updater(h_copy)
+            captured["update_calls"].append(mutated["agents"]["hermes-test"]["config"])
+            return True
+
+        with (
+            patch("clawrium.core.lifecycle.get_host", return_value=host),
+            patch(
+                "clawrium.core.lifecycle._get_lifecycle_playbook_path",
+                return_value=playbook,
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_host_private_key", return_value=key_path
+            ),
+            patch("clawrium.core.lifecycle.ansible_runner.run", side_effect=fake_run),
+            patch(
+                "clawrium.core.lifecycle.update_host", side_effect=fake_update_host
+            ),
+            patch(
+                "clawrium.core.lifecycle.get_instance_secrets",
+                return_value=self._persisted_key_secret("b" * 64),
+            ),
+        ):
+            success, error = configure_agent(
+                "test-host", "hermes", config_data, agent_name="hermes-test"
+            )
+
+        assert success is True, error
+        sent = captured["inventory"]["all"]["vars"]["config"]
+        # Prefers 8642 (free on this single-agent host).
         assert sent["api_server"]["port"] == 8642
+        # B3 invariant: bearer key must not leak into the persisted block.
+        # update_calls captures every persisted snapshot — none may carry key.
+        for snapshot in captured["update_calls"]:
+            persisted = snapshot.get("api_server") or {}
+            assert "key" not in persisted
 
 
 # ---------------------------------------------------------------------------

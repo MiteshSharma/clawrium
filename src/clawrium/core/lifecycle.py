@@ -1360,17 +1360,84 @@ def configure_agent(
             if not isinstance(existing_api_server, dict):
                 existing_api_server = {}
             merged_api_server = {**existing_api_server, **persisted_api_server}
+            # ATX iter-1 W6: range-validate the port before forwarding to
+            # Ansible. A hand-edited hosts.json with `port: 22` would
+            # otherwise propagate into the systemd ExecStart.
+            persisted_port = merged_api_server.get("port")
+            if not (
+                isinstance(persisted_port, int)
+                and not isinstance(persisted_port, bool)
+                and 8600 <= persisted_port <= 8699
+            ):
+                logger.warning(
+                    "Hermes api_server port %r outside documented window "
+                    "8600..8699 — picking a fresh per-instance port.",
+                    persisted_port,
+                )
+                from clawrium.core.install import _pick_per_instance_port
+
+                fresh = _pick_per_instance_port(
+                    host,
+                    unix_agent_name,
+                    base=8600,
+                    span=100,
+                    port_field_path=("api_server", "port"),
+                    preserved_port=None,
+                )
+                merged_api_server["port"] = fresh
             merged_api_server["key"] = api_server_key
             config_data["api_server"] = merged_api_server
         else:
             # hosts.json shape missing (legacy/corrupted); reconstruct defaults
             # alongside the token from secrets.json so the playbook can run.
+            # ATX iter-1 W1: legacy pre-#533 hermes daemons are actually bound
+            # to 8642 (the old hardcoded port). Prefer 8642 if it's free on
+            # this host so the running daemon is what `clm chat` reaches;
+            # only fall through to picking a fresh port when 8642 is taken
+            # by a co-tenant. Emit a warning either way so the operator
+            # knows a port assignment happened outside the install flow.
+            from clawrium.core.install import _pick_per_instance_port
+
+            # 8642 is in the 8600..8699 window, so passing it as
+            # preserved_port returns it verbatim when free.
+            reconstructed_port = _pick_per_instance_port(
+                host,
+                unix_agent_name,
+                base=8600,
+                span=100,
+                port_field_path=("api_server", "port"),
+                preserved_port=8642,
+            )
+            logger.warning(
+                "Hermes %s on %s has no api_server block in hosts.json — "
+                "reconstructing with port %d. If the live daemon is bound "
+                "to a different port, `clm chat` will fail until the daemon "
+                "is restarted on this port.",
+                unix_agent_name,
+                host["hostname"],
+                reconstructed_port,
+            )
             config_data["api_server"] = {
                 "enabled": True,
                 "host": "0.0.0.0",
-                "port": 8642,
+                "port": reconstructed_port,
                 "key": api_server_key,
             }
+
+            def _persist_reconstructed_api_server(h: dict) -> dict:
+                agents = h.get("agents") or {}
+                record = agents.get(agent_key)
+                if not isinstance(record, dict):
+                    return h
+                cfg = record.setdefault("config", {})
+                cfg["api_server"] = {
+                    "enabled": True,
+                    "host": "0.0.0.0",
+                    "port": reconstructed_port,
+                }
+                return h
+
+            update_host(host["hostname"], _persist_reconstructed_api_server)
 
         # Hermes Slack: merge persisted channels.slack shape from hosts.json
         # with anything passed in config_data, then hydrate the bot/app tokens

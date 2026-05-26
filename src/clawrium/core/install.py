@@ -73,6 +73,64 @@ class InstallationError(Exception):
     pass
 
 
+def _pick_per_instance_port(
+    host: dict,
+    agent_name: str,
+    base: int,
+    span: int,
+    port_field_path: tuple[str, ...],
+    preserved_port: int | None = None,
+) -> int:
+    """Pick a unique listener port for `agent_name` in `[base, base+span)`.
+
+    Issue #533: every per-agent listener (hermes dashboard, hermes api_server,
+    openclaw/zeroclaw gateway) picks its port the same way — hash the agent
+    name into the allocation window, walk +1 (wrapping) past collisions with
+    other agents on the same host, and preserve the port across reinstalls
+    via `preserved_port`.
+
+    `port_field_path` is the nested-key path under `host["agents"][<name>]
+    ["config"]` where each peer agent's port lives (e.g. `("gateway", "port")`
+    or `("api_server", "port")`). The helper reads each peer's port from that
+    path to build the collision set.
+    """
+    if (
+        isinstance(preserved_port, int)
+        and not isinstance(preserved_port, bool)
+        and base <= preserved_port < base + span
+    ):
+        return preserved_port
+
+    port_hash = int(hashlib.md5(agent_name.encode()).hexdigest(), 16)
+    candidate = base + (port_hash % span)
+
+    used_ports: set[int] = set()
+    for other_key, other_agent in host.get("agents", {}).items():
+        if other_key == agent_name or not isinstance(other_agent, dict):
+            continue
+        node: object = other_agent.get("config", {})
+        for segment in port_field_path:
+            if not isinstance(node, dict):
+                node = None
+                break
+            node = node.get(segment)
+        if isinstance(node, int) and not isinstance(node, bool):
+            used_ports.add(node)
+
+    for _ in range(span):
+        if candidate not in used_ports:
+            return candidate
+        candidate += 1
+        if candidate >= base + span:
+            candidate = base
+
+    raise InstallationError(
+        f"Port pool exhausted on {host['hostname']}: all {span} slots in "
+        f"{base}-{base + span - 1} are occupied. "
+        "Remove unused agents before installing another."
+    )
+
+
 class IncompleteInstallationError(InstallationError):
     """Raised when an incomplete installation already exists for an agent type."""
 
@@ -381,11 +439,22 @@ def run_installation(
     # has nothing to write back — without this capture the credentials would
     # silently disappear on every clean re-install at the same version.
     preserved_gateway = [None]
-    # Capture hermes dashboard port BEFORE set_installing() wipes the agent
-    # record. Re-install must not silently move the dashboard to a new port —
-    # the systemd unit was rendered against the original value and any open
-    # tunnels would break.
+    # Capture per-instance listener ports BEFORE set_installing() wipes the
+    # agent record (issue #533). Re-install must not silently move a listener
+    # to a new port — the systemd unit, any rendered config, and any open
+    # tunnels were all wired to the original value.
     preserved_dashboard_port = [None]
+    preserved_api_server_port = [None]
+    preserved_gateway_port = [None]
+    # Ports actually picked inside the set_installing lock (ATX iter-1 W2/W3).
+    # Computing them inside the updater closure ensures concurrent installs on
+    # the same host serialize through `_hosts_lock()` — without this, two
+    # parallel `clm agent install` could read the same empty `used_ports` set
+    # and both pick the same slot. The picks are also written onto the
+    # in-progress agent record so a third install sees them.
+    chosen_dashboard_port = [None]
+    chosen_api_server_port = [None]
+    chosen_gateway_port = [None]
 
     def set_installing(h: dict) -> dict:
         # Check for incomplete installation under lock (unless cleanup or resume)
@@ -447,6 +516,18 @@ def run_installation(
                 preserved_gateway[0] = (
                     h["agents"][chosen_name[0]].get("config", {}).get("gateway")
                 )
+                existing_gw_port = (
+                    h["agents"][chosen_name[0]]
+                    .get("config", {})
+                    .get("gateway", {})
+                    .get("port")
+                )
+                if (
+                    isinstance(existing_gw_port, int)
+                    and not isinstance(existing_gw_port, bool)
+                    and 40000 <= existing_gw_port <= 41999
+                ):
+                    preserved_gateway_port[0] = existing_gw_port
             if claw_name == "hermes":
                 existing_port = (
                     h["agents"][chosen_name[0]]
@@ -463,6 +544,22 @@ def run_installation(
                     and 45000 <= existing_port <= 46999
                 ):
                     preserved_dashboard_port[0] = existing_port
+                existing_api_port = (
+                    h["agents"][chosen_name[0]]
+                    .get("config", {})
+                    .get("api_server", {})
+                    .get("port")
+                )
+                # Accept the new 8600..8699 window. Legacy installs persisted
+                # port=8642 which is inside this window — they are grandfathered
+                # automatically (ATX iter-1 S1: dropped the explicit `or
+                # port == 8642` clause as it was already covered by the range).
+                if (
+                    isinstance(existing_api_port, int)
+                    and not isinstance(existing_api_port, bool)
+                    and 8600 <= existing_api_port <= 8699
+                ):
+                    preserved_api_server_port[0] = existing_api_port
             h["agents"][chosen_name[0]]["status"] = "installing"
             h["agents"][chosen_name[0]]["error"] = None
             h["agents"][chosen_name[0]]["version"] = matched_version  # Update version
@@ -486,6 +583,18 @@ def run_installation(
                     preserved_gateway[0] = (
                         h["agents"][chosen_name[0]].get("config", {}).get("gateway")
                     )
+                    existing_gw_port = (
+                        h["agents"][chosen_name[0]]
+                        .get("config", {})
+                        .get("gateway", {})
+                        .get("port")
+                    )
+                    if (
+                        isinstance(existing_gw_port, int)
+                        and not isinstance(existing_gw_port, bool)
+                        and 40000 <= existing_gw_port <= 41999
+                    ):
+                        preserved_gateway_port[0] = existing_gw_port
                 if claw_name == "hermes":
                     existing_port = (
                         h["agents"][chosen_name[0]]
@@ -500,6 +609,19 @@ def run_installation(
                         and 45000 <= existing_port <= 46999
                     ):
                         preserved_dashboard_port[0] = existing_port
+                    existing_api_port = (
+                        h["agents"][chosen_name[0]]
+                        .get("config", {})
+                        .get("api_server", {})
+                        .get("port")
+                    )
+                    # Accept new 8600..8699 window (legacy 8642 is inside it).
+                    if (
+                        isinstance(existing_api_port, int)
+                        and not isinstance(existing_api_port, bool)
+                        and 8600 <= existing_api_port <= 8699
+                    ):
+                        preserved_api_server_port[0] = existing_api_port
 
             h["agents"][chosen_name[0]] = {
                 "type": claw_name,
@@ -512,6 +634,56 @@ def run_installation(
             # NOTE: Onboarding NOT restored here - will be restored in set_installed()
             # after ansible succeeds to prevent status='failed' + onboarding='ready'
             # cleanup_failed=True ensures preserved_onboarding[0] is None (fresh install)
+
+        # ATX iter-1 W2/W3: pick per-instance listener ports inside the lock
+        # so concurrent installs on the same host serialize through their
+        # collision-walk. Persist the picks onto the in-progress agent record
+        # so a third install (which would call set_installing again) sees them.
+        # NOTE: concurrent installs on the same host could still collide on
+        # the in-flight ansible run if a third installer slips between two
+        # set_installing calls without either landing set_installed; the
+        # collision detection here is single-writer optimistic.
+        record = h["agents"][chosen_name[0]]
+        record.setdefault("config", {})
+        if claw_name in ("openclaw", "zeroclaw"):
+            chosen_gateway_port[0] = _pick_per_instance_port(
+                h,
+                chosen_name[0],
+                base=40000,
+                span=2000,
+                port_field_path=("gateway", "port"),
+                preserved_port=preserved_gateway_port[0],
+            )
+            record["config"].setdefault("gateway", {})["port"] = (
+                chosen_gateway_port[0]
+            )
+        if claw_name == "hermes":
+            chosen_dashboard_port[0] = _pick_per_instance_port(
+                h,
+                chosen_name[0],
+                base=45000,
+                span=2000,
+                port_field_path=("dashboard", "port"),
+                preserved_port=preserved_dashboard_port[0],
+            )
+            chosen_api_server_port[0] = _pick_per_instance_port(
+                h,
+                chosen_name[0],
+                base=8600,
+                span=100,
+                port_field_path=("api_server", "port"),
+                preserved_port=preserved_api_server_port[0],
+            )
+            record["config"]["dashboard"] = {
+                "enabled": True,
+                "host": "127.0.0.1",
+                "port": chosen_dashboard_port[0],
+            }
+            record["config"]["api_server"] = {
+                "enabled": True,
+                "host": "0.0.0.0",
+                "port": chosen_api_server_port[0],
+            }
         return h
 
     update_host(host["hostname"], set_installing)
@@ -560,70 +732,28 @@ def run_installation(
         / "templates"
     )
 
-    # Calculate unique port for this agent (matches playbook's calculation)
-    # This ensures config.gateway.port matches the openclaw_port ansible var
-    port_hash = int(hashlib.md5(agent_name.encode()).hexdigest(), 16)
-    openclaw_port = 40000 + (port_hash % 2000)
-
-    # Hermes dashboard port (issue #478 phase 2). Persisted to
-    # hosts.json.agents.<name>.config.dashboard.port so the web-ui resolver
-    # and `clm agent open` agree on the loopback port the dashboard binds to.
-    # On re-install we MUST preserve the existing port: the dashboard systemd
-    # unit was rendered against the original port and silently moving to a
-    # new value would break any running tunnels.
-    dashboard_port = None
-    if claw_name == "hermes":
-        # preserved_dashboard_port is captured inside set_installing() right
-        # before the agent record is wiped. Reading from `host` here would
-        # see the wiped record in test environments (where get_host returns
-        # the same dict that update_host mutates) and on the resume path.
-        if preserved_dashboard_port[0] is not None:
-            dashboard_port = preserved_dashboard_port[0]
-        else:
-            candidate = 45000 + (port_hash % 2000)
-            # Collision check: another agent on the same host may already own
-            # the candidate port. Bump by +1 (wrapping within the 45000..46999
-            # window) until free. Hash collisions are rare but possible
-            # because the openclaw port also uses md5(agent_name) % 2000.
-            used_ports: set[int] = set()
-            for other_key, other_agent in host.get("agents", {}).items():
-                if other_key == agent_name or not isinstance(other_agent, dict):
-                    continue
-                other_port = (
-                    other_agent.get("config", {}).get("dashboard", {}).get("port")
-                )
-                if isinstance(other_port, int) and not isinstance(other_port, bool):
-                    used_ports.add(other_port)
-            # Bounded loop with `for/else` exhaustion sentinel: if every slot
-            # in the 45000..46999 window is taken we MUST raise rather than
-            # silently land on a colliding port (ATX B1). Without the
-            # sentinel the loop exits with `candidate in used_ports` still
-            # true and the install proceeds with a broken dashboard.
-            for _ in range(2000):
-                if candidate not in used_ports:
-                    break
-                candidate += 1
-                if candidate > 46999:
-                    candidate = 45000
-            else:
-                raise InstallationError(
-                    "Dashboard port pool exhausted on "
-                    f"{host['hostname']} (all 2000 slots in "
-                    "45000-46999 are occupied). Remove unused hermes "
-                    "agents before installing another."
-                )
-            dashboard_port = candidate
+    # Per-instance listener ports (issue #533). Picked inside set_installing()
+    # under `_hosts_lock()` to avoid concurrent-install races (ATX iter-1 W2).
+    # `openclaw_port` is None for hermes (ATX iter-1 W3) so the 40000..41999
+    # pool isn't silently consumed by agents that never use it.
+    openclaw_port = chosen_gateway_port[0]
+    dashboard_port = chosen_dashboard_port[0]
+    api_server_port = chosen_api_server_port[0]
 
     # Generate auth token for gateway access
     import secrets
 
     gateway_auth_token = secrets.token_hex(24)  # 48-character hex token
 
-    # Build minimal config for templates
+    # Build minimal config for templates.
     # gateway.auth.mode must be explicitly "token" for full operator scopes
     # See: https://docs.openclaw.ai/gateway/security
-    config = {
-        "gateway": {
+    # ATX iter-1 W3: only openclaw/zeroclaw consume `config.gateway`; building
+    # it unconditionally (and reserving an openclaw_port slot for hermes)
+    # silently consumed the 40000..41999 pool with ghost allocations.
+    config: dict = {}
+    if claw_name in ("openclaw", "zeroclaw"):
+        config["gateway"] = {
             "mode": "local",
             "port": openclaw_port,
             "bind": "lan",
@@ -632,7 +762,6 @@ def run_installation(
                 "token": gateway_auth_token,
             },
         }
-    }
 
     # Hermes: generate (or reuse) the API_SERVER_KEY that gates the local
     # OpenAI-compatible gateway on 127.0.0.1:8642. Generated once on first
@@ -671,7 +800,7 @@ def run_installation(
         config["api_server"] = {
             "enabled": True,
             "host": "127.0.0.1",
-            "port": 8642,
+            "port": api_server_port,
             "key": hermes_api_server_key,
         }
         config["dashboard"] = {
@@ -1004,7 +1133,7 @@ def run_installation(
                     h["agents"][agent_name]["config"]["api_server"] = {
                         "enabled": True,
                         "host": "0.0.0.0",
-                        "port": 8642,
+                        "port": api_server_port,
                     }
 
                 # Persist hermes dashboard shape so the web_ui resolver and

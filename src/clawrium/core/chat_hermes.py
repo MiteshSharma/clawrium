@@ -40,7 +40,8 @@ class HermesOpenAIBackend:
     """OpenAI-compatible HTTP chat client for hermes.
 
     `base_url` is the gateway origin including the `/v1` suffix
-    (e.g. `http://wolf-i.local:8642/v1`). The backend appends
+    (e.g. `http://wolf-i.local:8612/v1`; the port is per-instance, picked at
+    install time from 8600..8699 per issue #533). The backend appends
     `/chat/completions` for each request.
 
     `model` is forwarded as the OpenAI `model` field. Hermes ignores it for
