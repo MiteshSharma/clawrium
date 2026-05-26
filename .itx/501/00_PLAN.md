@@ -239,3 +239,22 @@ https://github.com/ric03uec/clawrium/issues/501 plan only first. read the latest
 **Output**: High-level implementation plan for issue #501. Scoped to hermes-only multi-provider support with primary + 9 auxiliary slot mapping, asymmetric singleton (zeroclaw/openclaw stay singleton), `set-role` as a new hermes-only verb, and `--model` defaulting to the provider's `default_model`. Confirmed upstream slot list and provider→env-var mapping against `NousResearch/hermes-agent@v2026.5.7`.
 
 </details>
+
+## Execution
+
+**Stage**: execute
+**Skill**: /itx:execute
+**Timestamp**: 2026-05-25T22:50:00Z
+**Model**: claude-opus-4-7
+
+```prompt
+/itx-execute 501
+```
+
+**Output**: Phase 1 of plan executed and shipped as PR #532. Added
+`core/provider_attachments.py` (normalization + validation), split the
+lifecycle provider bridge by agent type so hermes builds `config.providers`
+while zeroclaw/openclaw retain the singleton path. 36 new tests, all 3237
+existing tests pass, lint clean. ATX review (1 iteration, 3/5, no blockers)
+— in-diff items W5/W6/S2/S3 addressed; W1-W4 flagged as pre-existing and
+out of scope.
