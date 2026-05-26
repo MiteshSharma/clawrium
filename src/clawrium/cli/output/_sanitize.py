@@ -81,3 +81,35 @@ def sanitize(value: str) -> str:
     if not _CONTROL_AND_BIDI_RE.search(value):
         return value
     return _CONTROL_AND_BIDI_RE.sub(" ", value)
+
+
+# Same UAX#9 / zero-width set as `_CONTROL_AND_BIDI_RE` minus C0/C1
+# control bytes. For passthrough callers (issue #413 `clawctl agent
+# exec`) that forward agent-controlled output verbatim and must
+# preserve whitespace including \n/\t/\r. Literal bidi codepoints
+# MUST NOT appear in this source -- same hygiene rule as above.
+_BIDI_ONLY_RE = re.compile(
+    # \uXXXX escapes only -- the test_source_is_pure_ascii guard
+    # mirrors the same hygiene rule applied to _CONTROL_AND_BIDI_RE
+    # above (ATX iter-2 NW4).
+    "["
+    "\u061c"
+    "\u200b-\u200f"
+    "\u2028-\u2029"
+    "\u202a-\u202e"
+    "\u2060"
+    "\u2066-\u2069"
+    "\ufeff"
+    "]"
+)
+
+
+def sanitize_passthrough(value: str) -> str:
+    """Strip UAX#9 bidi/zero-width codepoints only; preserve all whitespace.
+
+    For use on agent-controlled output forwarded to the terminal
+    verbatim (issue #413, ATX iter-1 B1).
+    """
+    if not _BIDI_ONLY_RE.search(value):
+        return value
+    return _BIDI_ONLY_RE.sub("", value)
