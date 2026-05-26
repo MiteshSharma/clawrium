@@ -24,6 +24,7 @@ class TestIntegrationTypes:
         assert "atlassian" in result.output
         assert "linear" in result.output
         assert "notion" in result.output
+        assert "git" in result.output
 
 
 class TestIntegrationList:
@@ -131,6 +132,277 @@ class TestIntegrationAdd:
 
         assert result.exit_code == 1
         assert "already exists" in result.output.lower()
+
+
+class TestIntegrationAddGit:
+    """Tests for `clm integration add --type git` (#531)."""
+
+    def _run_git_add(self, name: str, input_text: str):
+        return runner.invoke(
+            app, ["integration", "add", name, "--type", "git"], input=input_text
+        )
+
+    def test_git_add_prefills_identity_from_local_git_config(self, isolated_config):
+        """Identity defaults shell out to `git config --global` and accept on Enter."""
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        def fake_run(cmd, *args, **kwargs):
+            assert cmd[:3] == ["git", "config", "--global"]
+            stdout_map = {"user.name": "Alice Local\n", "user.email": "alice@local\n"}
+            class R:
+                returncode = 0
+                stdout = stdout_map.get(cmd[3], "")
+            return R()
+
+        with patch("clawrium.cli.integration.subprocess.run", side_effect=fake_run):
+            # Press Enter for all five prompts → accept defaults.
+            result = self._run_git_add("my-git", "\n\n\n\n\n")
+
+        assert result.exit_code == 0, result.output
+        from clawrium.core.integrations import get_integration_credentials
+        creds = get_integration_credentials("my-git")
+        assert creds["GIT_USER_NAME"] == "Alice Local"
+        assert creds["GIT_USER_EMAIL"] == "alice@local"
+        assert creds["GIT_INIT_DEFAULT_BRANCH"] == "main"
+        assert creds["GIT_PULL_REBASE"] == "false"
+        assert creds["GIT_CORE_EDITOR"] == "vim"
+
+    def test_git_add_handles_missing_local_git_config(self, isolated_config):
+        """Missing/erroring `git config` falls back to empty identity prompts.
+
+        The user types identity values; static defaults still apply when Enter
+        is pressed for optional fields.
+        """
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        class FailR:
+            returncode = 1
+            stdout = ""
+
+        with patch(
+            "clawrium.cli.integration.subprocess.run",
+            side_effect=FileNotFoundError("git not installed"),
+        ):
+            # Provide identity then accept defaults for the three optionals.
+            result = self._run_git_add(
+                "my-git", "Bob\nbob@example.com\n\n\n\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        from clawrium.core.integrations import get_integration_credentials
+        creds = get_integration_credentials("my-git")
+        assert creds["GIT_USER_NAME"] == "Bob"
+        assert creds["GIT_USER_EMAIL"] == "bob@example.com"
+        assert creds["GIT_INIT_DEFAULT_BRANCH"] == "main"
+        assert creds["GIT_PULL_REBASE"] == "false"
+        assert creds["GIT_CORE_EDITOR"] == "vim"
+        # Suppress unused-class warnings from linters.
+        _ = FailR
+
+    def test_git_add_operator_override_persists(self, isolated_config):
+        """Operator-supplied non-default values are stored verbatim."""
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+            return R()
+
+        with patch("clawrium.cli.integration.subprocess.run", side_effect=fake_run):
+            result = self._run_git_add(
+                "my-git", "Carol\ncarol@example.com\ntrunk\ntrue\nnano\n"
+            )
+
+        assert result.exit_code == 0, result.output
+        from clawrium.core.integrations import get_integration_credentials
+        creds = get_integration_credentials("my-git")
+        assert creds["GIT_USER_NAME"] == "Carol"
+        assert creds["GIT_USER_EMAIL"] == "carol@example.com"
+        assert creds["GIT_INIT_DEFAULT_BRANCH"] == "trunk"
+        assert creds["GIT_PULL_REBASE"] == "true"
+        assert creds["GIT_CORE_EDITOR"] == "nano"
+
+    def test_git_add_static_defaults_shown_in_prompt(self, isolated_config):
+        """Static defaults (`main`, `false`, `vim`) are surfaced in the prompt text."""
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = "Dora\n" if cmd[3] == "user.name" else "dora@example.com\n"
+            return R()
+
+        with patch("clawrium.cli.integration.subprocess.run", side_effect=fake_run):
+            result = self._run_git_add("my-git", "\n\n\n\n\n")
+
+        assert result.exit_code == 0, result.output
+        # typer renders defaults as `[default]` in the prompt.
+        assert "main" in result.output
+        assert "false" in result.output
+        assert "vim" in result.output
+
+
+class TestIntegrationAddGitSanitization:
+    """Newlines in git fields must never reach storage (#534 ATX iter-1 B1)."""
+
+    def test_newline_in_user_name_is_flattened_at_storage(self, isolated_config):
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+            return R()
+
+        # typer.prompt reads a line via input(); the test runner supplies
+        # one credential per newline. We cannot inject a literal \n into a
+        # prompt response, but the sanitizer also strips \r — and bash-style
+        # paste exploits commonly use \r. Mock the prompt return directly.
+        with patch("clawrium.cli.integration.subprocess.run", side_effect=fake_run), \
+             patch(
+                 "clawrium.cli.integration.typer.prompt",
+                 side_effect=[
+                     "Alice\r[credential]\thelper=/evil",
+                     "alice@example.com",
+                     "main",
+                     "false",
+                     "vim",
+                 ],
+             ):
+            result = runner.invoke(
+                app, ["integration", "add", "g1", "--type", "git"], input=""
+            )
+
+        assert result.exit_code == 0, result.output
+        from clawrium.core.integrations import get_integration_credentials
+        stored = get_integration_credentials("g1")["GIT_USER_NAME"]
+        assert "\r" not in stored
+        assert "\n" not in stored
+        # The injection token is no longer a section header in the rendered
+        # template (because the literal newline is gone) — kept literal here.
+        assert stored.startswith("Alice")
+
+
+class TestIntegrationCredentialsUpdateGitSanitization:
+    """The `credentials --update` path must also sanitize git fields (T1)."""
+
+    def test_update_strips_carriage_returns(self, isolated_config):
+        isolated_config.mkdir(parents=True, exist_ok=True)
+        # Seed an existing git integration with clean values.
+        (isolated_config / INTEGRATIONS_FILE).write_text(
+            json.dumps([{"name": "g", "type": "git"}])
+        )
+        from clawrium.core.integrations import (
+            set_integration_credential,
+            get_integration_credentials,
+        )
+
+        set_integration_credential("g", "GIT_USER_NAME", "Alice")
+        set_integration_credential("g", "GIT_USER_EMAIL", "alice@example.com")
+
+        with patch(
+            "clawrium.cli.integration.typer.prompt",
+            side_effect=[
+                "Mallory\r[credential]\thelper=/evil",  # GIT_USER_NAME override
+                "",  # GIT_USER_EMAIL — keep existing
+                "",  # GIT_INIT_DEFAULT_BRANCH
+                "",  # GIT_PULL_REBASE
+                "",  # GIT_CORE_EDITOR
+            ],
+        ):
+            result = runner.invoke(
+                app, ["integration", "credentials", "g", "--update"]
+            )
+
+        assert result.exit_code == 0, result.output
+        stored = get_integration_credentials("g")["GIT_USER_NAME"]
+        assert "\r" not in stored
+        assert "\n" not in stored
+        # Positive content assertion: a regression that skipped
+        # set_integration_credential entirely would otherwise leave the
+        # original 'Alice' in place and still satisfy the negative checks.
+        assert stored.startswith("Mallory")
+        # CLI must surface the sanitization (iter-3 B2).
+        assert "sanitized" in result.output.lower()
+
+    def test_update_lf_newline_in_user_name(self, isolated_config):
+        """A literal \\n payload via mocked prompt is flattened (W4)."""
+        isolated_config.mkdir(parents=True, exist_ok=True)
+        (isolated_config / INTEGRATIONS_FILE).write_text(
+            json.dumps([{"name": "g", "type": "git"}])
+        )
+        from clawrium.core.integrations import (
+            set_integration_credential,
+            get_integration_credentials,
+        )
+
+        set_integration_credential("g", "GIT_USER_NAME", "Alice")
+        set_integration_credential("g", "GIT_USER_EMAIL", "alice@example.com")
+
+        with patch(
+            "clawrium.cli.integration.typer.prompt",
+            side_effect=[
+                "Mallory\n[credential]\nhelper=/evil",
+                "",
+                "",
+                "",
+                "",
+            ],
+        ):
+            result = runner.invoke(
+                app, ["integration", "credentials", "g", "--update"]
+            )
+        assert result.exit_code == 0, result.output
+        stored = get_integration_credentials("g")["GIT_USER_NAME"]
+        assert "\n" not in stored
+        assert stored.startswith("Mallory")
+
+
+class TestIntegrationAddGitRequiredFieldNUL:
+    """A NUL-only payload for a required field must fail loudly (iter-3 B1)."""
+
+    def test_nul_only_required_field_exits_1(self, isolated_config):
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+            return R()
+
+        with patch("clawrium.cli.integration.subprocess.run", side_effect=fake_run), \
+             patch(
+                 "clawrium.cli.integration.typer.prompt",
+                 side_effect=["\x00\x00"],  # required field exhausts to ''
+             ):
+            result = runner.invoke(
+                app, ["integration", "add", "g", "--type", "git"]
+            )
+
+        assert result.exit_code == 1, result.output
+        assert "required" in result.output.lower()
+
+
+def test_sanitize_git_field_strips_null_byte():
+    """Direct unit test for the NUL clause (T3)."""
+    from clawrium.cli.integration import _sanitize_git_field
+
+    assert _sanitize_git_field("Alice\x00[core]") == "Alice[core]"
+    assert _sanitize_git_field("\x00\x00\x00") == ""
+    # \r → "" (dropped), \n → " " (flattened), \x00 → "" (dropped)
+    assert _sanitize_git_field("Alice\rBob\nCarol\x00Dave") == "AliceBob CarolDave"
+
+
+def test_sanitize_git_field_strips_all_three():
+    """Comprehensive: CR removed, LF → space, NUL removed."""
+    from clawrium.cli.integration import _sanitize_git_field
+
+    out = _sanitize_git_field("a\rb\nc\x00d")
+    assert "\r" not in out
+    assert "\n" not in out
+    assert "\x00" not in out
+    assert "a" in out and "d" in out
 
 
 class TestIntegrationShow:

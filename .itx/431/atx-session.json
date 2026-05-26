@@ -1,0 +1,11 @@
+{
+  "transport": "cli",
+  "pr": 534,
+  "iterations": [
+    {"iteration": 1, "commit_sha": "f04bc1b", "rating": 2, "cost_usd": 3.46, "outcome": "iter-1 B1/B2/B3 fixed; B4 false-positive (rebase)"},
+    {"iteration": 2, "commit_sha": "616cf9b", "rating": 3, "cost_usd": 2.57, "outcome": "NB-1 (singleton TOCTOU) + NB-2 (3 test gaps) raised; iter-2 fixes in d4a9dac"},
+    {"iteration": 3, "commit_sha": "d4a9dac", "rating": 2, "cost_usd": 2.65, "outcome": "iter-2 NB-1 RESOLVED; NB-2 partially (T1/T3 done, T2 deferred); two new iter-3 blockers (NUL-only required + silent sanitization) fixed in follow-up commit"}
+  ],
+  "ceiling_reached": true,
+  "final_followup_applied": true
+}

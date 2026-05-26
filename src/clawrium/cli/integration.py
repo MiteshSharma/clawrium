@@ -1,5 +1,6 @@
 """Integration management commands for Clawrium."""
 
+import subprocess
 from datetime import datetime, timezone
 
 import typer
@@ -63,6 +64,70 @@ def _mask_credential(value: str | None) -> str:
     if len(value) <= 8:
         return "*" * len(value)
     return f"{value[:4]}...{value[-4:]}"
+
+
+def _sanitize_git_field(value: str) -> str:
+    """Strip control characters that would inject gitconfig sections.
+
+    A value like `Alice\n[core]\n    hooksPath = /tmp/evil` rendered into
+    ~/.gitconfig opens a [core] section that git executes on every command.
+    Strip CR/LF/NUL at ingest so the stored secret can never carry an
+    injection payload — the template still defends-in-depth with a Jinja
+    replace filter, but ingest is the right place to make values safe.
+    """
+    return value.replace("\r", "").replace("\n", " ").replace("\x00", "")
+
+
+def _local_git_config(key: str) -> str:
+    """Read a value from the operator's local --global git config.
+
+    Returns empty string if git is not installed or the key is unset.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "config", "--global", key],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    # First line only — gitconfig values can technically be multi-line via
+    # include directives, but for identity fields we want exactly one line.
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    return first_line.strip()
+
+
+# Default values surfaced at prompt-time for the `git` integration.
+# Identity defaults shell out to the operator's local --global git config.
+# Static defaults match the template's Jinja default() fallbacks so that
+# accepting the prompt and skipping the prompt produce the same rendered file.
+_GIT_FIELD_DEFAULTS: dict[str, object] = {
+    "GIT_USER_NAME": lambda: _local_git_config("user.name"),
+    "GIT_USER_EMAIL": lambda: _local_git_config("user.email"),
+    "GIT_INIT_DEFAULT_BRANCH": "main",
+    "GIT_PULL_REBASE": "false",
+    "GIT_CORE_EDITOR": "vim",
+}
+
+
+def _resolve_default(integration_type: str, key: str) -> str:
+    """Resolve the prompt-time default for an integration credential.
+
+    Currently only the `git` type carries defaults. Returns empty string
+    when no default applies.
+    """
+    if integration_type != "git":
+        return ""
+    raw = _GIT_FIELD_DEFAULTS.get(key, "")
+    if callable(raw):
+        try:
+            return raw() or ""
+        except Exception:
+            return ""
+    return raw if isinstance(raw, str) else ""
 
 
 def _get_integration_types() -> list[str]:
@@ -212,17 +277,32 @@ def add(
         if not required:
             prompt_text += " (optional)"
 
+        default_value = _resolve_default(integration_type, key)
+
         try:
             if is_sensitive:
-                value = typer.prompt(prompt_text, hide_input=True, default="")
+                value = typer.prompt(
+                    prompt_text, hide_input=True, default=default_value
+                )
             else:
-                value = typer.prompt(prompt_text, default="")
+                value = typer.prompt(prompt_text, default=default_value)
         except (KeyboardInterrupt, EOFError):
             console.print("\nCancelled.")
             raise typer.Exit(code=1)
 
+        if integration_type == "git" and value:
+            sanitized = _sanitize_git_field(value)
+            if sanitized != value:
+                console.print(
+                    f"[yellow]Notice:[/yellow] {key} contained control characters "
+                    "(CR/LF/NUL) and was sanitized before storage."
+                )
+            value = sanitized
+
         if required and not value:
-            console.print(f"[red]Error:[/red] {key} is required")
+            console.print(
+                f"[red]Error:[/red] {key} is required (empty after sanitization)"
+            )
             raise typer.Exit(code=1)
 
         if value:
@@ -463,11 +543,17 @@ def credentials(
         elif not required:
             prompt_text += " (optional)"
 
+        default_value = (
+            "" if has_existing else _resolve_default(integration_type, key)
+        )
+
         try:
             if is_sensitive:
-                value = typer.prompt(prompt_text, hide_input=True, default="")
+                value = typer.prompt(
+                    prompt_text, hide_input=True, default=default_value
+                )
             else:
-                value = typer.prompt(prompt_text, default="")
+                value = typer.prompt(prompt_text, default=default_value)
         except (KeyboardInterrupt, EOFError):
             console.print("\nCancelled.")
             raise typer.Exit(code=1)
@@ -476,8 +562,19 @@ def credentials(
         if not value and has_existing:
             continue
 
+        if integration_type == "git" and value:
+            sanitized = _sanitize_git_field(value)
+            if sanitized != value:
+                console.print(
+                    f"[yellow]Notice:[/yellow] {key} contained control characters "
+                    "(CR/LF/NUL) and was sanitized before storage."
+                )
+            value = sanitized
+
         if required and not value and not has_existing:
-            console.print(f"[red]Error:[/red] {key} is required")
+            console.print(
+                f"[red]Error:[/red] {key} is required (empty after sanitization)"
+            )
             raise typer.Exit(code=1)
 
         if value:
