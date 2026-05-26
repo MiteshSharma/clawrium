@@ -18,7 +18,9 @@ import ansible_runner
 from clawrium.core.config import get_config_dir
 from clawrium.core.hosts import get_host, update_host, remove_agent_from_host
 from clawrium.core import keys as core_keys
+from clawrium.core import provider_attachments as _pa
 from clawrium.core.onboarding import OnboardingState
+from clawrium.core.providers import storage as _provider_storage
 from clawrium.core.secrets import (
     get_instance_key,
     get_instance_secrets,
@@ -950,33 +952,33 @@ def sync_agent(
     # before pushing to the remote. `detach` intentionally does NOT strip
     # `config.provider` — once a provider lands in config it is
     # last-known-good across subsequent syncs (design decision on #426).
-    attached_providers = claw_record.get("providers") or []
-    provider_overlay: dict | None = None
-    provider_name_for_state: str | None = None
-    if attached_providers:
-        if len(attached_providers) > 1:
-            # `attach` enforces the single-provider invariant; reaching
-            # this branch means hosts.json was hand-edited. Fail loudly
-            # rather than silently picking index 0.
-            raise LifecycleError(
-                f"agent '{agent_key}' has {len(attached_providers)} providers "
-                f"attached; single-provider invariant requires exactly one. "
-                f"Detach extras with 'clawctl agent provider detach <name> "
-                f"--agent {agent_key}'."
-            )
-        from clawrium.core.providers.storage import get_provider
+    #
+    # Issue #501: hermes alone supports N attachments (primary + 9
+    # auxiliary slots); zeroclaw/openclaw keep the singleton invariant.
+    # Normalization handles both legacy list-of-strings and the new
+    # list-of-objects shape transparently.
+    raw_attachments = claw_record.get("providers") or []
+    attachments = _pa.normalize(raw_attachments, agent_type)
+    try:
+        _pa.validate(attachments, agent_type)
+    except _pa.AttachmentError as exc:
+        raise LifecycleError(
+            f"agent '{agent_key}' has invalid provider attachments: {exc}. "
+            f"Inspect with 'clawctl agent provider get --agent {agent_key}'."
+        ) from exc
 
-        provider_name = attached_providers[0]
-        provider_record = get_provider(provider_name)
+    provider_overlay: dict | None = None
+    provider_overlays: list[dict] | None = None
+    provider_name_for_state: str | None = None
+
+    def _build_overlay(provider_name: str) -> dict:
+        provider_record = _provider_storage.get_provider(provider_name)
         if provider_record is None:
             raise LifecycleError(
                 f"attached provider '{provider_name}' not registered. "
                 f"Run 'clawctl provider registry get' to list available providers."
             )
-        # Shape mirrors the legacy `_sync_provider_config` builder
-        # (src/clawrium/cli/agent.py:360-374) so configure_agent's
-        # validation block (~lines 1266-1296) accepts the dict unchanged.
-        provider_overlay = {
+        overlay = {
             "name": provider_record.get("name", ""),
             "type": provider_record.get("type", "ollama"),
             "endpoint": provider_record.get("endpoint", ""),
@@ -986,9 +988,55 @@ def sync_agent(
         # are meaningful (no-limit signals on some APIs); a falsy check
         # would silently drop them. ATX iter-1 S1.
         if provider_record.get("context_window") is not None:
-            provider_overlay["context_window"] = provider_record["context_window"]
+            overlay["context_window"] = provider_record["context_window"]
         if provider_record.get("max_tokens") is not None:
-            provider_overlay["max_tokens"] = provider_record["max_tokens"]
+            overlay["max_tokens"] = provider_record["max_tokens"]
+        return overlay
+
+    if attachments and _pa.supports_multi_provider(agent_type):
+        # Hermes path: build a config.providers list (one overlay per
+        # attachment, carrying role + per-attachment model) and also
+        # populate config.provider from the primary so the bridge
+        # contract with downstream readers (templates, validators) is
+        # preserved unchanged for back-compat. Phase 1 wires the data
+        # model; template rewrites land in Phase 3.
+        provider_overlays = []
+        for entry in attachments:
+            # ATX W5: validate() above guarantees every hermes entry is
+            # a dict — but if normalize() ever regresses, silently
+            # skipping non-dicts would leave the agent with no primary,
+            # no state-machine walk, and a config rendered with empty
+            # provider fields that Ansible would happily push. Fail loud.
+            if not isinstance(entry, dict):
+                raise LifecycleError(
+                    f"agent '{agent_key}' has non-dict provider attachment "
+                    f"after normalization: {entry!r}. Inspect with "
+                    f"'clawctl agent provider get --agent {agent_key}'."
+                )
+            overlay = _build_overlay(entry["name"])
+            overlay["role"] = entry.get("role", "")
+            # Per-attachment model override; falls back to provider's
+            # default_model when the attachment didn't specify one.
+            # Always set `model` explicitly so template authors can
+            # read a single field regardless of whether the operator
+            # supplied an override.
+            attachment_model = entry.get("model") or overlay.get("default_model", "")
+            overlay["model"] = attachment_model
+            provider_overlays.append(overlay)
+            if entry.get("role") == _pa.PRIMARY_ROLE:
+                provider_overlay = {
+                    k: v for k, v in overlay.items() if k not in ("role",)
+                }
+                provider_name_for_state = entry["name"]
+    elif attachments:
+        # Singleton path (zeroclaw/openclaw). normalize() guarantees
+        # list-of-strings shape here; validate() guarantees len<=1.
+        provider_name = attachments[0]
+        if not isinstance(provider_name, str):
+            raise LifecycleError(
+                f"agent '{agent_key}' provider attachment shape unexpected"
+            )
+        provider_overlay = _build_overlay(provider_name)
         provider_name_for_state = provider_name
 
     onboarding = claw_record.get("onboarding", {})
@@ -1137,6 +1185,22 @@ def sync_agent(
     if provider_overlay is not None:
         existing_config = dict(existing_config)
         existing_config["provider"] = provider_overlay
+    if provider_overlays is not None:
+        # Issue #501: hermes-only multi-provider overlay. Carries
+        # per-attachment role + model so the configure playbook can
+        # render `auxiliary.<slot>` in hermes-config.yaml.j2 (Phase 3).
+        # `config.provider` stays populated above from the primary so
+        # existing readers continue to function unchanged in Phase 1.
+        #
+        # TODO(#501 Phase 3): when hermes-config.yaml.j2 renders
+        # `auxiliary.<slot>` per non-primary attachment, configure_agent
+        # must also hydrate per-attachment API keys into ansible_vars.
+        # Today only the primary's `provider_api_key` is loaded
+        # (lifecycle.py configure path), so every auxiliary slot would
+        # render with an empty key. Block the Phase 3 template work on
+        # this hydration to avoid a silent misconfigure at first use.
+        existing_config = dict(existing_config)
+        existing_config["providers"] = provider_overlays
 
     if not existing_config:
         # install.py always writes config.gateway, so this branch
