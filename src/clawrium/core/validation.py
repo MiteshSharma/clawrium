@@ -894,7 +894,9 @@ def validate_hermes_health(
 
     1. ``hermes --version`` exits 0 (binary present and runnable).
     2. ``~/.hermes/.env`` exists (configure has been run at least once).
-    3. ``curl -fsS http://127.0.0.1:8642/health`` returns 200 (api_server up).
+    3. ``curl -fsS http://127.0.0.1:<api_server_port>/health`` returns 200
+       (api_server up). The port is read from
+       ``hosts.json.agents.<name>.config.api_server.port`` (issue #533).
 
     The api_server platform binds to loopback on the agent host by design,
     so the /health probe must be issued from inside that host. We use the
@@ -988,6 +990,19 @@ def validate_hermes_health(
     # Ansible's `shell` module defaults to /bin/sh (dash) which doesn't
     # support `set -o pipefail`; we don't need a pipefail since each check
     # captures its own rc into a sentinel line.
+    #
+    # Per-instance api_server port (issue #533): read from the persisted agent
+    # record. Fall back to legacy 8642 if missing — covers pre-#533 agents
+    # whose hosts.json shape predates the api_server block.
+    api_server_port = (
+        claw_record.get("config", {}).get("api_server", {}).get("port") or 8642
+    )
+    if not (
+        isinstance(api_server_port, int)
+        and not isinstance(api_server_port, bool)
+        and 1 <= api_server_port <= 65535
+    ):
+        api_server_port = 8642
     agent_home = f"/home/{claw_name}"
     shell_cmd = (
         f"sudo -u {claw_name} bash -c '"
@@ -999,7 +1014,7 @@ def validate_hermes_health(
         f"  echo ENV_CHECK; "
         f"  test -f {agent_home}/.hermes/.env && echo ENV_OK || echo ENV_MISSING; "
         f"  echo HEALTH_CHECK; "
-        f'  curl -fsS -o /dev/null -w "%{{http_code}}\\n" http://127.0.0.1:8642/health '
+        f'  curl -fsS -o /dev/null -w "%{{http_code}}\\n" http://127.0.0.1:{api_server_port}/health '
         f"     || echo CURL_FAILED"
         f"'"
     )

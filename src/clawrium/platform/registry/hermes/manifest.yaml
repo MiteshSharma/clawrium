@@ -60,10 +60,12 @@ secrets:
 #              push identity files in this iteration. The wizard records this
 #              stage as SKIPPED and advances.
 #   channels   default `cli`. The api_server platform exposes an
-#              OpenAI-compatible HTTP API on 0.0.0.0:8642 (all interfaces,
-#              bearer-token protected via HERMES_API_SERVER_KEY) so
-#              `clm chat <hermes>` can reach it at http://<host-ip>:8642/v1
-#              from any clm machine on the LAN. External messaging gateways
+#              OpenAI-compatible HTTP API on 0.0.0.0:<api_server_port> (all
+#              interfaces, bearer-token protected via HERMES_API_SERVER_KEY)
+#              so `clm chat <hermes>` can reach it at
+#              http://<host-ip>:<api_server_port>/v1 from any clm machine on
+#              the LAN. The port is per-instance, picked at install time
+#              from 8600..8699 (issue #533). External messaging gateways
 #              (Discord/Slack/Telegram/etc.) are out of scope and tracked as a
 #              separate follow-up issue.
 #   validate   Composite shell-level check: `hermes --version` succeeds,
@@ -93,7 +95,7 @@ onboarding:
         - id: confirm_cli
           name: "Confirm CLI channel"
           type: confirm
-          message: "Hermes will expose its OpenAI-compatible API on all interfaces (0.0.0.0:8642), bearer-token protected, reachable at http://<host-ip>:8642/v1 from any clm machine on the LAN."
+          message: "Hermes will expose its OpenAI-compatible API on all interfaces, bearer-token protected, reachable at http://<host-ip>:<api_server_port>/v1 from any clm machine on the LAN. The port is per-instance (8600..8699); see `clm agent describe`."
           default: true
         - id: select_discord
           name: "Enable Discord channel (optional)"
@@ -132,7 +134,11 @@ onboarding:
         - id: health_check
           name: "Verify api_server /health returns 200"
           type: command
-          command: "curl -fsS http://0.0.0.0:8642/health"
+          # The actual port is per-instance (issue #533). This `command`
+          # field is descriptive — the live probe is run by
+          # validate_hermes_health() in src/clawrium/core/validation.py,
+          # which reads the port from hosts.json.
+          command: "curl -fsS http://0.0.0.0:<api_server_port>/health"
 
 # Note: The hermes installer is a single bash script served from
 # raw.githubusercontent.com at the pinned tag. The same script content is
