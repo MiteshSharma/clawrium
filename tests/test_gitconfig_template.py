@@ -96,8 +96,11 @@ def test_injection_blocked_for_each_field(field):
         )
 
 
-def test_null_byte_does_not_corrupt_render():
-    """T3: NUL byte in a field should not appear in the rendered output."""
+def test_null_byte_is_stripped_by_template():
+    """T3 + W4: the template's replace chain strips \\x00 so a value that
+    bypassed the CLI sanitizer (e.g. stored directly into secrets.json)
+    cannot land a NUL inside the rendered gitconfig.
+    """
     body = _render(
         {
             "user_name": "Alice\x00evil",
@@ -107,15 +110,8 @@ def test_null_byte_does_not_corrupt_render():
             "core_editor": "vim",
         }
     )
-    # Jinja2's replace chain doesn't strip \x00, but the CLI sanitizer does.
-    # Either way the rendered file must remain parseable by git (no NUL).
-    # Document current behavior: \x00 reaches the template only if the
-    # secrets store was poisoned out-of-band; in that case ~/.gitconfig
-    # would carry a NUL inside the user.name value, which git tolerates as
-    # a value but is operationally undesirable. The CLI-layer sanitizer is
-    # the load-bearing fix; this test pins that the template render does
-    # not crash.
-    assert "Alice" in body
+    assert "\x00" not in body
+    assert "Aliceevil" in body
 
 
 def test_carriage_return_in_user_email_is_stripped():

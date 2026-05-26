@@ -319,6 +319,12 @@ class TestIntegrationCredentialsUpdateGitSanitization:
         stored = get_integration_credentials("g")["GIT_USER_NAME"]
         assert "\r" not in stored
         assert "\n" not in stored
+        # Positive content assertion: a regression that skipped
+        # set_integration_credential entirely would otherwise leave the
+        # original 'Alice' in place and still satisfy the negative checks.
+        assert stored.startswith("Mallory")
+        # CLI must surface the sanitization (iter-3 B2).
+        assert "sanitized" in result.output.lower()
 
     def test_update_lf_newline_in_user_name(self, isolated_config):
         """A literal \\n payload via mocked prompt is flattened (W4)."""
@@ -350,6 +356,32 @@ class TestIntegrationCredentialsUpdateGitSanitization:
         assert result.exit_code == 0, result.output
         stored = get_integration_credentials("g")["GIT_USER_NAME"]
         assert "\n" not in stored
+        assert stored.startswith("Mallory")
+
+
+class TestIntegrationAddGitRequiredFieldNUL:
+    """A NUL-only payload for a required field must fail loudly (iter-3 B1)."""
+
+    def test_nul_only_required_field_exits_1(self, isolated_config):
+        isolated_config.mkdir(parents=True, exist_ok=True)
+
+        def fake_run(cmd, *args, **kwargs):
+            class R:
+                returncode = 0
+                stdout = ""
+            return R()
+
+        with patch("clawrium.cli.integration.subprocess.run", side_effect=fake_run), \
+             patch(
+                 "clawrium.cli.integration.typer.prompt",
+                 side_effect=["\x00\x00"],  # required field exhausts to ''
+             ):
+            result = runner.invoke(
+                app, ["integration", "add", "g", "--type", "git"]
+            )
+
+        assert result.exit_code == 1, result.output
+        assert "required" in result.output.lower()
 
 
 def test_sanitize_git_field_strips_null_byte():

@@ -2,26 +2,10 @@
   "transport": "cli",
   "pr": 534,
   "iterations": [
-    {
-      "iteration": 1,
-      "commit_sha": "f04bc1bab7fe8bb30ad1d7e820e54cb8e4842b4d",
-      "rating": 2,
-      "review_cost_usd": 3.46,
-      "duration_sec": 563,
-      "outcome": "fixed: B1/B3 newline injection, B2 singleton (CLI-level), mode 0600; B4 false-positive from stale branch base"
-    },
-    {
-      "iteration": 2,
-      "commit_sha": "616cf9b",
-      "rating": 3,
-      "review_cost_usd": 2.57,
-      "duration_sec": 373,
-      "outcome": "iter-2 NB-1 (singleton TOCTOU) + NB-2 (3 test gaps) addressed in iter-3"
-    },
-    {
-      "iteration": 3,
-      "commit_sha": "pending",
-      "outcome": "moved singleton into add_agent_integration updater closure (IntegrationSingletonViolation), added T1/T3 tests, parametrized template tests across all 5 fields, LF injection test, NUL byte tests, no_log on all 3 playbook gitconfig tasks, post-sanitization truthiness recheck, stronger singleton hint assertion, direct-API singleton test"
-    }
-  ]
+    {"iteration": 1, "commit_sha": "f04bc1b", "rating": 2, "cost_usd": 3.46, "outcome": "iter-1 B1/B2/B3 fixed; B4 false-positive (rebase)"},
+    {"iteration": 2, "commit_sha": "616cf9b", "rating": 3, "cost_usd": 2.57, "outcome": "NB-1 (singleton TOCTOU) + NB-2 (3 test gaps) raised; iter-2 fixes in d4a9dac"},
+    {"iteration": 3, "commit_sha": "d4a9dac", "rating": 2, "cost_usd": 2.65, "outcome": "iter-2 NB-1 RESOLVED; NB-2 partially (T1/T3 done, T2 deferred); two new iter-3 blockers (NUL-only required + silent sanitization) fixed in follow-up commit"}
+  ],
+  "ceiling_reached": true,
+  "final_followup_applied": true
 }

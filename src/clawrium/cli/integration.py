@@ -290,19 +290,23 @@ def add(
             console.print("\nCancelled.")
             raise typer.Exit(code=1)
 
+        if integration_type == "git" and value:
+            sanitized = _sanitize_git_field(value)
+            if sanitized != value:
+                console.print(
+                    f"[yellow]Notice:[/yellow] {key} contained control characters "
+                    "(CR/LF/NUL) and was sanitized before storage."
+                )
+            value = sanitized
+
         if required and not value:
-            console.print(f"[red]Error:[/red] {key} is required")
+            console.print(
+                f"[red]Error:[/red] {key} is required (empty after sanitization)"
+            )
             raise typer.Exit(code=1)
 
         if value:
-            if integration_type == "git":
-                value = _sanitize_git_field(value)
-            # Re-check truthiness post-sanitization: a NUL-only payload like
-            # '\\x00' is truthy before strip, empty after. Storing '' as a
-            # credential value would silently land an empty identity field
-            # in ~/.gitconfig (e.g. `name = `), which breaks every commit.
-            if value:
-                credentials_to_store.append((key, value, description))
+            credentials_to_store.append((key, value, description))
 
     # Build integration record
     now = datetime.now(timezone.utc).isoformat()
@@ -558,15 +562,23 @@ def credentials(
         if not value and has_existing:
             continue
 
+        if integration_type == "git" and value:
+            sanitized = _sanitize_git_field(value)
+            if sanitized != value:
+                console.print(
+                    f"[yellow]Notice:[/yellow] {key} contained control characters "
+                    "(CR/LF/NUL) and was sanitized before storage."
+                )
+            value = sanitized
+
         if required and not value and not has_existing:
-            console.print(f"[red]Error:[/red] {key} is required")
+            console.print(
+                f"[red]Error:[/red] {key} is required (empty after sanitization)"
+            )
             raise typer.Exit(code=1)
 
         if value:
-            if integration_type == "git":
-                value = _sanitize_git_field(value)
-            if value:
-                credentials_to_store.append((key, value, description))
+            credentials_to_store.append((key, value, description))
 
     # Store updated credentials
     for key, value, description in credentials_to_store:
