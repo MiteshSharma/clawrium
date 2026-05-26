@@ -60,6 +60,7 @@ __all__ = [
     "read_memory_file",
     "write_memory_file",
     "delete_memory_files",
+    "is_file_writable",
 ]
 
 # Maximum bytes accepted by write_memory_file. Memory files are intended for
@@ -182,6 +183,29 @@ _REGISTRY_DIR = Path(__file__).parent.parent / "platform" / "registry"
 # ``_get_playbook_dir`` helper falls back here for the openclaw claw type so
 # those patches continue to work without modification.
 _PLAYBOOK_DIR = _REGISTRY_DIR / "openclaw" / "playbooks"
+
+
+def is_file_writable(claw_type: str, filename: str) -> bool:
+    """Check if a filename is writable for the given claw type.
+
+    Returns True if the file is in the static allowlist OR is a valid
+    daily-note path (memory/<file>) for claws that support daily notes.
+    Returns False otherwise.
+
+    This is a lightweight check that does not verify agent reachability
+    or file existence — use before prompting to create a missing file.
+    """
+    # Check static allowlist
+    allowed = _MEMORY_WRITE_ALLOWED_FILES.get(claw_type)
+    if allowed is not None and filename in allowed:
+        return True
+
+    # Check daily-notes pattern for supported claws
+    if claw_type in _MEMORY_WRITE_DAILY_NOTES:
+        if _MEMORY_DAILY_NOTE_PATTERN.match(filename) is not None:
+            return True
+
+    return False
 
 
 class MemoryFileInfo(TypedDict):
