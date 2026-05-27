@@ -860,3 +860,51 @@ def _fetch_logs_via_ssh(
             )
 
     return entries
+
+
+# --- Agent exec endpoint ---
+
+
+class ExecRequest(BaseModel):
+    """Request body for agent exec."""
+
+    command: list[str]
+    timeout: int = 30
+
+
+@router.post("/{agent_key}/exec")
+async def agent_exec(agent_key: str, body: ExecRequest):
+    """Run a command on the agent's host via its native CLI.
+
+    Equivalent to `clawctl agent exec <name> -- <args...>`.
+    Returns stdout, stderr, and return code.
+    """
+    from clawrium.core.agent_exec import run_agent_exec, AgentExecError
+
+    agent = _resolve_agent(agent_key)
+    hostname = agent["host"]
+    agent_name = agent["agent_name"]
+    claw_type = agent["agent_type"]
+
+    if not body.command:
+        raise HTTPException(status_code=400, detail="command list must not be empty")
+
+    timeout = max(5, min(body.timeout, 120))
+
+    try:
+        stdout, stderr, rc = await asyncio.to_thread(
+            run_agent_exec, hostname, agent_name, claw_type, body.command, timeout
+        )
+    except AgentExecError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("agent exec failed for %s", agent_key)
+        raise HTTPException(
+            status_code=500, detail="exec failed — check server logs"
+        ) from e
+
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "return_code": rc,
+    }

@@ -91,8 +91,9 @@ export function AgentNode({ data }: NodeProps) {
       {/* Agent info section (clickable) */}
       <button
         onClick={() => onAgentClick?.(agent, hostAlias)}
-        className="w-full text-left px-4 py-3 hover:bg-surface/50 transition-colors"
+        className="relative w-full text-left px-4 py-3 hover:bg-surface/50 transition-colors"
       >
+        <span className="absolute top-2 right-3 text-base" aria-hidden="true">🤖</span>
         {/* Name + status */}
         <div className="flex items-center gap-2 mb-2">
           <StatusDot status={agent.status as AgentStatus} size="md" />

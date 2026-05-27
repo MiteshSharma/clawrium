@@ -6,11 +6,19 @@ import { useEffect, useState } from "react";
 
 import { ExternalLinkRows } from "./external-links";
 
-const NAV_ITEMS = [
+interface NavItem {
+  label: string;
+  href: string;
+  disabled?: boolean;
+  badge?: string;
+}
+
+const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/" },
   { label: "Topology", href: "/topology" },
   { label: "Providers", href: "/providers" },
   { label: "Skills", href: "/skills" },
+  { label: "MCPs", href: "/mcps", disabled: true, badge: "Coming soon" },
   { label: "Integrations", href: "/integrations" },
   { label: "Settings", href: "/settings" },
 ];
@@ -73,7 +81,23 @@ export function Sidebar() {
 
       <nav aria-label="Main navigation" className="flex-1 mt-4">
         {NAV_ITEMS.map((item) => {
-          const isActive = isItemActive(pathname, item.href);
+          const isActive = !item.disabled && isItemActive(pathname, item.href);
+
+          if (item.disabled) {
+            return (
+              <span
+                key={item.href}
+                className="flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-muted border-l-[3px] border-transparent cursor-default"
+              >
+                {item.label}
+                {item.badge && (
+                  <span className="text-[10px] font-semibold uppercase tracking-wide bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full">
+                    {item.badge}
+                  </span>
+                )}
+              </span>
+            );
+          }
 
           return (
             <Link
@@ -81,7 +105,7 @@ export function Sidebar() {
               href={item.href}
               aria-current={isActive ? "page" : undefined}
               className={`
-                block px-5 py-3 text-sm font-medium transition-colors
+                block px-5 py-2.5 text-sm font-medium transition-colors
                 ${
                   isActive
                     ? "text-primary border-l-[3px] border-primary bg-surface"
@@ -99,7 +123,7 @@ export function Sidebar() {
         <ExternalLinkRows />
         <div className="pt-2 border-t border-default">
           <span className="text-xs text-muted">
-            {version ? `v${version}` : " "}
+            {version ? `v${version}` : " "}
           </span>
         </div>
       </div>

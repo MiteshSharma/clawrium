@@ -36,6 +36,8 @@ export interface AgentSummary {
   model: string;
   uptime: string;
   gateway_url: string | null;
+  provider: string;
+  provider_type: string;
   // Health fields merged in by useFleetHealth; null until the probe lands.
   process_running?: boolean | null;
   health_error?: string | null;
@@ -58,8 +60,6 @@ export type AgentStatus =
 export interface AgentDetail extends AgentSummary {
   version: string;
   device_id: string;
-  provider: string;
-  provider_type: string;
   onboarding_step: string;
   gateway_port: number | null;
 }

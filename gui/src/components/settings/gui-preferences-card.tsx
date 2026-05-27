@@ -23,10 +23,7 @@ export function GuiPreferencesCard({ port }: GuiPreferencesCardProps) {
         <span>15s (fleet status polling)</span>
       </div>
       <p className="mt-4 text-xs text-muted">
-        Configure via CLI flags:{" "}
-        <code className="bg-surface px-1 py-0.5 rounded text-xs">
-          clawctl gui --port 36000 --no-open
-        </code>
+        These values are set at launch time. Restart the GUI to apply changes.
       </p>
     </Card>
   );

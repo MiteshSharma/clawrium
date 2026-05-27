@@ -24,6 +24,8 @@ function makeFleet(): FleetResponse {
       model: "m",
       uptime: "1m",
       gateway_url: null,
+      provider: "",
+      provider_type: "",
     },
     {
       agent_key: "a2",
@@ -35,6 +37,8 @@ function makeFleet(): FleetResponse {
       model: "m",
       uptime: "1m",
       gateway_url: null,
+      provider: "",
+      provider_type: "",
     },
   ];
   return {

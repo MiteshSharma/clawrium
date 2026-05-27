@@ -23,6 +23,8 @@ const skillState: {
 vi.mock("@/hooks", () => ({
   useSkills: () => skillsState,
   useSkill: () => skillState,
+  useFleet: () => ({ data: { agents: [], summary: { total: 0, running: 0, provisioning: 0, hosts: 0 } } }),
+  useInstallAgentSkill: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 // The Modal component uses HTMLDialogElement#showModal which jsdom only
