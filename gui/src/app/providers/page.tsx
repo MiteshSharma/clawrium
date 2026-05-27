@@ -36,9 +36,12 @@ export default function ProvidersPage() {
   const providerUsage: Record<string, string[]> = {};
   if (fleet?.agents) {
     for (const agent of fleet.agents) {
-      // The fleet agent data doesn't directly expose provider_name at summary level,
-      // but we can check from the config in agent detail. For now, we leave it empty
-      // since the summary API doesn't include provider_name.
+      if (agent.provider) {
+        if (!providerUsage[agent.provider]) {
+          providerUsage[agent.provider] = [];
+        }
+        providerUsage[agent.provider].push(agent.agent_name);
+      }
     }
   }
 
@@ -67,7 +70,7 @@ export default function ProvidersPage() {
     <div className="space-y-6">
       <PageHeader
         title="Providers"
-        description="Manage LLM provider configurations"
+        description="Configure LLM providers once, apply them across your fleet. Each provider can power multiple agents."
       />
 
       {/* Provider list */}

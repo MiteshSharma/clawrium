@@ -46,7 +46,7 @@ function FleetSummaryCard({ data }: { data: TopologyResponse }) {
   ];
 
   return (
-    <div className="absolute top-4 left-4 bg-white/95 backdrop-blur-sm border border-default rounded-lg px-5 py-4 shadow-sm z-10 min-w-[200px]">
+    <div className="absolute top-4 right-4 bg-white/95 backdrop-blur-sm border border-default rounded-lg px-5 py-4 shadow-sm z-10 min-w-[200px]">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-3">
         Fleet Summary
       </div>

@@ -79,7 +79,7 @@ export default function IntegrationsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Integrations"
-        description="Manage connections to external services your agents can use"
+        description="Connect external services once, share them across your fleet. Agents inherit credentials automatically."
         actions={
           <Button variant="primary" onClick={() => setShowAdd(true)}>
             + Add Integration
@@ -112,15 +112,11 @@ export default function IntegrationsPage() {
       ) : (
         <div className="bg-surface rounded-xl border border-default p-12 text-center space-y-3">
           <p className="text-sm text-primary-text font-medium">
-            No integrations configured.
+            No integrations configured yet.
           </p>
           <p className="text-xs text-muted">
-            Use{" "}
-            <code className="px-1 py-0.5 rounded bg-panel text-secondary">
-              clawctl integration registry create &lt;name&gt; --type &lt;type&gt;
-            </code>{" "}
-            or click <strong>Add Integration</strong> to connect GitHub,
-            GitLab, Atlassian, Linear, or Notion.
+            Connect GitHub, GitLab, Atlassian, Linear, or Notion — then
+            assign them to any agent in your fleet.
           </p>
           <Button variant="primary" onClick={() => setShowAdd(true)}>
             + Add your first integration
