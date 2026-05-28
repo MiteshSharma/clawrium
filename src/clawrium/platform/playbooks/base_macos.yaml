@@ -26,6 +26,42 @@
           playbook should only run when os_family=darwin.
       when: ansible_os_family != "Darwin"
 
+    # Resolve admin_user: explicit extra var wins; otherwise infer from the
+    # current owner of /opt/homebrew (existing install) or fall back to the
+    # SSH ansible_user. Homebrew refuses to run under root, so this account
+    # must be a human admin (member of the `admin` group / gid 80).
+    - name: Detect existing Homebrew prefix owner (if brew is already installed)
+      ansible.builtin.stat:
+        path: /opt/homebrew
+      register: brew_prefix_stat
+
+    - name: Get current owner of /opt/homebrew
+      ansible.builtin.command: stat -f %Su /opt/homebrew
+      register: brew_prefix_owner
+      changed_when: false
+      failed_when: false
+      when: brew_prefix_stat.stat.exists
+
+    - name: Resolve effective admin_user
+      ansible.builtin.set_fact:
+        admin_user: >-
+          {{ admin_user
+             | default(
+                 (brew_prefix_owner.stdout | default('') | trim)
+                 if (brew_prefix_owner.stdout | default('') | trim) not in ['', 'root']
+                 else ansible_user,
+                 true
+               )
+          }}
+
+    - name: Fail if admin_user resolved to root
+      ansible.builtin.fail:
+        msg: >-
+          admin_user resolved to 'root', but Homebrew refuses to run under
+          root. Pass `-e admin_user=<human-admin-account>` explicitly, or
+          ensure /opt/homebrew is owned by a non-root admin user.
+      when: admin_user == "root"
+
     # ----- Block 1: Xcode Command Line Tools -----
     - name: Check whether Xcode CLT is already installed
       ansible.builtin.stat:

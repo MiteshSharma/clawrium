@@ -38,12 +38,11 @@ class TestResolveAgentPlaybook:
         assert path.name == "configure.yaml"
         assert path.exists()
 
-    def test_darwin_hermes_install_raises_until_step_5(self):
-        with pytest.raises(FileNotFoundError) as exc:
-            resolve_agent_playbook("hermes", "install", "darwin")
-        assert "install_macos.yaml" in str(exc.value)
-        assert "hermes" in str(exc.value)
-        assert "darwin" in str(exc.value)
+    def test_darwin_hermes_install_returns_existing_after_step_5(self):
+        """Step 5 of #469 landed install_macos.yaml; resolver returns it."""
+        path = resolve_agent_playbook("hermes", "install", "darwin")
+        assert path.name == "install_macos.yaml"
+        assert path.exists()
 
     def test_unknown_agent_type_raises_file_not_found(self):
         # Same error class as Mac-missing — caller can distinguish via the
