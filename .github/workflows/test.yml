@@ -8,7 +8,17 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Linux is the primary platform. macOS coverage was added with
+    # issue #469 (Mac support); it exercises the dispatcher + Mac-only
+    # code paths against an Apple Silicon runner so any drift between
+    # the linux + darwin lifecycle backends surfaces in CI rather
+    # than on a user's Mac. fail-fast disabled so one platform's
+    # failures don't mask the other's.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
