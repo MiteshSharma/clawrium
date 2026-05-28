@@ -64,16 +64,30 @@ class TestTapeFileStructure:
             "tape files are the reproducible source for committed GIFs."
         )
 
-    def test_tape_to_gif_pairing(self) -> None:
-        """Every committed `.tape` must have a sibling `.gif` of the same stem."""
+    def test_tape_to_output_pairing(self) -> None:
+        """Every committed `.tape` whose Output is in docs/demos/ must have its
+        sibling rendered file (GIF or MP4) committed.
+
+        Tapes whose Output is in docs/demos/recordings/ (gitignored) are skipped —
+        the recording is uploaded to YouTube, not committed.
+        """
+        output_re = re.compile(r"^\s*Output\s+(\S+)\s*$", re.MULTILINE)
         missing: list[str] = []
         for tape in self._tape_files():
-            paired_gif = tape.with_suffix(".gif")
-            if not paired_gif.exists():
-                missing.append(f"{tape.name} (expected {paired_gif.name})")
+            text = tape.read_text()
+            match = output_re.search(text)
+            if not match:
+                continue  # validated by test_tape_output_matches_filename
+            output_path = match.group(1)
+            if output_path.startswith("docs/demos/recordings/"):
+                continue
+            paired = REPO_ROOT / output_path
+            if not paired.exists():
+                missing.append(f"{tape.name} (expected {output_path})")
         assert not missing, (
-            "Tape files without paired GIFs: " + "; ".join(missing) + ". "
-            "Run vhs against the tape and commit the generated GIF."
+            "Tape files without paired output files: " + "; ".join(missing) + ". "
+            "Run vhs against the tape and commit the generated file, "
+            "or move its Output to docs/demos/recordings/ to opt out."
         )
 
     def test_gif_to_tape_pairing(self) -> None:
@@ -89,7 +103,12 @@ class TestTapeFileStructure:
         )
 
     def test_tape_output_matches_filename(self) -> None:
-        """The `Output ...` directive must point at `docs/demos/<same-stem>.gif`."""
+        """The `Output ...` directive must point at one of:
+
+        - `docs/demos/<stem>.gif` or `.mp4` (legacy / README-embedded; committed).
+        - `docs/demos/recordings/<stem>.gif` or `.mp4` (new convention; gitignored,
+          uploaded to YouTube).
+        """
         output_re = re.compile(r"^\s*Output\s+(\S+)\s*$", re.MULTILINE)
         bad: list[str] = []
         for tape in self._tape_files():
@@ -98,10 +117,17 @@ class TestTapeFileStructure:
             if not match:
                 bad.append(f"{tape.name}: missing Output directive")
                 continue
-            expected = f"docs/demos/{tape.stem}.gif"
-            if match.group(1) != expected:
+            stem = tape.stem
+            allowed = {
+                f"docs/demos/{stem}.gif",
+                f"docs/demos/{stem}.mp4",
+                f"docs/demos/recordings/{stem}.gif",
+                f"docs/demos/recordings/{stem}.mp4",
+            }
+            if match.group(1) not in allowed:
                 bad.append(
-                    f"{tape.name}: Output is '{match.group(1)}', expected '{expected}'"
+                    f"{tape.name}: Output is '{match.group(1)}'; "
+                    f"expected one of: {sorted(allowed)}"
                 )
         assert not bad, "Tape Output directive issues:\n  - " + "\n  - ".join(bad)
 
