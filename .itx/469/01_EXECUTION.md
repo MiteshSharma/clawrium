@@ -70,7 +70,42 @@ That comment specifies, for each of the 12 steps:
   - `make lint`: clean.
 - DoD: all bullets met.
 
-### Steps 2–12 — TODO
+### Step 2 — Manifest matcher (COMPLETED) ✓
+
+- Commit: `8abcd2a`
+- Files added:
+  - `tests/core/test_version_matches.py` (14 tests covering the
+    matcher: exact, `>=`, `>`, `<=`, `<`, `==`, `!=`, malformed spec
+    raises, missing/garbage actual returns False, plus two
+    `check_compatibility` end-to-end cases through `load_manifest`
+    monkeypatching)
+  - `tests/core/test_hardware_macos_normalization.py` (3 tests:
+    MacOSX → "macos", Linux unchanged, version coerced to str)
+- Files modified:
+  - `src/clawrium/core/registry.py` — added `_version_matches()`
+    (operator-aware, accepts exact-equality for back-compat) and
+    swapped the `os_version_match = ...` line at the old line 935 to
+    call it. Imports already had `re`, `Version`, `InvalidVersion`.
+  - `src/clawrium/platform/registry/hermes/manifest.yaml` — added a
+    macos arm64 platform entry with `os_version: ">=14"`. sha256
+    mirrors Linux entries (same upstream `install.sh` URL —
+    documented inline). Step 5 may revise.
+  - `src/clawrium/core/hardware.py` — `extract_hardware_from_facts`
+    now normalizes `ansible_distribution == "MacOSX"` → `"macos"`.
+- Validation:
+  - `uv run pytest tests/core/test_version_matches.py
+    tests/core/test_hardware_macos_normalization.py -v`: 17/17 pass.
+  - `make test`: 3365 passed (3348 + 17 new). No regressions.
+  - `make lint`: clean.
+- Linux invariant: existing Linux manifest entries pin exact
+  "24.04"/"22.04". The new matcher falls through to exact-equality
+  for non-operator specs, so Linux compatibility checks are
+  byte-identical in behavior.
+- DoD: all bullets met. The "failure point moves from manifest
+  mismatch to playbook not found" DoD bullet becomes observable
+  during Step 3's Mac E2E — recorded here for that validation.
+
+### Steps 3–12 — TODO
 
 Execute in order, **one commit per step**, validate before moving on.
 Use the issue comment as the spec; the bullet list below is just a
