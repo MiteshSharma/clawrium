@@ -171,3 +171,20 @@ platforms:
         ripgrep: "*"
         ffmpeg: "*"
         uv: "*"
+  # macOS entry — uses ">=14" so the same line tracks new macOS releases
+  # without manifest churn. The sha256 mirrors the Linux entries because the
+  # upstream `install.sh` URL is identical across platforms (the script
+  # itself dispatches on OS internally). Step 5 of issue #469 may revise this
+  # if the install path forks to a separate upstream URL.
+  - version: "2026.5.7"
+    os: macos
+    os_version: ">=14"
+    arch: arm64
+    sha256: "b34368cb0628d5acbdc48fe6f4160fb6f51bb33377e8f5a7415fd790a57456e5"
+    requirements:
+      min_memory_mb: 2048
+      gpu_required: false
+      dependencies:
+        ripgrep: "*"
+        ffmpeg: "*"
+        uv: "*"
