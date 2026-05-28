@@ -5,6 +5,10 @@
 # Helper     : docs/demos/_<NAME>_helpers.sh
 # Captures   : docs/demos/<NAME>/outputs/NN-<slug>.txt   (committed; replay-mode scenes cat these)
 # Requires   : <list real prerequisites — hosts, providers, agents — that must exist before record>
+#
+# SECURITY: <Title> placeholders inside `Type `...`` backtick blocks are passed to bash
+# at record time. Keep titles to plain alphanumerics, spaces, ':', and '-'. Never use
+# titles containing `$(`, backticks, or unbalanced quotes — they execute shell.
 
 Require vhs
 Require clawctl
