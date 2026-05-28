@@ -37,6 +37,15 @@ def test_label_for_uses_reverse_dns_prefix():
     assert label_for("hermes-prod-7") == "ai.clawrium.hermes.hermes-prod-7"
 
 
+def test_label_for_dashboard_kind():
+    assert label_for("h1", kind="dashboard") == "ai.clawrium.hermes.h1.dashboard"
+
+
+def test_label_for_unknown_kind_raises():
+    with pytest.raises(ValueError, match="unsupported plist kind"):
+        label_for("h1", kind="nope")
+
+
 def test_plist_path_for_lives_in_system_daemons():
     """launchd /Library/LaunchAgents is per-user GUI — we MUST use LaunchDaemons."""
     path = plist_path_for("h1")
@@ -107,3 +116,24 @@ def test_render_plist_undefined_var_raises():
 
 def test_label_prefix_is_stable():
     assert LABEL_PREFIX == "ai.clawrium.hermes"
+
+
+def test_render_dashboard_plist_contains_port():
+    """Dashboard plist must template in the per-instance loopback port."""
+    rendered = render_plist(
+        "h1", template_name="dashboard.plist.j2", dashboard_port=45112
+    )
+    parsed = _parse(rendered)
+    assert parsed["Label"] == "ai.clawrium.hermes.h1.dashboard"
+    assert parsed["UserName"] == "h1"
+    args = parsed["ProgramArguments"]
+    assert "--host" in args and "127.0.0.1" in args
+    assert "--port" in args and "45112" in args
+    assert "--no-open" in args
+
+
+def test_render_dashboard_plist_does_not_contain_xclm():
+    rendered = render_plist(
+        "h1", template_name="dashboard.plist.j2", dashboard_port=45112
+    ).lower()
+    assert "xclm" not in rendered
