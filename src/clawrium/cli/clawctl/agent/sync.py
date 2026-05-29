@@ -272,11 +272,11 @@ def sync(
     started = time.monotonic()
 
     # ATX iter-1 W3/W4: do NOT pre-mark phases as `complete` before the
-    # underlying call runs — if `sync_agent` fails, terminals would show
-    # 5 "complete" lines followed by an error. Pre-emit as `queued` so
-    # NDJSON consumers can distinguish from the post-call `complete`
-    # summary. Bundle 5 will refactor `core/lifecycle.sync_agent` to
-    # emit per-phase events directly, removing the need for pre-emission.
+    # underlying call runs — if the canonical pipeline fails, terminals
+    # would show "complete" lines followed by an error. Pre-emit as
+    # `queued` so NDJSON consumers can distinguish from the post-call
+    # `complete` summary. Bundle 5 will refactor `sync_agent_canonical`
+    # to emit per-phase events directly, removing pre-emission.
     phase_keys = ("validate", "push", "restart", "verify")
     for key, label in zip(phase_keys, _PHASES):
         if key == "validate" and skip_validate:

@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from typer.testing import CliRunner
 
 from clawrium.cli import app
@@ -68,15 +67,17 @@ def test_sync_workspace_skips_restart(fleet_dir) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("flag", ["--canonical"])
-def test_sync_rejects_removed_canonical_flag(fleet_dir, flag: str) -> None:
-    result = runner.invoke(app, ["agent", "sync", "wise-hypatia", flag])
+def test_sync_rejects_removed_canonical_flag(fleet_dir) -> None:
+    result = runner.invoke(app, ["agent", "sync", "wise-hypatia", "--canonical"])
     assert result.exit_code != 0
-    assert "no such option" in result.output.lower() or "unexpected" in result.output.lower()
+    assert "--canonical" in result.output
 
 
 # ---------------------------------------------------------------------------
 # #560 B5: error-path coverage for the only sync pipeline.
+#
+# `result.output` from CliRunner is the mixed stdout+stderr stream
+# (Click 8.2+); `emit_error()` writes to stderr but content lands here.
 # ---------------------------------------------------------------------------
 
 
@@ -87,6 +88,42 @@ def _patch_canonical(monkeypatch, exc) -> None:
     monkeypatch.setattr(
         "clawrium.core.lifecycle_canonical.sync_agent_canonical", _raise
     )
+
+
+class _StubResult:
+    files_written: list[str] = []
+    files_unchanged: list[str] = []
+
+
+def _patch_canonical_capture(monkeypatch) -> dict:
+    captured: dict = {}
+
+    def _cap(name, **kwargs):
+        captured["name"] = name
+        captured.update(kwargs)
+        return _StubResult()
+
+    monkeypatch.setattr(
+        "clawrium.core.lifecycle_canonical.sync_agent_canonical", _cap
+    )
+    return captured
+
+
+def test_sync_force_flag_forwarded_to_canonical(fleet_dir, monkeypatch) -> None:
+    captured = _patch_canonical_capture(monkeypatch)
+    result = runner.invoke(app, ["agent", "sync", "wise-hypatia", "--force"])
+    assert result.exit_code == 0, result.output
+    assert captured.get("force") is True
+
+
+def test_sync_workspace_flag_disables_restart_and_verify(
+    fleet_dir, monkeypatch
+) -> None:
+    captured = _patch_canonical_capture(monkeypatch)
+    result = runner.invoke(app, ["agent", "sync", "wise-hypatia", "--workspace"])
+    assert result.exit_code == 0, result.output
+    assert captured.get("restart") is False
+    assert captured.get("verify") is False
 
 
 def test_sync_surfaces_secret_removal_refused(fleet_dir, monkeypatch) -> None:
