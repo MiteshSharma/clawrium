@@ -398,6 +398,10 @@ def _baseline_inputs(*, ptype: str = "openrouter") -> RenderInputs:
         provider = ProviderInputs(
             name="oa", type="openai", default_model="gpt-5", api_key="sk-oa-1"
         )
+    elif ptype == "zai":
+        provider = ProviderInputs(
+            name="z", type="zai", default_model="glm-4.5", api_key="sk-zai-1"
+        )
     else:
         raise AssertionError(ptype)
 
@@ -445,6 +449,7 @@ def _baseline_inputs(*, ptype: str = "openrouter") -> RenderInputs:
         (render_openclaw, "openai"),
         (render_openclaw, "bedrock"),
         (render_openclaw, "ollama"),
+        (render_openclaw, "zai"),
     ],
 )
 def test_renderer_is_idempotent(renderer, ptype):
@@ -869,3 +874,188 @@ def test_render_module_exports():
     assert hasattr(render, "render_openclaw")
     assert hasattr(render, "RenderInputs")
     assert hasattr(render, "AgentConfigError")
+
+
+# ---------------------------------------------------------------------------
+# Iter-3 ATX coverage gap closures
+# ---------------------------------------------------------------------------
+
+
+def test_openclaw_zai_emits_zai_api_key():
+    """Iter-3 B1: pin the openclaw `zai` provider env-var emission."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(name="z", type="zai", default_model="glm-4.5", api_key="sk-zai-1"),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, auth="tk", bind="lan"),
+    )
+    env = render_openclaw(inputs).files[".openclaw/env"]
+    assert "ZAI_API_KEY='sk-zai-1'" in env
+
+
+def test_openclaw_atlassian_integration_emits_to_env():
+    """Iter-3 B2: pin all six env vars on openclaw's atlassian branch."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(name="or", type="openrouter", default_model="m", api_key="sk-1"),
+        integrations=(
+            IntegrationInputs(
+                name="atl",
+                type="atlassian",
+                credentials=(
+                    ("ATLASSIAN_API_TOKEN", "tk"),
+                    ("ATLASSIAN_EMAIL", "a@b"),
+                    ("ATLASSIAN_URL", "https://co.atlassian.net/"),
+                ),
+            ),
+        ),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, bind="lan"),
+    )
+    env = render_openclaw(inputs).files[".openclaw/env"]
+    # Trailing slash stripped before CONFLUENCE_URL derivation.
+    assert "JIRA_URL='https://co.atlassian.net'" in env
+    assert "CONFLUENCE_URL='https://co.atlassian.net/wiki'" in env
+    assert "JIRA_EMAIL='a@b'" in env
+    assert "CONFLUENCE_EMAIL='a@b'" in env
+    assert "JIRA_API_TOKEN='tk'" in env
+    assert "CONFLUENCE_API_TOKEN='tk'" in env
+
+
+@pytest.mark.parametrize("renderer", [render_hermes, render_openclaw])
+def test_renderer_unsupported_channel_type_raises(renderer):
+    """Iter-3 B3: cover both renderers' `else: raise` channel branches."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes" if renderer is render_hermes else "openclaw",
+        provider=ProviderInputs(name="or", type="openrouter", default_model="m", api_key="sk-1"),
+        channels=(ChannelInputs(name="x", type="irc", bot_token="t"),),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, bind="lan"),
+    )
+    with pytest.raises(AgentConfigError, match="unsupported channel type"):
+        renderer(inputs)
+
+
+@pytest.mark.parametrize("renderer", [render_hermes, render_openclaw])
+def test_renderer_unsupported_integration_type_raises(renderer):
+    """Iter-3 B4: cover both renderers' `else: raise` integration branches."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes" if renderer is render_hermes else "openclaw",
+        provider=ProviderInputs(name="or", type="openrouter", default_model="m", api_key="sk-1"),
+        integrations=(
+            IntegrationInputs(name="sf", type="salesforce", credentials=(("X", "Y"),)),
+        ),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, bind="lan"),
+    )
+    with pytest.raises(AgentConfigError, match="unsupported integration type"):
+        renderer(inputs)
+
+
+def test_shell_quote_escapes_single_quote():
+    """Iter-3 B5: every env var emission flows through `_shell_quote`.
+    A regression here silently breaks every EnvironmentFile."""
+    from clawrium.core.render import _shell_quote
+
+    # POSIX single-quote escape: close, embed escaped quote, reopen.
+    assert _shell_quote("it's") == "'it'\"'\"'s'"
+    # Adjacent quotes — double-embed.
+    assert _shell_quote("a''b") == "'a'\"'\"''\"'\"'b'"
+    # Plain value untouched aside from wrapping quotes.
+    assert _shell_quote("plain") == "'plain'"
+
+
+def test_hermes_bedrock_config_yaml_section_pinned():
+    """Iter-3 W1: pin the bedrock config.yaml content too, not just env."""
+    inputs = _baseline_inputs(ptype="bedrock")
+    yaml = render_hermes(inputs).files[".hermes/config.yaml"]
+    assert 'provider: "bedrock"' in yaml
+    assert "bedrock:" in yaml
+    assert "region:" in yaml
+    assert "anthropic.claude-haiku-4-5-20251001-v1:0" in yaml
+
+
+def test_openclaw_no_gateway_omits_gateway_vars():
+    """Iter-3 W2: optional gateway branch — assert no var leakage."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(name="or", type="openrouter", default_model="m", api_key="sk-1"),
+        gateway=None,
+    )
+    env = render_openclaw(inputs).files[".openclaw/env"]
+    for var in (
+        "OPENCLAW_GATEWAY_BIND",
+        "OPENCLAW_GATEWAY_PORT",
+        "OPENCLAW_GATEWAY_AUTH_MODE",
+        "OPENCLAW_GATEWAY_AUTH_TOKEN",
+    ):
+        assert var not in env
+
+
+def test_string_style_provider_attachment_resolves(stores):
+    """Iter-3 W3: list-of-strings provider attachment (singleton shape)."""
+    stores.agent = (
+        {"hostname": "host-1"},
+        "openclaw",
+        {
+            "agent_name": "alpha",
+            # List of strings, not list of dicts — the singleton shape
+            # used by zeroclaw/openclaw before Pattern A migration.
+            "providers": ["or"],
+            "config": {},
+        },
+    )
+    stores.providers["or"] = {"name": "or", "type": "openrouter", "default_model": "m"}
+    stores.provider_api_keys["or"] = "sk-1"
+    inputs = build_render_inputs("alpha")
+    assert inputs.provider.name == "or"
+
+
+def test_hermes_git_integration_produces_no_env_var():
+    """Iter-3 W4: git integration is intentionally skipped in env render."""
+    base = _baseline_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        integrations=(
+            IntegrationInputs(
+                name="me",
+                type="git",
+                credentials=(("GIT_USER_EMAIL", "a@b"), ("GIT_USER_NAME", "Me")),
+            ),
+        ),
+        api_server=base.api_server,
+    )
+    env = render_hermes(inputs).files[".hermes/.env"]
+    assert "GIT_USER_EMAIL" not in env
+    assert "GIT_USER_NAME" not in env
+    # GITHUB_TOKEN must not appear either (no github integration attached).
+    assert "GITHUB_TOKEN" not in env
+
+
+def test_hermes_atlassian_credentials_absent_from_env():
+    """Iter-3 W5: atlassian goes to config.yaml only, never to .env."""
+    base = _baseline_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        integrations=(
+            IntegrationInputs(
+                name="atl",
+                type="atlassian",
+                credentials=(
+                    ("ATLASSIAN_API_TOKEN", "tk"),
+                    ("ATLASSIAN_EMAIL", "e@x"),
+                    ("ATLASSIAN_URL", "https://x"),
+                ),
+            ),
+        ),
+        api_server=base.api_server,
+    )
+    env = render_hermes(inputs).files[".hermes/.env"]
+    assert "ATLASSIAN" not in env
+    assert "JIRA" not in env
+    assert "CONFLUENCE" not in env
