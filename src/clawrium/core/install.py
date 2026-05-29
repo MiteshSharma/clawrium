@@ -700,7 +700,9 @@ def run_installation(
     ssh_key = get_host_private_key(key_id)
     if not ssh_key:
         raise InstallationError(
-            f"No SSH key found for host. Run 'clm host init {key_id}'."
+            f"No SSH key found for host. "
+            f"Run 'clawctl host create {key_id} --user xclm --alias <name>' "
+            f"to register it (see docs/host-preparation.md for host setup)."
         )
 
     # Step 6: Build inventory with extra vars for playbook
