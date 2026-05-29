@@ -535,7 +535,10 @@ def test_zeroclaw_renders_discord_channel_and_mandatory_blocks():
     inputs = _zeroclaw_inputs(ptype="openrouter")
     out = render_zeroclaw(inputs)
     toml = out.files[".zeroclaw/config.toml"]
-    assert 'default_provider = "openrouter"' in toml
+    # #555: canonical zeroclaw schema — provider selection lives in
+    # [providers] block as `fallback`, not as a top-level `default_provider`.
+    assert '[providers]\nfallback = "openrouter"' in toml
+    assert "[providers.models.openrouter]" in toml
     assert "[channels.discord]" in toml
     assert 'bot_token = "discord-bot"' in toml
     assert "mention_only = true" in toml
@@ -544,6 +547,16 @@ def test_zeroclaw_renders_discord_channel_and_mandatory_blocks():
     assert "shell_env_passthrough" in toml
     # B6: allow_public_bind in [gateway].
     assert "allow_public_bind = true" in toml
+    # #555 fix: full canonical template — daemon-managed sections preserved.
+    # Sanity check a handful of sections that previously got silently wiped.
+    for section in (
+        "[security.audit]",
+        "[memory.qdrant]",
+        "[hooks.builtin]",
+        "[web_search]",
+        "[workspace]",
+    ):
+        assert section in toml, f"daemon-managed section {section} missing"
     # W7: file-key set is exactly the two expected paths.
     assert set(out.files.keys()) == {
         ".zeroclaw/config.toml",
@@ -560,8 +573,11 @@ def test_zeroclaw_env_drop_in_carries_github_token():
     assert 'Environment=GITHUB_TOKEN="ghp_a"' in env
 
 
-def test_zeroclaw_stream_mode_omitted_when_empty():
-    """W2: don't default to 'partial'; preserve daemon's 'off' default."""
+def test_zeroclaw_stream_mode_defaults_to_off_when_empty():
+    """W2: when stream_mode input is empty, render the canonical default ("off"),
+    not "partial". The canonical config always has a `stream_mode` line — the
+    full-template renderer (#555) preserves it; empty input means the daemon
+    default, which is "off"."""
     base = _zeroclaw_inputs(ptype="openrouter")
     inputs = RenderInputs(
         agent_name=base.agent_name,
@@ -578,7 +594,8 @@ def test_zeroclaw_stream_mode_omitted_when_empty():
         gateway=base.gateway,
     )
     toml = render_zeroclaw(inputs).files[".zeroclaw/config.toml"]
-    assert "stream_mode" not in toml
+    assert 'stream_mode = "off"' in toml
+    assert 'stream_mode = "partial"' not in toml
 
 
 def test_zeroclaw_requires_gateway():

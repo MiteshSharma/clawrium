@@ -751,76 +751,34 @@ _ZEROCLAW_PROVIDER_KINDS = frozenset(
 
 
 def render_zeroclaw(inputs: RenderInputs) -> RenderedFiles:
-    """Render zeroclaw's config.toml + systemd env drop-in."""
+    """Render zeroclaw's config.toml + systemd env drop-in.
+
+    The config.toml is rendered from a Jinja2 template that is a FULL copy
+    of the canonical zeroclaw config — every section the daemon expects is
+    preserved verbatim. Only clawctl-managed values are templated. This
+    prevents the silent-wipe bug where rendering only what clawctl knows
+    about destroys daemon-managed sections (gateway pairing state, security
+    knobs, memory backends, cost.prices, hooks, etc.).
+    """
     ptype = inputs.provider.type
 
-    # --- config.toml -------------------------------------------------------
-    toml_lines: list[str] = []
-    toml_lines.append(
-        f"# Managed by clawrium (clawctl). Re-render with "
-        f"`clawctl agent configure {inputs.agent_name}`."
-    )
     if ptype not in _ZEROCLAW_PROVIDER_KINDS:
         raise AgentConfigError(
             f"render_zeroclaw does not support provider type {ptype!r}. "
             f"Supported: {sorted(_ZEROCLAW_PROVIDER_KINDS)}"
         )
-    toml_lines.append(f'default_provider = "{_toml_escape(ptype)}"')
-    toml_lines.append(
-        f'default_model = "{_toml_escape(inputs.provider.default_model)}"'
-    )
-
-    toml_lines.append("")
-    toml_lines.append("[gateway]")
     if inputs.gateway is None:
         raise AgentConfigError(
             f"render_zeroclaw requires gateway config for agent "
             f"{inputs.agent_name!r} (port + host); none supplied"
         )
-    toml_lines.append(f'host = "{_toml_escape(inputs.gateway.host)}"')
-    toml_lines.append(f"port = {int(inputs.gateway.port)}")
-    toml_lines.append(
-        f"allow_public_bind = {str(inputs.gateway.allow_public_bind).lower()}"
-    )
-    toml_lines.append("require_pairing = true")
 
-    toml_lines.append("")
-    toml_lines.append(f"[providers.models.{ptype}]")
-    toml_lines.append(f'kind = "{_toml_escape(ptype)}"')
-    toml_lines.append(f'model = "{_toml_escape(inputs.provider.default_model)}"')
-    if ptype == "ollama":
-        toml_lines.append(f'base_url = "{_toml_escape(inputs.provider.endpoint)}"')
-    else:
-        toml_lines.append(f'api_key = "{_toml_escape(inputs.provider.api_key)}"')
-
-    # Channels (discord only for zeroclaw today; slack is hermes-side).
-    for channel in inputs.channels:
-        if channel.type != "discord":
-            continue
-        toml_lines.append("")
-        toml_lines.append("[channels.discord]")
-        toml_lines.append("enabled = true")
-        toml_lines.append(f'bot_token = "{_toml_escape(channel.bot_token)}"')
-        guilds = ", ".join(f'"{_toml_escape(g)}"' for g in channel.allowed_guilds)
-        toml_lines.append(f"allowed_guilds = [{guilds}]")
-        users = ", ".join(f'"{_toml_escape(u)}"' for u in channel.allowed_users)
-        toml_lines.append(f"allowed_users = [{users}]")
-        toml_lines.append(f"mention_only = {str(channel.require_mention).lower()}")
-        # Only emit stream_mode when explicitly set; an empty string
-        # preserves the daemon's compiled "off" default. Defaulting to
-        # "partial" here would flip every legacy agent into streaming
-        # mode on first configure — a behavior change, not a render.
-        if channel.stream_mode:
-            toml_lines.append(
-                f'stream_mode = "{_toml_escape(channel.stream_mode)}"'
-            )
-
-    # `[autonomy] shell_env_passthrough` is a MANDATORY block: the
-    # configure playbook asserts its presence with `grep -qE
-    # '^shell_env_passthrough\\s*='` and fails the deploy if missing.
-    # Without listing GITHUB_TOKEN_<NAME> here, the zeroclaw sandbox
-    # strips integration tokens from the shell tool's environment even
-    # though the systemd drop-in injected them correctly.
+    # --- shell_env_passthrough entries (autonomy block in template) -------
+    # `[autonomy] shell_env_passthrough` is a MANDATORY block: the configure
+    # playbook asserts its presence with `grep -qE '^shell_env_passthrough\s*='`
+    # and fails the deploy if missing. Without listing GITHUB_TOKEN_<NAME>
+    # here, the zeroclaw sandbox strips integration tokens from the shell
+    # tool's environment even though the systemd drop-in injected them.
     passthrough = ["PATH", "HOME", "USER", "LANG"]
     any_github = False
     for integration in inputs.integrations:
@@ -830,15 +788,22 @@ def render_zeroclaw(inputs: RenderInputs) -> RenderedFiles:
             any_github = True
     if any_github:
         passthrough.append("GITHUB_TOKEN")
-    toml_lines.append("")
-    toml_lines.append("[autonomy]")
-    toml_lines.append(
-        "shell_env_passthrough = ["
-        + ", ".join(f'"{entry}"' for entry in passthrough)
-        + "]"
-    )
 
-    toml_body = "\n".join(toml_lines) + "\n"
+    # --- discord channel (zeroclaw supports discord only today) -----------
+    discord_channel = None
+    for channel in inputs.channels:
+        if channel.type == "discord":
+            discord_channel = channel
+            break
+
+    # --- render the full canonical template -------------------------------
+    toml_body = _render_zeroclaw_config_template(
+        agent_name=inputs.agent_name,
+        gateway=inputs.gateway,
+        provider=inputs.provider,
+        discord_channel=discord_channel,
+        shell_env_passthrough=passthrough,
+    )
 
     # --- systemd env drop-in (integrations) -------------------------------
     env_lines: list[str] = []
@@ -869,6 +834,48 @@ def render_zeroclaw(inputs: RenderInputs) -> RenderedFiles:
             ".zeroclaw/config.toml": toml_body,
             ".zeroclaw/zeroclaw-env.conf": env_body,
         }
+    )
+
+
+def _render_zeroclaw_config_template(
+    *,
+    agent_name: str,
+    gateway: "GatewayInputs",
+    provider: "ProviderInputs",
+    discord_channel: "ChannelInputs | None",
+    shell_env_passthrough: list[str],
+) -> str:
+    """Render the full-canonical zeroclaw config.toml Jinja template.
+
+    The template lives at
+    `src/clawrium/platform/registry/zeroclaw/templates/zeroclaw-config.toml.j2`
+    and is a verbatim copy of the canonical zeroclaw config with only
+    clawctl-managed values templated. Loaded via importlib.resources so it
+    ships with the wheel.
+    """
+    from importlib.resources import files
+
+    from jinja2 import Environment, StrictUndefined
+
+    template_path = files("clawrium.platform.registry.zeroclaw.templates").joinpath(
+        "zeroclaw-config.toml.j2"
+    )
+    template_source = template_path.read_text(encoding="utf-8")
+
+    # `StrictUndefined` so a missing context var raises rather than rendering
+    # an empty string — same fail-loudly contract as build_render_inputs.
+    env = Environment(
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+        autoescape=False,  # TOML is not HTML
+    )
+    template = env.from_string(template_source)
+    return template.render(
+        agent_name=agent_name,
+        gateway=gateway,
+        provider=provider,
+        discord_channel=discord_channel,
+        shell_env_passthrough=shell_env_passthrough,
     )
 
 
