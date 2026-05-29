@@ -43,8 +43,6 @@ from clawrium.cli.output import (
     emit_error,
     stream_action,
 )
-from clawrium.core.lifecycle import LifecycleError, sync_agent
-from clawrium.core.playbook_resolver import resolve_lifecycle_backend
 
 
 _PHASES = (
@@ -227,25 +225,6 @@ def sync(
     skip_validate: bool = typer.Option(
         False, "--skip-validate", help="Bypass step 1 (validate)."
     ),
-    canonical: bool = typer.Option(
-        False,
-        "--canonical",
-        help=(
-            "Use the F3 canonical pipeline (build_render_inputs → "
-            "render → host-diff → atomic write → restart). Refuses to "
-            "remove host-side secrets without --force. Bypasses the "
-            "legacy ansible extravar path. Parent #555."
-        ),
-    ),
-    force: bool = typer.Option(
-        False,
-        "--force",
-        help=(
-            "With --canonical, allow writes that remove a host-side "
-            "secret line. Required after `clawctl agent channel detach` "
-            "or any other intentional secret-removal op."
-        ),
-    ),
     output: OutputFormat = typer.Option(
         OutputFormat.table, "--output", "-o", help="Output format (table or json)."
     ),
@@ -254,7 +233,6 @@ def sync(
     # Bug #516: see configure.py for full rationale.
     host, _agent_type, claw_record = safe_resolve_agent(name)
     agent_key = resolve_agent_key(host, name)
-    hostname = host["hostname"]
     agent_type = claw_record.get("type", _agent_type)
 
     # F8 (parent #555): `--diff` implies `--dry-run`. Promote here so
@@ -333,114 +311,42 @@ def sync(
             )
         return
 
-    # F3 (parent #555) canonical pipeline opt-in. Bypasses the legacy
-    # ansible extravar path entirely; routes through the pure render →
-    # diff → secret-removal-guard → atomic-write → restart sequence.
-    # Validated against the 15-cell matrix in
-    # tests/integration/test_render_matrix.py before flipping default.
-    if canonical:
-        from clawrium.core.lifecycle_canonical import (
-            CanonicalSyncError,
-            SecretRemovalRefused,
-            sync_agent_canonical,
-        )
-        from clawrium.core.render import AgentConfigError
-        from clawrium.core.render_diff import RemoteReadError
+    # F3 (parent #555) canonical pipeline — the only sync path. Routes
+    # through the pure render → diff → secret-removal-guard →
+    # atomic-write → restart sequence. The legacy ansible extravar
+    # path and the `--canonical` opt-in flag were dropped in #560.
+    from clawrium.core.lifecycle_canonical import (
+        CanonicalSyncError,
+        SecretRemovalRefused,
+        sync_agent_canonical,
+    )
+    from clawrium.core.render import AgentConfigError
+    from clawrium.core.render_diff import RemoteReadError
 
-        on_host_name = claw_record.get("agent_name") or agent_key
+    on_host_name = claw_record.get("agent_name") or agent_key
 
-        def canonical_event(stage: str, message: str) -> None:
-            if use_json and streamer is not None:
-                streamer.emit(
-                    resource=resource, phase=stage, state="event", message=message
-                )
-            else:
-                stream_action(resource=resource, message=f"{stage}: {message}")
-
-        try:
-            canonical_result = sync_agent_canonical(
-                on_host_name,
-                force=force,
-                restart=not workspace,
-                verify=not workspace,
-                on_event=canonical_event,
-            )
-        except SecretRemovalRefused as exc:
-            emit_error(str(exc))
-            return
-        except (AgentConfigError, CanonicalSyncError, RemoteReadError) as exc:
-            emit_error(f"sync failed: {exc}")
-            return
-
-        elapsed = int(time.monotonic() - started)
+    def canonical_event(stage: str, message: str) -> None:
         if use_json and streamer is not None:
             streamer.emit(
-                resource=resource,
-                phase="sync",
-                state="complete",
-                drift=0,
-                took_seconds=elapsed,
-                files_written=list(canonical_result.files_written),
-                files_unchanged=list(canonical_result.files_unchanged),
+                resource=resource, phase=stage, state="event", message=message
             )
         else:
-            stream_action(
-                resource=resource,
-                message=(
-                    f"synced  (drift=0, took {elapsed}s, "
-                    f"{len(canonical_result.files_written)} written, "
-                    f"{len(canonical_result.files_unchanged)} unchanged)"
-                ),
-            )
-        return
+            stream_action(resource=resource, message=f"{stage}: {message}")
 
-    # Underlying call. The plan-§6.10 streaming lines above are emitted
-    # eagerly before the call to match the canonical layout; the real
-    # work happens inside `sync_agent`. Bundle-5 cleanup will refactor
-    # `core/lifecycle.py` to expose per-phase APIs so we don't have to
-    # pre-emit phase lines.
-    def on_event(stage: str, message: str) -> None:
-        # Forward sub-events verbatim so anyone tailing `-o json` sees
-        # the underlying ansible chatter too.
-        if use_json and streamer is not None:
-            streamer.emit(
-                resource=resource,
-                phase=stage,
-                state="event",
-                message=message,
-            )
-            return
-        # ATX iter-5 W2-NEW carry-forward: surface warning-prefixed
-        # sync events (state-write failures, registry incoherence) in
-        # non-JSON mode so the operator sees them. stream_action's
-        # sanitize() handles non-printable chars; rich is not involved
-        # at this output path.
-        if stage == "sync" and message.startswith("warning:"):
-            stream_action(resource=resource, message=message)
-
-    # ATX iter-2 S6/W7: pre-bind `result` so a non-LifecycleError that
-    # escapes the try does not cause `UnboundLocalError` at the
-    # `result.get('success')` check below. Combined with the queued →
-    # complete NDJSON contract gap (tracked for bundle 5 in this same
-    # file's docstring), this is the surface most likely to bite CI
-    # consumers; documenting both here keeps the trail visible.
-    result: dict = {}
     try:
-        # OS-family dispatch (CLI layer). #469 step 1 invariant.
-        os_family = host.get("os_family", "linux")
-        if os_family == "linux":
-            sync_fn = sync_agent
-        else:
-            sync_fn = resolve_lifecycle_backend(os_family).sync_agent
-        result = sync_fn(
-            hostname=hostname,
-            claw_name=agent_type,
-            agent_name=agent_key,
-            workspace_only=workspace,
-            on_event=on_event,
+        canonical_result = sync_agent_canonical(
+            on_host_name,
+            force=False,
+            restart=not workspace,
+            verify=not workspace,
+            on_event=canonical_event,
         )
-    except LifecycleError as exc:
+    except SecretRemovalRefused as exc:
+        emit_error(str(exc))
+        return
+    except (AgentConfigError, CanonicalSyncError, RemoteReadError) as exc:
         emit_error(f"sync failed: {exc}")
+        return
 
     elapsed = int(time.monotonic() - started)
     if elapsed > timeout:
@@ -449,9 +355,6 @@ def sync(
             message=f"warning: sync took {elapsed}s (timeout {timeout}s)",
         )
 
-    if not result.get("success"):
-        emit_error(f"sync failed: {result.get('error') or 'unknown error'}")
-
     if use_json and streamer is not None:
         streamer.emit(
             resource=resource,
@@ -459,6 +362,15 @@ def sync(
             state="complete",
             drift=0,
             took_seconds=elapsed,
+            files_written=list(canonical_result.files_written),
+            files_unchanged=list(canonical_result.files_unchanged),
         )
     else:
-        stream_action(resource=resource, message=f"synced  (drift=0, took {elapsed}s)")
+        stream_action(
+            resource=resource,
+            message=(
+                f"synced  (drift=0, took {elapsed}s, "
+                f"{len(canonical_result.files_written)} written, "
+                f"{len(canonical_result.files_unchanged)} unchanged)"
+            ),
+        )
