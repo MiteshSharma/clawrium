@@ -282,6 +282,93 @@ def test_create_escapes_shell_metachars_in_pubkey(
     assert "'ssh-ed25519 AAAAC3Nz `rm -rf /` $(id) clawrium'" in result.output
 
 
+@pytest.mark.parametrize(
+    "bad_hostname",
+    [
+        "host;evil",
+        "host$(curl evil)",
+        "host`id`",
+        "host with space",
+    ],
+)
+def test_create_rejects_invalid_hostname(
+    fleet_dir, stdin_not_tty, bad_hostname
+) -> None:
+    """`validate_hostname` blocks shell metacharacters before they reach
+    `hosts.json` (and from there Ansible inventory)."""
+    result = runner.invoke(
+        app, ["host", "create", bad_hostname, "--user", "xclm", "--alias", "newbox"]
+    )
+    assert result.exit_code != 0
+    assert "Error:" in result.output
+
+
+@pytest.mark.parametrize(
+    "bad_alias",
+    [
+        "box;evil",
+        "box$(rm -rf)",
+        "box`id`",
+    ],
+)
+def test_create_rejects_invalid_alias(
+    fleet_dir, stdin_not_tty, bad_alias
+) -> None:
+    result = runner.invoke(
+        app, ["host", "create", "192.168.1.100", "--user", "xclm", "--alias", bad_alias]
+    )
+    assert result.exit_code != 0
+    assert "Error:" in result.output
+
+
+def test_create_alias_collision_with_different_hostname_fails(
+    fleet_dir, stdin_not_tty, mock_ssh_ok_linux
+) -> None:
+    """Re-using an alias that already points at a different hostname must
+    fail loudly rather than overwriting the original record. (`--user` is
+    locked to `xclm` so this is the only path to the conflict branch.)"""
+    runner.invoke(
+        app, ["host", "create", "192.168.1.100", "--user", "xclm", "--alias", "shared"]
+    )
+
+    result = runner.invoke(
+        app, ["host", "create", "10.0.0.99", "--user", "xclm", "--alias", "shared"]
+    )
+    assert result.exit_code != 0
+    assert "already registered with different settings" in result.output
+
+    # Original record is intact.
+    from clawrium.core.hosts import get_host
+
+    record = get_host("192.168.1.100")
+    assert record is not None
+    assert record.get("alias") == "shared"
+    # And the second IP was NOT persisted.
+    assert get_host("10.0.0.99") is None
+
+
+def test_create_idempotent_does_not_grow_hosts_json(
+    fleet_dir, stdin_not_tty, mock_ssh_ok_linux
+) -> None:
+    """A buggy implementation could no-op the message yet append a
+    duplicate entry. Assert fleet size via `host get -o json` is unchanged."""
+    before = runner.invoke(app, ["host", "get", "-o", "json"])
+    before_count = len(json.loads(before.output))
+
+    runner.invoke(
+        app, ["host", "create", "192.168.1.100", "--user", "xclm", "--alias", "newbox"]
+    )
+    after_first = runner.invoke(app, ["host", "get", "-o", "json"])
+    assert len(json.loads(after_first.output)) == before_count + 1
+
+    # Second identical create must not grow the fleet.
+    runner.invoke(
+        app, ["host", "create", "192.168.1.100", "--user", "xclm", "--alias", "newbox"]
+    )
+    after_second = runner.invoke(app, ["host", "get", "-o", "json"])
+    assert len(json.loads(after_second.output)) == before_count + 1
+
+
 def test_delete_non_tty_without_yes_fails(fleet_dir, stdin_not_tty) -> None:
     result = runner.invoke(app, ["host", "delete", "kevin"])
     assert result.exit_code != 0

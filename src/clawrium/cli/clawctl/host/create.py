@@ -67,7 +67,7 @@ def create(
         None, "--alias", "-a", help="Display alias for the host."
     ),
 ) -> None:
-    """Create a host record after verifying SSH access to the management user."""
+    """Register a host after verifying SSH access to the xclm management user."""
     validate_hostname(hostname)
     if alias is not None:
         validate_alias(alias)
