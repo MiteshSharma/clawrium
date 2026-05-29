@@ -1122,8 +1122,8 @@ class TestCleanupArtifacts:
         self, tmp_path: Path, operation: str, call
     ):
         # write/delete surface the structured error string back to the user;
-        # confirm the actionable 'clm host init' guidance is present so the
-        # CLI/TUI message stays useful if someone refactors the error text.
+        # confirm the actionable 'clawctl host create' guidance is present so
+        # the CLI/TUI message stays useful if someone refactors the error text.
         host = _host({"opc-work": {"type": "openclaw", "agent_name": "opc-work"}})
         playbook_dir, _ = _setup_playbook_env(tmp_path, operation)
 
@@ -1140,7 +1140,8 @@ class TestCleanupArtifacts:
             ok, err = call()
         assert ok is False
         assert err is not None
-        assert "clm host init" in err
+        assert "clawctl host create" in err
+        assert "docs/host-preparation.md" in err
 
     def test_cleanup_swallows_permission_error(self, tmp_path: Path):
         # Real cleanup uses shutil.rmtree which can raise PermissionError on

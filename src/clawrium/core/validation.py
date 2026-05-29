@@ -966,7 +966,8 @@ def validate_hermes_health(
             passed=False,
             errors=[
                 f"SSH key for host '{key_id}' not found. "
-                f"Run 'clm host init {hostname}' to provision it."
+                f"Run 'clawctl host create {hostname} --user xclm --alias <name>' "
+                f"to register it (see docs/host-preparation.md for host setup)."
             ],
         )
 
