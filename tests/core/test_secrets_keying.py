@@ -102,6 +102,23 @@ def test_get_installed_claw_legacy_schema_falls_back_to_dict_key():
     assert name == "opc-work"
 
 
+def test_instance_key_rejects_trailing_newline():
+    """ATX #552 B2: Python's `$` matches before a terminal `\\n`, so a
+    record with `type: \"hermes\\n\"` would otherwise pass validation
+    and produce a slot no lookup can ever match (every secret silently
+    orphaned). The pattern uses `\\Z` to anchor at true end-of-string."""
+    import pytest
+
+    from clawrium.core.secrets import InvalidInstanceKeyComponentError
+
+    with pytest.raises(InvalidInstanceKeyComponentError):
+        get_instance_key("host", "hermes\n", "name")
+    with pytest.raises(InvalidInstanceKeyComponentError):
+        get_instance_key("host\n", "hermes", "name")
+    with pytest.raises(InvalidInstanceKeyComponentError):
+        get_instance_key("host", "hermes", "name\n")
+
+
 def test_secrets_survive_hostname_mutation():
     """Repro of the maurice/wolf-i breakage: store the secret under the
     key_id slot, then mutate hostname; lookup must still find it."""

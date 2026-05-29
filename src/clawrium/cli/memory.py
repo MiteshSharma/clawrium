@@ -91,10 +91,21 @@ def _resolve_agent_for_memory_cli(claw_name: str) -> tuple[str, str, str]:
         raise typer.Exit(code=1)
 
     # Try both schemas: current (dict keyed by agent name) and legacy
-    # (dict keyed by claw type with a single instance per type).
+    # (dict keyed by claw type with a single instance per type). Use
+    # `is None` guards rather than `or` chains so an explicit empty
+    # dict on the current-schema key doesn't silently fall through to
+    # an unrelated legacy entry that shares its claw_type (ATX W3).
     agents_dict = host.get("agents", {})
-    record = agents_dict.get(name) or agents_dict.get(claw_type) or {}
-    actual_type = record.get("type") if isinstance(record, dict) else claw_type
+    record = agents_dict.get(name)
+    if record is None:
+        record = agents_dict.get(claw_type) or {}
+    if not isinstance(record, dict):
+        record = {}
+    # Legacy records may omit the inner `type` field — fall back to the
+    # claw_type the resolver already determined (ATX B1: prior version
+    # had a dead `else` branch behind an `isinstance` guard that was
+    # always true, so legacy agents always exited with "no recorded type").
+    actual_type = record.get("type") or claw_type
 
     if not isinstance(actual_type, str) or not actual_type:
         console.print(

@@ -34,11 +34,17 @@ SECRETS_FILE = "secrets.json"
 
 # Valid secret key: starts with uppercase letter, followed by uppercase letters, digits, or underscores
 # Max 128 characters total (env-var-safe pattern)
-SECRET_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+# Use `\Z` not `$` — Python's `$` allows a single trailing newline,
+# so a value like "OPENAI_API_KEY\n" would pass and produce a slot
+# that no lookup can ever match. `\Z` anchors at true end-of-string.
+SECRET_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,127}\Z")
 
 # Valid instance key component: no colons allowed (used as separator in instance keys)
 # Allows alphanumeric, hyphens, underscores, dots (for hostnames, claw types, claw names)
-INSTANCE_KEY_COMPONENT_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+$")
+# Same `\Z` anchor — see SECRET_KEY_PATTERN above. A `\n` slipping
+# through here would make `host:hermes\n:name` validate, silently
+# creating a slot no lookup matches and quietly orphaning the secret.
+INSTANCE_KEY_COMPONENT_PATTERN = re.compile(r"^[a-zA-Z0-9._-]+\Z")
 
 
 class InvalidInstanceKeyComponentError(ValueError):
