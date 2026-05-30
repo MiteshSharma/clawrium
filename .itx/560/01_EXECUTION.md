@@ -99,3 +99,17 @@ added alongside (under new filenames). Consolidation of the two template
 families requires Ansible-playbook extravar rework and is deferred — to
 be addressed in the same follow-up that retires the legacy
 `clawctl agent configure` Ansible path.
+
+### Phase 2 ATX Review Cycle Summary
+
+| Round | Rating | Total blockers | In-scope fixed | Out-of-scope deferred |
+|-------|--------|----------------|----------------|----------------------|
+| 1     | 2/5    | 9              | B8, B9, W1, W2, W5, W6, W14, W15 | B1 (zeroclaw template — Phase 1), B2 (zeroclaw schema — Phase 1), B3–B7 (configure / lifecycle / docs) |
+| 2     | 3/5    | 1              | W1, W2, W3, W4, W5, W6, W7 | B1 (upstream daemon schema — Phase 4) |
+| 3     | 2/5    | 2              | W1+W9 (dual discord), W4 (dead code), W7 (substring → full lock), W8 (ollama /v1 idempotent) | B1 (same as round 2), B2 (GUI WEB_UI_AGENT_TYPES — pre-existing per ATX), W2/W3/W5/W6/W10 (GUI + legacy parity) |
+
+**Status**: `[ITX-STUCK]` after 3 ATX rounds. PR comment with full reasoning: https://github.com/ric03uec/clawrium/pull/567#issuecomment-4581055454
+
+**Final test counts**: 86 passed in `tests/core/test_render.py` (was 71 at PR open). `make lint` clean.
+
+**PR URL**: https://github.com/ric03uec/clawrium/pull/567 (stacked on PR #566 / Phase 1).
