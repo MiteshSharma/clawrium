@@ -1416,7 +1416,15 @@ def test_hermes_atlassian_mcp_servers_byte_lock_w15():
         ),
     )
     yaml = render_hermes(inputs).files[".hermes/config.yaml"]
+    # W7 (ATX round 3): full-file byte-lock, not substring containment.
     expected = (
+        "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+        "model:\n"
+        "  provider: \"anthropic\"\n"
+        "  default: 'claude-opus-4-7'\n"
+        "auxiliary:\n"
+        "  title_generation:\n"
+        "    model: \"claude-haiku-4-5-20251001\"\n"
         "mcp_servers:\n"
         "  my_atl:\n"
         "    env:\n"
@@ -1427,7 +1435,7 @@ def test_hermes_atlassian_mcp_servers_byte_lock_w15():
         "      CONFLUENCE_USERNAME: 'u@x.com'\n"
         "      CONFLUENCE_API_TOKEN: 'atl-tk'\n"
     )
-    assert expected in yaml
+    assert yaml == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1518,4 +1526,70 @@ def test_zeroclaw_rejects_mixed_channel_list_w7():
         gateway=base.gateway,
     )
     with pytest.raises(AgentConfigError, match="unsupported channel type 'slack'"):
+        render_zeroclaw(inputs)
+
+
+# ---------------------------------------------------------------------------
+# ATX round 3 follow-ups.
+# ---------------------------------------------------------------------------
+
+
+def test_hermes_ollama_endpoint_with_v1_suffix_not_double_appended_w8():
+    """W8 (ATX round 3): the ollama endpoint normalization MUST be
+    idempotent. A provider record with `endpoint='http://h:11434/v1'`
+    must NOT render `http://h:11434/v1/v1`."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes",
+        provider=ProviderInputs(
+            name="ol",
+            type="ollama",
+            default_model="llama3",
+            endpoint="http://h:11434/v1",
+        ),
+        channels=(),
+        integrations=(),
+        api_server=None,
+    )
+    yaml = render_hermes(inputs).files[".hermes/config.yaml"]
+    assert "http://h:11434/v1/v1" not in yaml
+    assert "base_url: 'http://h:11434/v1'" in yaml
+
+    # Same with a trailing slash on /v1 — the rstrip strips it before the
+    # endswith check, so the result is still single-/v1.
+    inputs2 = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes",
+        provider=ProviderInputs(
+            name="ol",
+            type="ollama",
+            default_model="llama3",
+            endpoint="http://h:11434/v1/",
+        ),
+        channels=(),
+        integrations=(),
+        api_server=None,
+    )
+    yaml2 = render_hermes(inputs2).files[".hermes/config.yaml"]
+    assert "http://h:11434/v1/v1" not in yaml2
+    assert "base_url: 'http://h:11434/v1'" in yaml2
+
+
+def test_zeroclaw_rejects_dual_discord_channels_w1_w9():
+    """W1 + W9 (ATX round 3): two discord channels attached to one
+    zeroclaw agent is a silent-drop hazard — zeroclaw daemon emits a
+    single `[channels.discord]` block, so the second attachment would
+    be invisible. Raise so the operator detaches one."""
+    base = _zeroclaw_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        channels=(
+            ChannelInputs(name="discord-a", type="discord", bot_token="t1"),
+            ChannelInputs(name="discord-b", type="discord", bot_token="t2"),
+        ),
+        gateway=base.gateway,
+    )
+    with pytest.raises(AgentConfigError, match="multiple discord channels"):
         render_zeroclaw(inputs)

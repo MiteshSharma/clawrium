@@ -505,14 +505,12 @@ def _integration_slug(name: str) -> str:
     return "".join(c for c in upper if c.isalnum() or c == "_")
 
 
-# Provider env-var-name table, keyed on provider.type. Each entry is a
-# tuple of (env_var_name_for_api_key, inference_provider_value). The
-# table is the ONLY place provider.type matters at render time.
-_HERMES_PROVIDER_ENV = {
-    "openrouter": ("OPENROUTER_API_KEY", "openrouter"),
-    "anthropic": ("ANTHROPIC_API_KEY", "anthropic"),
-    "openai": ("OPENAI_API_KEY", "openai"),
-}
+# W4 (ATX round 3): the legacy `_HERMES_PROVIDER_ENV` dispatch table was
+# removed in this commit. The Jinja template `hermes-env.canonical.j2`
+# is now the only source of truth for provider.type → env-var mapping
+# for hermes. The bedrock/ollama branches that previously lived next to
+# this table moved into the template alongside their main-bearer peers
+# so all five hermes providers share one branching surface.
 
 
 _HERMES_SUPPORTED_PROVIDERS = frozenset(
@@ -726,14 +724,24 @@ def render_zeroclaw(inputs: RenderInputs) -> RenderedFiles:
     # non-discord channel (slack, etc.) here meant operators who attached
     # the wrong channel type would see a successful render with no Discord
     # output — the daemon would then run without channel access and the
-    # mistake would only show up on first @mention. Mirror render_hermes
-    # by raising AgentConfigError for any channel type zeroclaw cannot
-    # express on disk today.
+    # mistake would only show up on first @mention.
+    # W1 (ATX round 3): a second `discord` channel is ALSO a silent-drop
+    # surface (zeroclaw daemon emits one [channels.discord] block, so two
+    # attached discord channels means the second is invisible). Raise so
+    # the operator detaches one rather than getting nondeterministic
+    # "which one won?" behavior.
     discord_channel = None
     for channel in inputs.channels:
         if channel.type == "discord":
-            if discord_channel is None:
-                discord_channel = channel
+            if discord_channel is not None:
+                raise AgentConfigError(
+                    f"render_zeroclaw: agent {inputs.agent_name!r} has "
+                    f"multiple discord channels attached "
+                    f"({discord_channel.name!r}, {channel.name!r}); "
+                    f"zeroclaw renders exactly one [channels.discord] block. "
+                    f"Detach one with `clawctl channel detach`."
+                )
+            discord_channel = channel
             continue
         raise AgentConfigError(
             f"render_zeroclaw: unsupported channel type {channel.type!r} "

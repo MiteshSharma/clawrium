@@ -1,3 +1,16 @@
+{# B1 (ATX rounds 1–3): the keys emitted below
+   (HERMES_INFERENCE_PROVIDER, DISCORD_REQUIRE_MENTION,
+   DISCORD_ALLOW_ALL_USERS, API_SERVER_*, SLACK_*, GITHUB_TOKEN*,
+   GITLAB_*, LINEAR_API_KEY, NOTION_API_KEY, AWS_*) are validated
+   against the live hermes daemon at deploy time (00_PLAN.md Phase 4
+   "live dry-runs"). Static schema parity with an upstream Pydantic/
+   dotenv struct is NOT verified inside this repo — the hermes daemon
+   ships from a separate upstream and the struct is not vendored. The
+   `make test` byte-locks in tests/core/test_render.py pin parity with
+   the prior list-of-strings render_hermes (the on-host bytes that have
+   been deployed to maurice/h1/h2/clawctl-demo) but cannot catch a
+   wrong-key-name typo against a future daemon refactor. Phase 4
+   live-verify on maurice + espresso closes that loop. #}
 # Managed by clawrium (clawctl). Re-render with `clawctl agent configure {{ agent_name }}`.
 {% if provider.type == 'openrouter' %}
 OPENROUTER_API_KEY={{ provider.api_key | shq }}
