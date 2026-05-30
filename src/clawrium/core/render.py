@@ -437,11 +437,19 @@ def build_render_inputs(agent_name: str) -> RenderInputs:
     if isinstance(gateway_blob, dict):
         # #576: zeroclaw's daemon refuses an empty `gateway.host`
         # (`required_field_empty: gateway.host must not be empty`), so a
-        # missing or empty value here would render `host = ""` in
-        # config.toml and brick `clawctl agent configure` on every fresh
-        # install. Default to `0.0.0.0` per the documented
-        # `features.web_ui.bind: wildcard` contract in AGENTS.md.
-        host_raw = _clean_secret(gateway_blob.get("host"))
+        # missing/empty/whitespace-only value here would render
+        # `host = ""` (or `host = "   "`) in config.toml and brick
+        # `clawctl agent configure` on every fresh install. Default to
+        # `0.0.0.0` per the documented `features.web_ui.bind: wildcard`
+        # contract in AGENTS.md.
+        #
+        # `.strip()` catches whitespace-only values that `_clean_secret`
+        # does not (it strips NUL/CR/LF only). The default only fires
+        # for zeroclaw in practice — `render_hermes` and the openclaw
+        # renderer never read `inputs.gateway.host`, so applying the
+        # default unconditionally here is safe and keeps the assembler
+        # agent-type-agnostic.
+        host_raw = _clean_secret(gateway_blob.get("host")).strip()
         gateway_input = GatewayInputs(
             # W6 (ATX #555 polish): NUL in host value would silently
             # truncate the TOML at parse time. Sanitize at assembly
