@@ -197,23 +197,18 @@ def _get_incomplete_installation_details(host: dict, claw_name: str) -> list[dic
     return incomplete
 
 
-def _get_base_playbook_path() -> Path:
-    """Get path to base system playbook."""
-    # Base playbook is at src/clawrium/platform/playbooks/base.yaml
-    # From src/clawrium/core/install.py: parent.parent gets to src/clawrium
-    return Path(__file__).parent.parent / "platform" / "playbooks" / "base.yaml"
+def _get_base_playbook_path(os_family: str = "linux") -> Path:
+    """Get path to base system playbook for the given OS family."""
+    from clawrium.core.playbook_resolver import resolve_base_playbook
+
+    return resolve_base_playbook(os_family)
 
 
-def _get_agent_playbook_path(agent_type: str) -> Path:
-    """Get path to agent-specific install playbook."""
-    return (
-        Path(__file__).parent.parent
-        / "platform"
-        / "registry"
-        / agent_type
-        / "playbooks"
-        / "install.yaml"
-    )
+def _get_agent_playbook_path(agent_type: str, os_family: str = "linux") -> Path:
+    """Get path to agent-specific install playbook for the given OS family."""
+    from clawrium.core.playbook_resolver import resolve_agent_playbook
+
+    return resolve_agent_playbook(agent_type, "install", os_family)
 
 
 def _get_logs_dir() -> Path:
@@ -367,7 +362,9 @@ def run_installation(
                 agent_name = item.get("agent_name")
                 if agent_name:
                     instance_key = get_instance_key(
-                        host["hostname"], claw_name, agent_name
+                        host.get("key_id") or host["hostname"],
+                        claw_name,
+                        agent_name,
                     )
                     if instance_key in secrets:
                         del secrets[instance_key]
@@ -705,15 +702,21 @@ def run_installation(
     ssh_key = get_host_private_key(key_id)
     if not ssh_key:
         raise InstallationError(
-            f"No SSH key found for host. Run 'clm host init {key_id}'."
+            f"No SSH key found for host. "
+            f"Run 'clawctl host create {key_id} --user xclm --alias <name>' "
+            f"to register it (see docs/host-preparation.md for host setup)."
         )
 
     # Step 6: Build inventory with extra vars for playbook
     matched_entry = compat["matched_entry"]
     claw_sha256 = matched_entry.get("sha256", "")
 
-    # Load secrets for this agent instance
-    instance_key = get_instance_key(host["hostname"], claw_name, agent_name)
+    # Load secrets for this agent instance. Key by `host["key_id"]`
+    # (immutable identifier, issue #448) so the lookup survives any
+    # later mutation of `host["hostname"]` (IP → DNS, renumbering).
+    instance_key = get_instance_key(
+        host.get("key_id") or host["hostname"], claw_name, agent_name
+    )
     instance_secrets = get_instance_secrets(instance_key)
 
     # Map secret keys to ansible vars (uppercase SECRET_KEY -> lowercase secret_key)
@@ -772,10 +775,12 @@ def run_installation(
     # (enabled / host / port).
     hermes_api_server_key = None
     if claw_name == "hermes":
-        # Use canonical hostname (not the alias passed by the CLI) so the
-        # instance_key matches what lifecycle.configure_agent() will look up.
-        canonical_hostname = host["hostname"]
-        instance_key = get_instance_key(canonical_hostname, claw_name, agent_name)
+        # Key by host["key_id"] (immutable, #448) — not host["hostname"]
+        # (mutable network address) — so the bearer stored here remains
+        # reachable after IP/DNS renumbering. lifecycle.configure_agent()
+        # uses the same derivation when it looks the value back up.
+        host_key = host.get("key_id") or host["hostname"]
+        instance_key = get_instance_key(host_key, claw_name, agent_name)
         existing_entry = get_instance_secrets(instance_key).get("HERMES_API_SERVER_KEY")
         # `.get("value")` not `["value"]`: a truthy-but-malformed entry (no
         # "value" field, e.g. hand-edited secrets.json) would otherwise raise
@@ -851,9 +856,11 @@ def run_installation(
 
     try:
         # Step 8: Run base playbook
-        base_playbook = _get_base_playbook_path()
-        if not base_playbook.exists():
-            raise InstallationError(f"Base playbook not found: {base_playbook}")
+        host_os_family = host.get("os_family", "linux")
+        try:
+            base_playbook = _get_base_playbook_path(host_os_family)
+        except FileNotFoundError as exc:
+            raise InstallationError(f"Base playbook not found: {exc}") from exc
 
         emit("base", "Installing system dependencies...")
         playbooks_run = []
@@ -879,9 +886,10 @@ def run_installation(
         emit("base", "System dependencies installed")
 
         # Step 9: Run agent playbook
-        claw_playbook = _get_agent_playbook_path(claw_name)
-        if not claw_playbook.exists():
-            raise InstallationError(f"Agent playbook not found: {claw_playbook}")
+        try:
+            claw_playbook = _get_agent_playbook_path(claw_name, host_os_family)
+        except FileNotFoundError as exc:
+            raise InstallationError(f"Agent playbook not found: {exc}") from exc
 
         emit("claw", f"Installing {claw_name}...")
 

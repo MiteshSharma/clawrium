@@ -34,7 +34,7 @@ export function ProviderNode({ data }: NodeProps) {
 
   return (
     <div
-      className={`bg-white rounded-lg shadow-sm min-w-[140px] max-w-[180px] px-3 py-2.5 border border-default`}
+      className={`relative bg-white rounded-lg shadow-sm min-w-[200px] max-w-[240px] px-3 py-2.5 border border-default`}
       style={{
         ...borderStyle,
         borderTop: "1px solid var(--border-default)",
@@ -42,6 +42,7 @@ export function ProviderNode({ data }: NodeProps) {
         borderBottom: "1px solid var(--border-default)",
       }}
     >
+      <span className="absolute top-2.5 right-3 text-sm leading-none" aria-hidden="true">✨</span>
       <Handle
         type="target"
         position={Position.Top}

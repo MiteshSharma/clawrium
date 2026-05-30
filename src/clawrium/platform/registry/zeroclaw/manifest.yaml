@@ -4,7 +4,7 @@ agent:
 
 # Workspace metadata consumed by cross-claw subsystems (memory CLI, etc.).
 # Path α (chosen for #358): the workspace dir holds the 7 personality MD
-# files surfaced as "memory" through `clm agent memory show|edit|delete`.
+# files surfaced as "memory" through `clawctl agent memory show|edit|delete`.
 # See .itx/358/01_EXECUTION.md for the (α vs β) rationale.
 workspace:
   memory_path: "~/.zeroclaw/workspace"
@@ -28,7 +28,7 @@ features:
   # (`40000 + hash % 2000`) and `configure.yaml` always persists it under
   # `gateway.port` — a manifest-wide default would silently collide on a
   # host running multiple zeroclaw instances.
-  # Mirrors hermes #478 for `clm agent open`.
+  # Mirrors hermes #478 for `clawctl agent open`.
   web_ui:
     enabled: true
     bind: wildcard
@@ -83,14 +83,15 @@ onboarding:
           type: confirm
           message: "Enable Discord messaging for this agent?"
           default: false
-        # When select_discord=yes, the CLI prompts interactively for the bot
-        # token, allowed-user IDs, optional allowed-guild allowlist, and
-        # reply-to-mentions-only toggle. Token persists to secrets.json under
-        # DISCORD_BOT_TOKEN; the rest land in hosts.json under
-        # config.channels.discord and are rendered into ~/.zeroclaw/config.toml
-        # as a [channels.discord] table (zeroclaw v0.7.5 docs/book/src/channels/
-        # chat-others.md). Note: bot_token lives in TOML inline — zeroclaw does
-        # not consume DISCORD_BOT_TOKEN as an env var.
+        # DEPRECATED (#555): the `--stage channels` interactive flow has been
+        # retired. Use `clawctl channel registry create --type discord` and
+        # `clawctl agent channel attach`. Token persists to secrets.json under
+        # channel:<name>:DISCORD_BOT_TOKEN. The agent attachment list lives at
+        # hosts.json.agents.<name>.channels[]; the canonical render pipeline
+        # emits a [channels.discord] table in ~/.zeroclaw/config.toml from
+        # that source (zeroclaw v0.7.5 docs/book/src/channels/chat-others.md).
+        # Note: bot_token lives in TOML inline — zeroclaw does not consume
+        # DISCORD_BOT_TOKEN as an env var.
 
     validate:
       description: "Verify installation"

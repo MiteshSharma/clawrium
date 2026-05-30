@@ -125,12 +125,88 @@ clawctl service init
 ✓ SSH client found: OpenSSH_9.0p1
 ✓ Dependencies validated
 
-Clawrium is ready! Next: clawctl host create <hostname> --user <user> --bootstrap
+Clawrium is ready! Next: clawctl host create <hostname> --user xclm --alias <name>
 ```
 
 This creates:
 - `~/.config/clawrium/` directory structure
 - Validates that Ansible and SSH are available
+
+## macOS targets
+
+Clawrium can manage macOS hosts (Apple Silicon, macOS 14+) alongside the
+Linux fleet. The control machine (where you run `clawctl`) can be either
+Linux or macOS.
+
+### Target prerequisites
+
+On the macOS host you want to manage:
+
+1. **A user with `sudo` access** for the manual `xclm` setup. See
+   [Host Preparation](guides/host-setup.md) for the exact commands — macOS
+   uses `dscl`, `dseditgroup` (including the critical
+   `com.apple.access_ssh` group membership), and `sudoers.d`. Password
+   sudo is fine; you only run the commands once, interactively.
+2. **Xcode Command Line Tools.** The base playbook installs them
+   automatically if missing, but the first install takes 5–15 minutes
+   and downloads ~700MB. Pre-installing with `xcode-select --install`
+   beforehand is faster if you're rebuilding hosts often.
+
+### Register the host
+
+Follow [Host Preparation](guides/host-setup.md) — the same flow works for
+Linux and macOS hosts. In short:
+
+```bash
+clawctl host create <mac-ip> --user xclm --alias <name>
+```
+
+The first invocation generates a per-host keypair and prints the
+macOS-specific manual commands (with the public key inlined). Paste those
+on the Mac, then re-run the same `clawctl host create` command to register
+the host.
+
+### Install an agent
+
+```bash
+clawctl agent create <name> --type hermes --host <alias>
+```
+
+Behind the scenes, clawrium installs Homebrew (if missing), then
+`node`, `ripgrep`, `ffmpeg`, and `uv` via brew, and runs the upstream
+hermes installer under a per-agent macOS user (`/Users/<agent_name>/`).
+
+Configure, start, chat — same commands as Linux:
+
+```bash
+clawctl agent provider attach <provider> --agent <name>
+clawctl agent configure <name> --stage providers --provider <provider>
+clawctl agent start <name>
+clawctl agent chat <name>
+```
+
+### Lifecycle differences
+
+On macOS the lifecycle backend uses `launchctl` in the **system** domain
+(plists land in `/Library/LaunchDaemons/`, not `~/Library/LaunchAgents/`).
+This is deliberate — daemons must survive user logout and reboot. See
+[`docs/operations/hermes-macos-upstream-quirks.md`](operations/hermes-macos-upstream-quirks.md)
+for the upstream hermes defects clawrium routes around.
+
+### Manual cleanup (if you tear a Mac host down by hand)
+
+```bash
+# Remove the xclm management user
+sudo dscl . -delete /Users/xclm
+sudo rm -f /etc/sudoers.d/xclm
+
+# Remove a hermes agent named <agent>
+sudo launchctl bootout system/ai.clawrium.hermes.<agent>
+sudo launchctl bootout system/ai.clawrium.hermes.<agent>.dashboard
+sudo rm -f /Library/LaunchDaemons/ai.clawrium.hermes.<agent>*.plist
+sudo dscl . -delete /Users/<agent>
+sudo rm -rf /Users/<agent>
+```
 
 ## Troubleshooting
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, TypedDict
 
 import ansible_runner
+import paramiko
 
 from clawrium.core.config import get_config_dir
 from clawrium.core.hosts import get_host, update_host, remove_agent_from_host
@@ -140,6 +141,126 @@ def _get_logs_dir() -> Path:
     logs_dir = get_config_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir
+
+
+def _summarize_ansible_configure_failure(
+    result: object, log_dir: str
+) -> str:
+    """Turn an ansible-runner failed `result` into an actionable error string.
+
+    Three failure shapes are handled, in priority order:
+      1. A `runner_on_failed` event with uncensored `res.msg` or
+         `res.stderr` → surface task name + the underlying message.
+      2. Every failing task had `no_log: true` (res is `{"censored": ...}`)
+         → surface task name + a hint on how to see the real error
+         without leaking whatever the censored res contains (bearer
+         tokens, API keys).
+      3. ansible-runner failed before any task ran (playbook parse error,
+         inventory load error, connection error) → surface the recap
+         stats / verbose stdout / stderr instead of the useless
+         `"failed"` literal.
+
+    A pure function over the runner result so it can be unit-tested
+    without spinning a real Ansible job. #583.
+    """
+    status = getattr(result, "status", "failed")
+    rc = getattr(result, "rc", "?")
+    error_msg = f"Configure playbook failed: {status}"
+    found_task_failure = False
+    censored_failure_task: str | None = None
+    # `result.events` is consumed-on-iteration in ansible-runner ≥ 2.x
+    # — capture into a list once so the multi-pass walks below all see
+    # the same events. Defensive against both list and generator
+    # implementations.
+    events = list(getattr(result, "events", []) or [])
+    for event in events:
+        if event.get("event") != "runner_on_failed":
+            continue
+        event_data = event.get("event_data", {}) or {}
+        res = event_data.get("res", {}) or {}
+        if res.get("censored"):
+            # Remember the FIRST censored failure for the hint branch;
+            # subsequent ones don't add information.
+            if censored_failure_task is None:
+                censored_failure_task = event_data.get(
+                    "task", "<unknown task>"
+                )
+            continue
+        task_name = event_data.get("task", "<unknown task>")
+        # ATX #445 iter-3 NW4: `is not None` so a `{"msg": None}` entry
+        # doesn't short-circuit error_msg to None and leak an empty
+        # string up the stack.
+        msg = res.get("msg")
+        if msg is not None:
+            error_msg = f"task {task_name!r}: {msg}"
+            found_task_failure = True
+            break
+        stderr = res.get("stderr")
+        if stderr is not None:
+            error_msg = f"task {task_name!r}: {stderr}"
+            found_task_failure = True
+            break
+
+    if found_task_failure:
+        return error_msg
+
+    if censored_failure_task is not None:
+        return (
+            f"task {censored_failure_task!r} failed but output was "
+            f"suppressed by `no_log: true`. Re-run with "
+            f"ANSIBLE_NO_LOG=False in the environment, or "
+            f"temporarily set `no_log: false` on the task, to see "
+            f"the underlying error."
+        )
+
+    # Pre-task failure — no task events fired. Pull together whatever
+    # ansible-runner did emit so the operator has something to debug.
+    pre_task_errors: list[str] = []
+    for event in events:
+        etype = event.get("event")
+        if etype in ("error", "verbose"):
+            stdout = event.get("stdout") or ""
+            if stdout.strip():
+                pre_task_errors.append(stdout.strip())
+        elif etype == "playbook_on_stats":
+            event_data = event.get("event_data", {}) or {}
+            if event_data:
+                pre_task_errors.append(f"recap: {event_data}")
+
+    # `result.stdout` / `result.stderr` are file-like — read at most
+    # ~4KB so a stack trace fits but a giant playbook dump doesn't.
+    def _safe_read(stream) -> str:
+        if stream is None:
+            return ""
+        try:
+            return stream.read(4096) or ""
+        except Exception:
+            return ""
+
+    stdout_blob = _safe_read(getattr(result, "stdout", None))
+    stderr_blob = _safe_read(getattr(result, "stderr", None))
+
+    detail_parts: list[str] = []
+    if pre_task_errors:
+        detail_parts.append(" | ".join(pre_task_errors))
+    if stderr_blob.strip():
+        detail_parts.append(f"stderr: {stderr_blob.strip()}")
+    if stdout_blob.strip() and not pre_task_errors:
+        # Trim to last 1KB so a parse traceback is visible without
+        # flooding the CLI with the full playbook dump.
+        tail = stdout_blob.strip()[-1024:]
+        detail_parts.append(f"stdout: {tail}")
+
+    if detail_parts:
+        return (
+            f"Configure playbook failed before any task ran "
+            f"(status={status}, rc={rc}): " + "; ".join(detail_parts)
+        )
+    return (
+        f"Configure playbook failed (status={status}, "
+        f"rc={rc}) — ansible-runner produced no events "
+        f"or output. Check {log_dir} for artifacts."
+    )
 
 
 def _safe_host_display(host: dict, hostname: str) -> str:
@@ -309,7 +430,12 @@ def _run_lifecycle_playbook(
     instance_key = None
     secret_vars = {}
     try:
-        instance_key = get_instance_key(hostname, agent_type, agent_name)
+        # Key by host["key_id"] (immutable, #448), falling back to the
+        # `hostname` parameter for hand-edited legacy records where
+        # `key_id` is absent. This guarantees secret lookups still
+        # resolve after operators mutate `hostname` (IP → DNS).
+        instance_host_key = host.get("key_id") or hostname
+        instance_key = get_instance_key(instance_host_key, agent_type, agent_name)
         instance_secrets = get_instance_secrets(instance_key)
         for key, entry in instance_secrets.items():
             secret_vars[key.lower()] = entry.get("value", "")
@@ -418,6 +544,97 @@ def _run_lifecycle_playbook(
         _cleanup_ansible_artifacts(operation_log_dir)
 
 
+def _hermes_env_token_matches_secrets(
+    host: dict, agent_name: str
+) -> tuple[bool, str | None]:
+    """Check on-host hermes .env API_SERVER_KEY against secrets.json.
+
+    Issue #448: ``secrets.json`` is the authoritative source for the
+    hermes bearer. If an operator (or a prior install on a different
+    machine) wrote the on-host ``.env`` from a different key, every
+    ``clawctl agent chat`` will 401 because the daemon enforces the
+    on-host value while the client reads the secrets.json value.
+
+    Returns:
+        (matches, error). ``matches`` is True when the on-host token
+        equals secrets.json. On any probe failure (host unreachable,
+        file missing, malformed line) returns ``(True, error)`` so the
+        caller does NOT redundantly reconfigure on transient issues —
+        the start playbook will surface the real error.
+    """
+    try:
+        import shlex
+
+        key_id = host.get("key_id") or host.get("hostname")
+        if not key_id:
+            return True, "host record missing key_id/hostname"
+        private_key = get_host_private_key(key_id)
+        if not private_key:
+            return True, "no SSH key for host"
+
+        os_family = host.get("os_family") or "linux"
+        home_root = "/Users" if os_family == "darwin" else "/home"
+        env_path = f"{home_root}/{agent_name}/.hermes/.env"
+
+        client = paramiko.SSHClient()
+        client.load_system_host_keys()
+        # ATX W1: after an IP→DNS migration the new hostname is unlikely
+        # to be in `known_hosts` yet, so the default RejectPolicy would
+        # raise and the outer except would silently return matches=True
+        # — defeating the entire reconcile invariant this helper exists
+        # for. WarningPolicy connects on unknown keys while logging,
+        # which is appropriate here because this is a *probe* whose
+        # only output is a string comparison against a value we already
+        # hold locally (no command execution, no payload). We do NOT
+        # use AutoAddPolicy — that would persist the new key without
+        # an MITM check.
+        client.set_missing_host_key_policy(paramiko.WarningPolicy())
+        try:
+            client.connect(
+                hostname=host.get("hostname"),
+                port=int(host.get("port", 22)),
+                username=host.get("user", "xclm"),
+                key_filename=str(private_key),
+                timeout=10,
+            )
+            # xclm cannot read `/home/<agent>/.hermes/.env` directly
+            # (the agent home is typically 0700). xclm has passwordless
+            # sudo from `clawctl host create`, so `sudo -n` succeeds in
+            # the non-TTY paramiko exec channel; `-n` ensures we never
+            # block waiting for a password and surface a clean failure
+            # the outer except will swallow non-fatally.
+            cmd = (
+                "sudo -n grep -E '^API_SERVER_KEY=' "
+                f"{shlex.quote(env_path)} 2>/dev/null || true"
+            )
+            _, stdout, _ = client.exec_command(cmd, timeout=10)
+            raw = stdout.read().decode().strip()
+        finally:
+            client.close()
+
+        if not raw:
+            return True, "API_SERVER_KEY not present in .env (will be rendered on configure)"
+
+        # Format: API_SERVER_KEY='<value>'  (rendered via shell_quote)
+        # Strip the leading key= and any surrounding single/double quotes.
+        value = raw.split("=", 1)[1].strip()
+        if (len(value) >= 2) and value[0] in ("'", '"') and value[-1] == value[0]:
+            value = value[1:-1]
+
+        host_key = host.get("key_id") or host.get("hostname", "")
+        instance_key = get_instance_key(host_key, "hermes", agent_name)
+        secret_entry = get_instance_secrets(instance_key).get("HERMES_API_SERVER_KEY")
+        expected = secret_entry.get("value") if isinstance(secret_entry, dict) else None
+        if not expected:
+            return True, "no HERMES_API_SERVER_KEY in secrets.json"
+
+        return value == expected, None
+    except Exception as exc:
+        # Probe failures are non-fatal: let the start playbook surface
+        # the real error rather than synthesizing a configure loop.
+        return True, str(exc)
+
+
 def start_agent(
     hostname: str,
     claw_name: str,
@@ -469,6 +686,55 @@ def start_agent(
             f"Cannot start {agent_key}: onboarding incomplete (state={state_value}). "
             f"Run 'clm agent configure {agent_display_name}' first."
         )
+
+    # Issue #448: env-file consistency invariant. For hermes, the
+    # daemon enforces the API_SERVER_KEY written into ~/.hermes/.env at
+    # configure time, while `clawctl agent chat` reads the bearer from
+    # secrets.json. If those drifted (e.g. the host's `hostname` was
+    # mutated after install and an older write left a stale .env), the
+    # next chat request returns 401 with no clear remediation.
+    # secrets.json is authoritative — reconcile by running configure
+    # before the start playbook.
+    if _resolve_agent_type(claw_name) == "hermes":
+        matches, probe_error = _hermes_env_token_matches_secrets(host, agent_key)
+        if not matches:
+            emit(
+                "start",
+                "API_SERVER_KEY drift detected between .env and "
+                "secrets.json; reconfiguring before start",
+            )
+            # Reuse the agent's persisted config so reconfigure
+            # re-renders .env with the canonical secrets.json bearer
+            # without altering any other field the operator set.
+            persisted_config = (
+                claw_record.get("config", {})
+                if isinstance(claw_record, dict)
+                else {}
+            )
+            cfg_success, cfg_error = configure_agent(
+                hostname,
+                claw_name,
+                persisted_config if isinstance(persisted_config, dict) else {},
+                agent_name=agent_key,
+                on_event=on_event,
+                reason="start-precheck",
+            )
+            if not cfg_success:
+                return {
+                    "success": False,
+                    "agent": agent_key,
+                    "host": hostname,
+                    "operation": "start",
+                    "pid": None,
+                    "started_at": None,
+                    "error": f"Pre-start reconfigure failed: {cfg_error}",
+                }
+        elif probe_error:
+            logger.debug(
+                "Hermes env-token probe inconclusive for %s: %s",
+                agent_key,
+                probe_error,
+            )
 
     emit("start", f"Starting {agent_key} on {hostname}...")
 
@@ -906,6 +1172,7 @@ def sync_agent(
     agent_name: str | None = None,
     workspace_only: bool = False,
     on_event: Callable[[str, str], None] | None = None,
+    playbook_path_override: Path | None = None,
 ) -> LifecycleResult:
     """Sync configuration to an agent instance.
 
@@ -1147,13 +1414,39 @@ def sync_agent(
                     pass
                 continue
             if stage_name in _NO_DECLARATIVE_SURFACE_YET:
+                # Issue #577: consult the onboarding ledger (the same
+                # source `clawctl agent describe` reads) before raising.
+                # If the operator already ran `clawctl agent configure
+                # <name> --stage <stage>`, the stage record will be
+                # `complete` (or `skipped`) on disk — treat this walk as
+                # an idempotent no-op for that stage instead of blocking
+                # the providers / sync path forever with a stale gate.
+                stage_record = (
+                    onboarding.get("stages", {}).get(stage_name, {})
+                )
+                stage_status = stage_record.get("status")
+                if stage_status in (
+                    StageStatus.COMPLETE.value,
+                    StageStatus.SKIPPED.value,
+                ):
+                    # ATX #577 W1: emit a breadcrumb so an operator
+                    # debugging an unexpectedly-quiet sync can see that
+                    # the gate was honored from ledger state rather than
+                    # silently bypassed.
+                    emit(
+                        "sync",
+                        f"stage {stage_name!r} already {stage_status} in "
+                        f"onboarding ledger for {agent_key}; skipping "
+                        f"manual-configure gate",
+                    )
+                    continue
                 raise LifecycleError(
                     f"agent '{agent_key}' (type={agent_type}) requires manual "
                     f"{stage_name} configuration: no clawctl declarative "
                     f"surface exists for the {stage_name} stage yet "
                     f"(tracked in #523). Workaround: complete this stage via "
                     f"'clawctl agent configure {agent_key} --stage {stage_name}', "
-                    f"then re-run sync."
+                    f"then retry this command."
                 )
             try:
                 complete_stage(
@@ -1222,6 +1515,7 @@ def sync_agent(
         agent_name=agent_key,
         on_event=on_event,
         reason="sync",
+        playbook_path_override=playbook_path_override,
     )
 
     if not config_success:
@@ -1251,55 +1545,193 @@ def sync_agent(
         transition_state as _transition_post,
     )
 
+    # B-NEW-2 (ATX #555 polish round 4): mirror
+    # `lifecycle_canonical.py:sync_agent_canonical`'s success/error
+    # return contract. Only InvalidTransitionError represents a
+    # non-failure (mid-walk agent — start_agent will surface the stage).
+    # Registry-incoherence and generic IO/permission failures must
+    # surface as `success=False` so a CLI handler does not print
+    # "✓ sync complete" while the agent is stuck non-READY.
+    state_write_ok = True
+    state_write_err: str | None = None
     try:
         _transition_post(hostname, agent_key, _OS_post.READY)
-    except _ITE_post:
+    except _ITE_post as exc:
         # Stuck mid-walk at PROVIDERS/IDENTITY/CHANNELS, or idempotent
         # READY→READY. No recovery via re-sync; agent is configured
-        # remotely, only the local state pointer is stale. Silent is
-        # correct — start_agent will surface the non-READY state.
-        # ATX iter-3 W-NEW-1.
-        pass
+        # remotely, only the local state pointer is stale. Don't fail
+        # the sync (configure_agent already succeeded) but emit so the
+        # CLI does not print "✓ sync complete" without context — next
+        # `clawctl agent start` will otherwise fail with no breadcrumb.
+        # W1 (ATX #555 polish round 5) mirrors
+        # lifecycle_canonical.py's _ITE branch.
+        emit(
+            "sync",
+            f"note: skipped state=READY transition for {agent_key} "
+            f"(agent is mid-walk: {exc!s}). `clawctl agent start` will "
+            f"surface the current onboarding stage.",
+        )
     except (_ANF_post, _ONF_post) as exc:
         # Registry incoherence: the agent or onboarding record vanished
         # between configure_agent succeeding and the READY write. No
         # recovery via re-sync (same error will fire) — distinct
         # remediation from the IO-failure branch below. ATX iter-5
         # W2-NEW carry-forward.
-        emit(
-            "sync",
-            f"warning: registry record missing for {agent_key} after "
-            f"configure: {exc!s}. Inspect hosts.json manually before "
-            f"running clawctl agent start.",
+        state_write_err = (
+            f"registry record missing for {agent_key} after configure: "
+            f"{exc!s}. Inspect hosts.json manually before running "
+            f"clawctl agent start."
         )
+        emit("sync", f"warning: {state_write_err}")
+        state_write_ok = False
     except Exception as exc:
         # Storage / IO failure (PermissionError, etc.) writing the
-        # READY pointer. Don't fail the sync — configure_agent already
-        # succeeded — but surface the gap. Re-sync IS the right
-        # remediation here. ATX iter-3 W-NEW-1.
-        #
-        # Note: emit raw exception string. Rendering-library escaping
-        # is the consumer's job (see clawctl/agent/sync.py:on_event
-        # and cli/agent.py:on_event for the boundary). ATX iter-5
-        # B1-iter5 (rich.markup.escape moved out of core).
-        emit(
-            "sync",
-            f"warning: could not write state=READY to hosts.json: "
-            f"{exc!s}. Agent is configured remotely; re-run sync to "
-            f"commit state.",
+        # READY pointer. ATX iter-3 W-NEW-1. Emit raw exception string;
+        # rendering-library escaping is the consumer's job (see
+        # clawctl/agent/sync.py:on_event and cli/agent.py:on_event for
+        # the boundary).
+        state_write_err = (
+            f"could not write state=READY to hosts.json: {exc!s}. "
+            f"Agent is configured remotely; re-run sync to commit state."
         )
+        emit("sync", f"warning: {state_write_err}")
+        state_write_ok = False
 
     emit("sync", f"Sync complete for {agent_key}")
 
     return {
-        "success": True,
+        "success": state_write_ok,
         "agent": agent_key,
         "host": hostname,
         "operation": "sync",
         "pid": None,
         "started_at": None,
-        "error": None,
+        "error": state_write_err,
     }
+
+
+def _hydrate_channels_from_canonical(
+    config_data: dict,
+    *,
+    host: dict,
+    agent_key: str,
+    agent_record: dict,
+    resolved_type: str,
+    include_slack: bool,
+) -> tuple[bool, str | None]:
+    """Populate `config_data["channels"]` from canonical channels.json + secrets.
+
+    Replaces the legacy hosts.json `agent_record.config.channels.<type>`
+    read (the original #555 silent-wipe surface) with a canonical-sourced
+    assembly that mirrors what `core/render.build_render_inputs` produces.
+    The ansible configure playbook consumes the same legacy dict shape it
+    always did (`channels.discord = {enabled, bot_token, ...}` and
+    `channels.slack = {enabled, bot_token, app_token, ...}`); only the
+    *source* of the data changes.
+
+    For each attached channel (via `get_agent_channels`), we read its
+    record from `channels.json`, hydrate the secret from secrets.json,
+    and reshape into the legacy dict. Discord and Slack are the only
+    types currently supported; other types are ignored at this layer
+    (the canonical renderer in `core/render.py` validates the broader
+    surface).
+
+    Caller-passed `config_data["channels"]` is overwritten for Discord
+    and (when `include_slack`) Slack to keep canonical channels.json as
+    the single source of truth — there is no merge path that could
+    silently re-introduce the deprecated shape.
+    """
+    from clawrium.core.channels import (
+        get_channel,
+        get_channel_token,
+    )
+
+    discord_record: dict | None = None
+    discord_token: str | None = None
+    slack_record: dict | None = None
+    slack_bot_token: str | None = None
+    slack_app_token: str | None = None
+
+    # Read attached channels off the already-loaded agent_record. This
+    # avoids a redundant hosts.json read (which `get_agent_channels`
+    # does) and keeps the helper test-friendly: the existing test
+    # harnesses for configure_agent mock the agent_record dict but do
+    # NOT always materialize hosts.json on disk.
+    attached = agent_record.get("channels", [])
+    if not isinstance(attached, list):
+        attached = []
+
+    for channel_name in attached:
+        if not isinstance(channel_name, str):
+            continue
+        record = get_channel(channel_name)
+        if not isinstance(record, dict):
+            continue
+        ctype = record.get("type") or ""
+        if ctype == "discord" and discord_record is None:
+            discord_record = record
+            discord_token = get_channel_token(channel_name, "BOT_TOKEN")
+        elif ctype == "slack" and include_slack and slack_record is None:
+            slack_record = record
+            slack_bot_token = get_channel_token(channel_name, "BOT_TOKEN")
+            slack_app_token = get_channel_token(channel_name, "APP_TOKEN")
+
+    current_channels = config_data.get("channels")
+    if not isinstance(current_channels, dict):
+        current_channels = {}
+
+    if discord_record is not None:
+        cfg = discord_record.get("config") or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        if not isinstance(discord_token, str) or len(discord_token) < 50:
+            return (
+                False,
+                "Discord channel attached to this agent but BOT_TOKEN "
+                "is missing or invalid in secrets.json. Re-run "
+                "'clm channel set-secret <channel> BOT_TOKEN <token>'.",
+            )
+        current_channels["discord"] = {
+            **cfg,
+            "enabled": True,
+            "bot_token": discord_token,
+        }
+
+    if slack_record is not None:
+        cfg = slack_record.get("config") or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        # Same prefix validation as the legacy block (xoxb-, xapp-).
+        if not isinstance(slack_bot_token, str) or not slack_bot_token.startswith(
+            "xoxb-"
+        ):
+            return (
+                False,
+                "Slack channel attached to this agent but SLACK_BOT_TOKEN is "
+                "missing or invalid in secrets.json (expected `xoxb-...`).",
+            )
+        if not isinstance(slack_app_token, str) or not slack_app_token.startswith(
+            "xapp-"
+        ):
+            return (
+                False,
+                "Slack channel attached to this agent but SLACK_APP_TOKEN is "
+                "missing or invalid in secrets.json (expected `xapp-...`).",
+            )
+        slack_dict = {
+            **cfg,
+            "enabled": True,
+            "bot_token": slack_bot_token,
+            "app_token": slack_app_token,
+        }
+        current_channels["slack"] = slack_dict
+
+    if discord_record is not None or slack_record is not None:
+        config_data["channels"] = current_channels
+
+    # Resolved_type is captured for future per-type branching; not used yet.
+    _ = resolved_type
+    return True, None
 
 
 def configure_agent(
@@ -1310,6 +1742,7 @@ def configure_agent(
     extra_vars: dict | None = None,
     on_event: Callable[[str, str], None] | None = None,
     reason: str = "configure",
+    playbook_path_override: Path | None = None,
 ) -> tuple[bool, str | None]:
     """Configure an agent instance on a remote host.
 
@@ -1375,7 +1808,9 @@ def configure_agent(
         # callers pass an alias. CLI paths today always resolve canonical, but
         # programmatic callers may not.
         instance_key = get_instance_key(
-            host["hostname"], resolved_type, unix_agent_name
+            host.get("key_id") or host["hostname"],
+            resolved_type,
+            unix_agent_name,
         )
         secret_entry = get_instance_secrets(instance_key).get("HERMES_API_SERVER_KEY")
         # `.get("value")` not `["value"]`: a truthy-but-malformed entry (no
@@ -1503,134 +1938,25 @@ def configure_agent(
 
             update_host(host["hostname"], _persist_reconstructed_api_server)
 
-        # Hermes Slack: merge persisted channels.slack shape from hosts.json
-        # with anything passed in config_data, then hydrate the bot/app tokens
-        # from secrets.json. Mirrors the Discord hydration pattern.
-        #
-        # Discord hydration moved out of this hermes-only branch to a sibling
-        # block below (#422) so zeroclaw can share it; Slack stays hermes-only
-        # because zeroclaw v0.7.5 has no native Slack channel. The
-        # persisted_channels/incoming_channels locals below feed only Slack.
-        persisted_channels = agent_record.get("config", {}).get("channels") or {}
-        if not isinstance(persisted_channels, dict):
-            persisted_channels = {}
-        incoming_channels = config_data.get("channels") or {}
-        if not isinstance(incoming_channels, dict):
-            incoming_channels = {}
-
-        persisted_slack = persisted_channels.get("slack") or {}
-        if not isinstance(persisted_slack, dict):
-            persisted_slack = {}
-
-        incoming_slack = incoming_channels.get("slack") or {}
-        if not isinstance(incoming_slack, dict):
-            incoming_slack = {}
-
-        merged_slack = {**persisted_slack, **incoming_slack}
-
-        if merged_slack.get("enabled"):
-            slack_secrets = get_instance_secrets(instance_key)
-            slack_bot_secret = slack_secrets.get("SLACK_BOT_TOKEN")
-            slack_bot_val = (
-                slack_bot_secret.get("value")
-                if isinstance(slack_bot_secret, dict)
-                else None
-            )
-            slack_app_secret = slack_secrets.get("SLACK_APP_TOKEN")
-            slack_app_val = (
-                slack_app_secret.get("value")
-                if isinstance(slack_app_secret, dict)
-                else None
-            )
-            if not isinstance(slack_bot_val, str) or not slack_bot_val.startswith(
-                "xoxb-"
-            ):
-                return (
-                    False,
-                    "Slack enabled for this agent but SLACK_BOT_TOKEN is "
-                    "missing or invalid in secrets.json. Re-run "
-                    "'clm agent configure <name> --stage channels' to set it.",
-                )
-            if not isinstance(slack_app_val, str) or not slack_app_val.startswith(
-                "xapp-"
-            ):
-                return (
-                    False,
-                    "Slack enabled for this agent but SLACK_APP_TOKEN is "
-                    "missing or invalid in secrets.json. Re-run "
-                    "'clm agent configure <name> --stage channels' to set it.",
-                )
-            merged_slack["bot_token"] = slack_bot_val
-            merged_slack["app_token"] = slack_app_val
-
-        if persisted_slack or incoming_slack:
-            current_channels = config_data.get("channels") or {}
-            if not isinstance(current_channels, dict):
-                current_channels = {}
-            current_channels["slack"] = merged_slack
-            config_data["channels"] = current_channels
-
-    # Discord channel hydration (#422). Shared between hermes and zeroclaw —
-    # both consume the same DISCORD_BOT_TOKEN secrets.json entry, the only
-    # difference is downstream: hermes renders DISCORD_BOT_TOKEN into .env
-    # via .env.j2 while zeroclaw renders bot_token = "<token>" into config.toml
-    # via config.toml.j2's [channels.discord] block. The hydration is identical.
-    #
-    # Gated on Discord being present in either persisted or incoming config
-    # before any get_instance_key call so a configure for a non-Discord agent
-    # with an unusable agent_name (e.g. the invalid-claw-user test path) still
-    # falls through to the validation block below.
+    # #560: Discord/Slack channel hydration now reads from the canonical
+    # `channels.json` store via `_hydrate_channels_from_canonical` rather
+    # than the deprecated `agent_record.config.channels.<type>` shape.
+    # The helper produces the same dict shape the ansible configure
+    # playbook expects (`config_data["channels"][type] = {...}`), so the
+    # playbook is unchanged. The legacy hosts.json shape read at this
+    # site was the original #555 silent-wipe bug surface; removing it
+    # closes that class.
     if resolved_type in ("hermes", "zeroclaw"):
-        discord_persisted_channels = (
-            agent_record.get("config", {}).get("channels") or {}
+        ok, err = _hydrate_channels_from_canonical(
+            config_data,
+            host=host,
+            agent_key=agent_key,
+            agent_record=agent_record,
+            resolved_type=resolved_type,
+            include_slack=(resolved_type == "hermes"),
         )
-        if not isinstance(discord_persisted_channels, dict):
-            discord_persisted_channels = {}
-        discord_persisted = discord_persisted_channels.get("discord") or {}
-        if not isinstance(discord_persisted, dict):
-            discord_persisted = {}
-
-        discord_incoming_channels = config_data.get("channels") or {}
-        if not isinstance(discord_incoming_channels, dict):
-            discord_incoming_channels = {}
-        discord_incoming = discord_incoming_channels.get("discord") or {}
-        if not isinstance(discord_incoming, dict):
-            discord_incoming = {}
-
-        if discord_persisted or discord_incoming:
-            # Persisted onto incoming so an explicit caller-provided field
-            # wins, but fields the caller didn't set (e.g.
-            # _sync_provider_config only carrying provider) inherit from
-            # hosts.json.
-            discord_merged = {**discord_persisted, **discord_incoming}
-
-            if discord_merged.get("enabled"):
-                discord_instance_key = get_instance_key(
-                    host["hostname"], resolved_type, unix_agent_name
-                )
-                discord_secret = get_instance_secrets(discord_instance_key).get(
-                    "DISCORD_BOT_TOKEN"
-                )
-                discord_token = (
-                    discord_secret.get("value")
-                    if isinstance(discord_secret, dict)
-                    else None
-                )
-                if not isinstance(discord_token, str) or len(discord_token) < 50:
-                    return (
-                        False,
-                        "Discord enabled for this agent but DISCORD_BOT_TOKEN "
-                        "is missing or invalid in secrets.json. Re-run "
-                        "'clm agent configure <name> --stage channels' to set "
-                        "it.",
-                    )
-                discord_merged["bot_token"] = discord_token
-
-            current_channels = config_data.get("channels") or {}
-            if not isinstance(current_channels, dict):
-                current_channels = {}
-            current_channels["discord"] = discord_merged
-            config_data["channels"] = current_channels
+        if not ok:
+            return False, err
 
     # Validate config data before running Ansible
     # Validate required provider fields (must check dict type first)
@@ -1717,7 +2043,9 @@ def configure_agent(
     discord_bot_token = ""
     try:
         instance_key = get_instance_key(
-            host["hostname"], resolved_type, unix_agent_name
+            host.get("key_id") or host["hostname"],
+            resolved_type,
+            unix_agent_name,
         )
         instance_secrets = get_instance_secrets(instance_key)
         # ATX Round 2 W4: match the safe `.get("value")` pattern used
@@ -1740,7 +2068,9 @@ def configure_agent(
     slack_app_token = ""
     try:
         instance_key = get_instance_key(
-            host["hostname"], resolved_type, unix_agent_name
+            host.get("key_id") or host["hostname"],
+            resolved_type,
+            unix_agent_name,
         )
         instance_secrets = get_instance_secrets(instance_key)
         # ATX Round 2 W4: same safe-indexing pattern as Discord above.
@@ -1826,8 +2156,13 @@ def configure_agent(
     # Referenced from per-claw playbooks via `{{ shared_template_path }}`.
     shared_template_path = Path(__file__).parent.parent / "platform" / "templates"
 
-    # Get playbook path
-    playbook_path = _get_lifecycle_playbook_path(resolved_type, "configure")
+    # Get playbook path. The `playbook_path_override` hook lets the
+    # caller (e.g. `lifecycle_macos.configure_agent`) supply a different
+    # playbook without core/lifecycle.py needing to know which OS it is.
+    if playbook_path_override is not None:
+        playbook_path = playbook_path_override
+    else:
+        playbook_path = _get_lifecycle_playbook_path(resolved_type, "configure")
     if not playbook_path.exists():
         return False, f"Configure playbook not found: {playbook_path}"
 
@@ -1847,6 +2182,46 @@ def configure_agent(
             f"Invalid agent_name format: '{unix_agent_name}'. Must start with lowercase letter and contain only lowercase letters, digits, hyphens, underscores (max 32 chars)",
         )
 
+    # #583: pre-render canonical config files via `clawrium.core.render`
+    # and hand them to the Ansible playbook as plain string vars. The
+    # playbook then deploys with `copy: content: ...` instead of
+    # `ansible.builtin.template:`. This collapses the dual-render path
+    # (Jinja-in-Python AND Jinja-in-Ansible against the same template
+    # file) into a single source of truth — closing the same class of
+    # bug as #555/#582, where one render path silently diverges from
+    # the other.
+    #
+    # Today only zeroclaw config.toml is pre-rendered (it uses the
+    # custom `toq` filter that Ansible's Jinja env can't discover
+    # reliably under ansible-runner's private_data_dir layout). Hermes
+    # and openclaw playbook templates still render via Ansible's
+    # template module — they don't use custom filters, so the dual
+    # path doesn't bite them yet. Extending to them is a follow-up.
+    prerendered_files: dict[str, str] = {}
+    if resolved_type == "zeroclaw":
+        try:
+            from clawrium.core.render import build_render_inputs, render_zeroclaw
+
+            render_inputs = build_render_inputs(unix_agent_name)
+            rendered = render_zeroclaw(render_inputs)
+            # Key matches the rendered.files dict from render_zeroclaw —
+            # the playbook references this by its full key so the var
+            # name and the file path stay locked together.
+            prerendered_files[".zeroclaw/config.toml"] = (
+                rendered.files[".zeroclaw/config.toml"]
+            )
+        except Exception as exc:
+            # Surface the render failure with the same error shape the
+            # Ansible reporter uses, so the operator sees a single
+            # consistent failure mode instead of two.
+            logger.warning(
+                "Pre-render of zeroclaw config.toml failed for %s: %s — "
+                "configure will fall back to the playbook template task "
+                "and likely fail with the same error.",
+                unix_agent_name,
+                exc,
+            )
+
     # Build Ansible inventory with API key passed directly
     ansible_vars = {
         "agent_name": unix_agent_name,
@@ -1861,6 +2236,9 @@ def configure_agent(
         "slack_bot_token": slack_bot_token,
         "slack_app_token": slack_app_token,
         "integrations": integrations_data,
+        "prerendered_zeroclaw_config_toml": prerendered_files.get(
+            ".zeroclaw/config.toml", ""
+        ),
     }
 
     # Issue #437: zeroclaw always re-pairs on configure. No skip path,
@@ -1909,11 +2287,24 @@ def configure_agent(
     else:
         configure_timeout = 60
 
+    # #583: per-claw `filter_plugins/` directory adjacent to the playbook.
+    # Ansible's auto-discovery does not find it reliably under
+    # ansible-runner's private_data_dir layout, so we plumb it as an
+    # explicit env var. Mirrors the Jinja filters registered in
+    # `clawrium.core.render` (e.g. `toq`) so both render paths agree.
+    filter_plugin_dir = playbook_path.parent / "filter_plugins"
+    ansible_runner_envvars: dict[str, str] = {}
+    if filter_plugin_dir.is_dir():
+        ansible_runner_envvars["ANSIBLE_FILTER_PLUGINS"] = str(
+            filter_plugin_dir
+        )
+
     try:
         result = ansible_runner.run(
             private_data_dir=str(operation_log_dir),
             inventory=inventory,
             playbook=str(playbook_path),
+            envvars=ansible_runner_envvars or None,
             quiet=True,
             timeout=configure_timeout,
         )
@@ -1922,32 +2313,9 @@ def configure_agent(
             return False, "Configure operation timed out"
 
         if result.status != "successful":
-            error_msg = f"Configure playbook failed: {result.status}"
-            for event in result.events:
-                if event.get("event") == "runner_on_failed":
-                    event_data = event.get("event_data", {})
-                    res = event_data.get("res", {})
-                    # ATX #445 W1: a `no_log: true` task that fails surfaces
-                    # `{"censored": "..."}` in res; skip it so we don't read
-                    # `msg`/`stderr` keys that may carry the bearer if a
-                    # debug-mode daemon echoes the Authorization header back
-                    # in its 401 body.
-                    if res.get("censored"):
-                        continue
-                    # ATX #445 iter-3 NW4: `if "msg" in res` would fire on a
-                    # `{"msg": None}` entry and set error_msg = None, leaking
-                    # an empty error string up the stack. Use `is not None`
-                    # so the loop falls through to stderr / generic prefix.
-                    # ATX iter-4 S-F: symmetric `.get` access on both lines.
-                    msg = res.get("msg")
-                    if msg is not None:
-                        error_msg = msg
-                        break
-                    stderr = res.get("stderr")
-                    if stderr is not None:
-                        error_msg = stderr
-                        break
-            return False, error_msg
+            return False, _summarize_ansible_configure_failure(
+                result, str(operation_log_dir)
+            )
 
         # ZeroClaw: extract the bearer token + gateway URL the configure
         # playbook minted via the pairing handshake. configure.yaml emits
@@ -2273,7 +2641,9 @@ def remove_agent(
 
     # Clean up per-instance secrets (Discord bot token, etc.)
     try:
-        instance_key = get_instance_key(host["hostname"], agent_type, unix_agent_name)
+        instance_key = get_instance_key(
+            host.get("key_id") or host["hostname"], agent_type, unix_agent_name
+        )
         remove_instance_secrets(instance_key)
         emit("remove", "Cleaned up instance secrets")
     except Exception as e:

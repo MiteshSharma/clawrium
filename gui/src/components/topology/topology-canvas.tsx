@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
   Controls,
   useNodesState,
   useEdgesState,
+  type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -14,6 +15,7 @@ import { type TopologyResponse, type TopologyAgent, type TopologyHost } from "@/
 import { ControlNode } from "./control-node";
 import { AgentNode } from "./agent-node";
 import { ProviderNode } from "./provider-node";
+import { HostClusterNode } from "./host-cluster-node";
 import { TopologyLegend } from "./topology-legend";
 import { AgentInfoModal } from "./agent-info-modal";
 import { HostInfoModal } from "./host-info-modal";
@@ -23,6 +25,7 @@ const nodeTypes = {
   control: ControlNode,
   agent: AgentNode,
   provider: ProviderNode,
+  "host-cluster": HostClusterNode,
 };
 
 function FleetSummaryCard({ data }: { data: TopologyResponse }) {
@@ -46,7 +49,7 @@ function FleetSummaryCard({ data }: { data: TopologyResponse }) {
   ];
 
   return (
-    <div className="absolute top-4 left-4 bg-white/95 backdrop-blur-sm border border-default rounded-lg px-5 py-4 shadow-sm z-10 min-w-[200px]">
+    <div className="absolute top-4 right-4 bg-white/95 backdrop-blur-sm border border-default rounded-lg px-5 py-4 shadow-sm z-10 min-w-[200px]">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-3">
         Fleet Summary
       </div>
@@ -76,6 +79,7 @@ export function TopologyCanvas({ data }: TopologyCanvasProps) {
   const [selectedAgent, setSelectedAgent] = useState<TopologyAgent | null>(null);
   const [selectedAgentHost, setSelectedAgentHost] = useState<string>("");
   const [selectedHost, setSelectedHost] = useState<TopologyHost | null>(null);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
 
   const handleAgentClick = useCallback(
     (agent: TopologyAgent, hostAlias: string) => {
@@ -101,16 +105,57 @@ export function TopologyCanvas({ data }: TopologyCanvasProps) {
     return { initialNodes: nodes, initialEdges: edges };
   }, [data, handleAgentClick, handleHostClick]);
 
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  // Toggle-focus only for agent and provider nodes; the modal still
+  // opens via its own button click that bubbles up.
+  const handleNodeClick = useCallback(
+    (_e: ReactMouseEvent, node: Node) => {
+      if (node.type !== "agent" && node.type !== "provider") return;
+      setFocusedNodeId((prev) => (prev === node.id ? null : node.id));
+    },
+    []
+  );
 
-  // useNodesState/useEdgesState consume their argument only at mount. The
-  // hook refetches every 30s and recomputes initialNodes/initialEdges via
-  // useMemo — without this effect, the canvas froze at first load.
+  const handlePaneClick = useCallback(() => setFocusedNodeId(null), []);
+
+  // Restyle edges based on focus: highlight connected edges, dim the rest.
+  const displayEdges = useMemo(() => {
+    if (!focusedNodeId) return initialEdges;
+    return initialEdges.map((edge) => {
+      const connected =
+        edge.source === focusedNodeId || edge.target === focusedNodeId;
+      if (!connected) {
+        return {
+          ...edge,
+          style: { ...edge.style, opacity: 0.12 },
+          animated: false,
+        };
+      }
+      return {
+        ...edge,
+        style: {
+          ...edge.style,
+          stroke: "#EA580C",
+          strokeWidth: 2.5,
+          opacity: 1,
+        },
+        animated: true,
+        zIndex: 1000,
+      };
+    });
+  }, [initialEdges, focusedNodeId]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(displayEdges);
+
+  // useNodesState/useEdgesState consume their argument only at mount.
+  // Recopy on every change so layout refetches and focus changes apply.
   useEffect(() => {
     setNodes(initialNodes);
-    setEdges(initialEdges);
-  }, [initialNodes, initialEdges, setNodes, setEdges]);
+  }, [initialNodes, setNodes]);
+
+  useEffect(() => {
+    setEdges(displayEdges);
+  }, [displayEdges, setEdges]);
 
   return (
     <div className="relative w-full h-[calc(100vh-12rem)] bg-surface rounded-xl border border-default overflow-hidden">
@@ -119,6 +164,8 @@ export function TopologyCanvas({ data }: TopologyCanvasProps) {
         edges={edges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onNodeClick={handleNodeClick}
+        onPaneClick={handlePaneClick}
         nodeTypes={nodeTypes}
         fitView
         fitViewOptions={{ padding: 0.3 }}

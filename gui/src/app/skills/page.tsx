@@ -3,8 +3,10 @@
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/layout";
 import { Modal } from "@/components/ui/modal";
+import { Button } from "@/components/ui";
 import { SkillCard, SkillDetail } from "@/components/skills";
-import { useSkill, useSkills } from "@/hooks";
+import { useSkill, useSkills, useInstallAgentSkill } from "@/hooks";
+import { useFleet } from "@/hooks";
 import type { SkillRegistry, SkillSummary } from "@/lib/types";
 
 const REGISTRY_LABELS: Record<SkillRegistry, string> = {
@@ -37,7 +39,7 @@ export default function SkillsPage() {
     <div className="space-y-6">
       <PageHeader
         title="Skills"
-        description="Browse the clawrium-managed skills catalog. Install from the CLI: clawctl agent skill attach <registry>/<name> --agent <agent>."
+        description="Browse and install skills onto your agents. Skills add capabilities like TDD workflows, code review, and more."
       />
 
       {error ? (
@@ -173,11 +175,37 @@ function SkillDetailModal({
     skill?.registry ?? null,
     skill?.name ?? null,
   );
+  const { data: fleet } = useFleet();
+  const installMutation = useInstallAgentSkill();
+  const [targetAgent, setTargetAgent] = useState<string>("");
+  const [installSuccess, setInstallSuccess] = useState<string | null>(null);
+
+  const agents = fleet?.agents ?? [];
+
+  const handleInstall = () => {
+    if (!targetAgent || !skill) return;
+    setInstallSuccess(null);
+    installMutation.mutate(
+      { agentKey: targetAgent, registry: skill.registry, name: skill.name },
+      {
+        onSuccess: () => {
+          setInstallSuccess(
+            `Installed ${skill.ref} on ${targetAgent}`,
+          );
+          setTargetAgent("");
+        },
+      },
+    );
+  };
 
   return (
     <Modal
       open={!!skill}
-      onClose={onClose}
+      onClose={() => {
+        setInstallSuccess(null);
+        setTargetAgent("");
+        onClose();
+      }}
       title={skill ? skill.ref : "Skill detail"}
     >
       {isLoading ? (
@@ -193,7 +221,57 @@ function SkillDetailModal({
           {error instanceof Error ? error.message : String(error)}
         </div>
       ) : data ? (
-        <SkillDetail skill={data} />
+        <>
+          <SkillDetail skill={data} />
+
+          {/* Install to Agent section */}
+          <div className="mt-4 pt-4 border-t border-default">
+            <h3 className="text-xs font-semibold text-primary-text mb-2">
+              Install to Agent
+            </h3>
+            {agents.length === 0 ? (
+              <p className="text-xs text-muted">
+                No agents available. Create an agent first.
+              </p>
+            ) : (
+              <div className="flex items-center gap-2">
+                <select
+                  value={targetAgent}
+                  onChange={(e) => setTargetAgent(e.target.value)}
+                  className="flex-1 text-sm border border-default rounded px-2 py-1.5 bg-surface text-primary-text"
+                  aria-label="Select agent to install skill on"
+                >
+                  <option value="">Select an agent...</option>
+                  {agents.map((agent) => (
+                    <option key={agent.agent_key} value={agent.agent_key}>
+                      {agent.agent_name} ({agent.agent_type})
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  disabled={
+                    !targetAgent || installMutation.isPending
+                  }
+                  onClick={handleInstall}
+                >
+                  {installMutation.isPending ? "Installing..." : "Install"}
+                </Button>
+              </div>
+            )}
+            {installSuccess ? (
+              <p className="mt-2 text-xs text-emerald-600">{installSuccess}</p>
+            ) : null}
+            {installMutation.isError ? (
+              <p className="mt-2 text-xs text-status-warning">
+                Install failed:{" "}
+                {installMutation.error instanceof Error
+                  ? installMutation.error.message
+                  : "Unknown error"}
+              </p>
+            ) : null}
+          </div>
+        </>
       ) : null}
     </Modal>
   );

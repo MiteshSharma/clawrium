@@ -77,7 +77,7 @@ def load_hosts() -> list[dict]:
                     )
 
             # Migrate hosts to addresses format if needed
-            return [_ensure_addresses(host) for host in data]
+            return [_apply_legacy_defaults(_ensure_addresses(host)) for host in data]
     except json.JSONDecodeError as e:
         raise HostsFileCorruptedError(
             f"hosts.json is corrupted: {e}. "
@@ -275,6 +275,18 @@ def _ensure_addresses(host: dict) -> dict:
     return host
 
 
+def _apply_legacy_defaults(host: dict) -> dict:
+    """Backfill fields that may be missing on hosts registered before they existed.
+
+    Currently this is just `os_family`: every host registered before macOS
+    support landed is assumed to be Linux. New hosts get the value detected
+    inside `clawctl host create` via `uname -s`; this backfill only kicks
+    in for legacy records.
+    """
+    host.setdefault("os_family", "linux")
+    return host
+
+
 def add_host(host: dict) -> None:
     """Add a host to the registry atomically.
 
@@ -357,10 +369,15 @@ def remove_host(hostname: str) -> bool:
 
 
 def get_host(identifier: str) -> dict | None:
-    """Get a host by hostname or alias.
+    """Get a host by hostname, alias, or key_id.
+
+    `key_id` is the immutable host identifier (issue #448); matching it
+    here lets callers that hold a stable key (e.g. the value returned by
+    `get_installed_claw`) resolve back to the host record even after the
+    operator has mutated `hostname` (IP → DNS, renumbering, etc.).
 
     Args:
-        identifier: Hostname or alias to search for.
+        identifier: Hostname, alias, or key_id to search for.
 
     Returns:
         Host dictionary if found, None otherwise.
@@ -370,6 +387,8 @@ def get_host(identifier: str) -> dict | None:
         if host.get("hostname") == identifier:
             return host
         if host.get("alias") == identifier:
+            return host
+        if host.get("key_id") == identifier:
             return host
     return None
 

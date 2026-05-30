@@ -341,16 +341,26 @@ describe("computeTopology", () => {
     expect(agentEdge?.label).toBeUndefined();
   });
 
-  it("emits an SSH edge per agent from the control node", () => {
+  it("emits one SSH edge per host (control → host-cluster, not per-agent)", () => {
     const data = makeData([
-      { hostname: "h1", agents: [makeAgent({ agent_key: "x1" })] },
-      { hostname: "h2", agents: [makeAgent({ agent_key: "x2" })] },
+      {
+        hostname: "h1",
+        agents: [
+          makeAgent({ agent_key: "x1" }),
+          makeAgent({ agent_key: "x2" }),
+        ],
+      },
+      { hostname: "h2", agents: [makeAgent({ agent_key: "x3" })] },
     ]);
     const { edges } = computeTopology(data);
     const sshEdges = edges.filter((e) => e.source === "control");
+    // h1 has 2 agents but only ONE SSH edge from control.
     expect(sshEdges).toHaveLength(2);
     expect(sshEdges.every((e) => e.animated === true)).toBe(true);
-    expect(sshEdges.map((e) => e.target).sort()).toEqual(["agent-x1", "agent-x2"]);
+    expect(sshEdges.map((e) => e.target).sort()).toEqual([
+      "host-cluster-h1",
+      "host-cluster-h2",
+    ]);
     expect(sshEdges.every((e) => e.label === "SSH")).toBe(true);
   });
 
@@ -416,6 +426,173 @@ describe("computeTopology", () => {
       (providerNode!.data as { acceleratorVendor: string | null })
         .acceleratorVendor,
     ).toBe("amd");
+  });
+
+  it("filters out hosts with zero agents (no cluster, no agents, no SSH edge)", () => {
+    const data = makeData([
+      { hostname: "empty-host", agents: [] },
+      { hostname: "real-host", agents: [makeAgent({ agent_key: "x1" })] },
+    ]);
+
+    const { nodes, edges } = computeTopology(data);
+    const clusters = nodes.filter((n) => n.type === "host-cluster");
+    expect(clusters).toHaveLength(1);
+    expect(
+      (clusters[0].data as { hostname: string }).hostname
+    ).toBe("real-host");
+
+    // No agent or SSH edge should reference the empty host.
+    const agentNodes = nodes.filter((n) => n.type === "agent");
+    expect(agentNodes).toHaveLength(1);
+    expect(edges.filter((e) => e.source === "control")).toHaveLength(1);
+  });
+
+  it("emits one host-cluster node per non-empty host", () => {
+    const data = makeData([
+      { hostname: "host-a", agents: [makeAgent({ agent_key: "a1" })] },
+      {
+        hostname: "host-b",
+        agents: [
+          makeAgent({ agent_key: "b1" }),
+          makeAgent({ agent_key: "b2" }),
+        ],
+      },
+    ]);
+
+    const { nodes } = computeTopology(data);
+    const clusters = nodes.filter((n) => n.type === "host-cluster");
+    expect(clusters).toHaveLength(2);
+    expect(
+      clusters
+        .map((c) => (c.data as { hostname: string }).hostname)
+        .sort()
+    ).toEqual(["host-a", "host-b"]);
+    clusters.forEach((c) => {
+      const d = c.data as { width: number; height: number };
+      expect(d.width).toBeGreaterThan(0);
+      expect(d.height).toBeGreaterThan(0);
+    });
+  });
+
+  it("wraps to multiple internal rows when a cluster has more than 3 agents", () => {
+    const data = makeData([
+      {
+        hostname: "wolf",
+        agents: Array.from({ length: 7 }).map((_, i) =>
+          makeAgent({ agent_key: `w${i + 1}` })
+        ),
+      },
+    ]);
+
+    const { nodes } = computeTopology(data);
+    const agentNodes = nodes
+      .filter((n) => n.type === "agent")
+      .sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
+
+    // 7 agents in a 3-col grid → 3 internal rows (y values: y0, y1, y2)
+    const uniqueYs = Array.from(new Set(agentNodes.map((n) => n.position.y)));
+    expect(uniqueYs).toHaveLength(3);
+
+    // 3 agents on row 0, 3 on row 1, 1 on row 2.
+    const counts = uniqueYs.map(
+      (y) => agentNodes.filter((n) => n.position.y === y).length
+    );
+    expect(counts).toEqual([3, 3, 1]);
+  });
+
+  it("places every agent inside its host-cluster bounding box", () => {
+    const data = makeData([
+      {
+        hostname: "wolf",
+        agents: Array.from({ length: 7 }).map((_, i) =>
+          makeAgent({ agent_key: `w${i + 1}` })
+        ),
+      },
+      {
+        hostname: "mac",
+        agents: [
+          makeAgent({ agent_key: "m1" }),
+          makeAgent({ agent_key: "m2" }),
+          makeAgent({ agent_key: "m3" }),
+        ],
+      },
+    ]);
+
+    const { nodes } = computeTopology(data);
+    const clusters = nodes.filter((n) => n.type === "host-cluster");
+    const agentNodes = nodes.filter((n) => n.type === "agent");
+
+    clusters.forEach((cluster) => {
+      const cd = cluster.data as {
+        hostname: string;
+        width: number;
+        height: number;
+      };
+      // Look up the agents that should be inside this cluster by their
+      // declared hostname.
+      const owned = agentNodes.filter(
+        (n) => (n.data as { hostname: string }).hostname === cd.hostname
+      );
+      expect(owned.length).toBeGreaterThan(0);
+      owned.forEach((agent) => {
+        expect(agent.position.x).toBeGreaterThanOrEqual(cluster.position.x);
+        expect(agent.position.y).toBeGreaterThanOrEqual(cluster.position.y);
+        expect(agent.position.x + AGENT_NODE_WIDTH).toBeLessThanOrEqual(
+          cluster.position.x + cd.width
+        );
+        // Bottom edge — use a sentinel agent height that matches the layout
+        // constant in topology-graph.ts. We assert <= bottom of cluster.
+        expect(agent.position.y + 160).toBeLessThanOrEqual(
+          cluster.position.y + cd.height
+        );
+      });
+    });
+  });
+
+  it("wraps clusters onto a new canvas row when total width exceeds the budget", () => {
+    // Five hosts × 3 agents each → each cluster is ~720px wide. The
+    // greedy packer's CANVAS_WIDTH_TARGET (1500) fits 2 per row, so
+    // expect ≥ 2 distinct cluster Y positions.
+    const data = makeData(
+      Array.from({ length: 5 }).map((_, h) => ({
+        hostname: `host-${h}`,
+        agents: Array.from({ length: 3 }).map((_, a) =>
+          makeAgent({ agent_key: `h${h}-a${a}` })
+        ),
+      }))
+    );
+
+    const { nodes } = computeTopology(data);
+    const clusters = nodes.filter((n) => n.type === "host-cluster");
+    const uniqueYs = new Set(clusters.map((c) => c.position.y));
+    expect(uniqueYs.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it("places provider row below the cluster stack (dynamic Y)", () => {
+    // Multiple hosts means cluster Y values vary; provider Y must be
+    // below the deepest cluster bottom.
+    const data = makeData([
+      {
+        hostname: "wolf",
+        agents: Array.from({ length: 7 }).map((_, i) =>
+          makeAgent({ agent_key: `w${i + 1}` })
+        ),
+      },
+      {
+        hostname: "mac",
+        agents: [makeAgent({ agent_key: "m1" })],
+      },
+    ]);
+
+    const { nodes } = computeTopology(data);
+    const clusters = nodes.filter((n) => n.type === "host-cluster");
+    const providerNode = nodes.find((n) => n.type === "provider");
+    const deepestBottom = Math.max(
+      ...clusters.map(
+        (c) => c.position.y + (c.data as { height: number }).height
+      )
+    );
+    expect(providerNode!.position.y).toBeGreaterThan(deepestBottom);
   });
 
   it("passes hostGpuVendor to provider node data for NVIDIA detection", () => {

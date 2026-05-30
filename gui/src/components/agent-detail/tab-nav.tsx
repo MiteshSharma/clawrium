@@ -1,7 +1,9 @@
 "use client";
 
 const TABS = [
+  { id: "overview", label: "Overview" },
   { id: "chat", label: "Chat" },
+  { id: "exec", label: "Exec" },
   { id: "configuration", label: "Configuration" },
   { id: "skills", label: "Skills" },
   { id: "memory", label: "Memory" },

@@ -1,8 +1,14 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { type AgentStatus, type HostHardware, type TopologyAgent } from "@/lib/types";
+import {
+  type AgentStatus,
+  type HostHardware,
+  type OSFamily,
+  type TopologyAgent,
+} from "@/lib/types";
 import { StatusDot } from "@/components/ui/status-dot";
+import { OSIcon } from "@/components/ui/os-icon";
 import { NvidiaIcon } from "@/components/icons/nvidia";
 import { AmdIcon } from "@/components/icons/amd";
 import { IntelIcon } from "@/components/icons/intel";
@@ -12,6 +18,7 @@ export interface AgentNodeData {
   hostname: string;
   hostAlias: string;
   hardware: HostHardware | null;
+  hostOsFamily: OSFamily | null;
   hostColor: string;
   onAgentClick?: (agent: TopologyAgent, hostAlias: string) => void;
   onHostClick?: (hostname: string) => void;
@@ -63,6 +70,7 @@ export function AgentNode({ data }: NodeProps) {
     hostname,
     hostAlias,
     hardware,
+    hostOsFamily,
     hostColor,
     onAgentClick,
     onHostClick,
@@ -91,8 +99,9 @@ export function AgentNode({ data }: NodeProps) {
       {/* Agent info section (clickable) */}
       <button
         onClick={() => onAgentClick?.(agent, hostAlias)}
-        className="w-full text-left px-4 py-3 hover:bg-surface/50 transition-colors"
+        className="relative w-full text-left px-4 py-3 hover:bg-surface/50 transition-colors"
       >
+        <span className="absolute top-2 right-3 text-base" aria-hidden="true">🤖</span>
         {/* Name + status */}
         <div className="flex items-center gap-2 mb-2">
           <StatusDot status={agent.status as AgentStatus} size="md" />
@@ -132,6 +141,7 @@ export function AgentNode({ data }: NodeProps) {
             <span className="text-[11px] font-medium text-secondary truncate">
               {hostAlias}
             </span>
+            <OSIcon os={hostOsFamily} variant="dot" />
           </div>
           {hardware && <HardwareTag hardware={hardware} />}
         </div>

@@ -74,6 +74,10 @@ pythonpath = ["src"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "slow: real-host integration tests; skipped by default. Run via `pytest -m slow`.",
+    "container: parent #555 F6 render-matrix tests; require a disposable container host (CLAWRIUM_TEST_CONTAINER_HOST env var). Skipped otherwise.",
+]
 # Fail loudly when a `@pytest.mark.parametrize` body comes back empty —
 # without this, a regression in the parametrize source (e.g.
 # tests/platform/test_template_naming.py if REGISTRY_ROOT moves) would

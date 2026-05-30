@@ -8,7 +8,9 @@ import {
   AgentMetrics,
   TabNav,
   TabId,
+  OverviewTab,
   ChatTab,
+  ExecTab,
   ConfigTab,
   SkillsTab,
   MemoryTab,
@@ -19,7 +21,7 @@ function AgentDetailContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const key = searchParams.get("key");
-  const [activeTab, setActiveTab] = useState<TabId>("chat");
+  const [activeTab, setActiveTab] = useState<TabId>("overview");
 
   if (!key) {
     return (
@@ -89,9 +91,13 @@ function AgentDetailView({
       <div className="bg-white rounded-xl border border-default shadow-sm overflow-hidden">
         <TabNav active={activeTab} onChange={onTabChange} />
         <div className="min-h-[500px]">
+          {activeTab === "overview" && (
+            <OverviewTab agent={agent} agentKey={agentKey} />
+          )}
           {activeTab === "chat" && (
             <ChatTab agentKey={agentKey} agentName={agent.agent_name} />
           )}
+          {activeTab === "exec" && <ExecTab agentKey={agentKey} />}
           {activeTab === "configuration" && <ConfigTab agent={agent} />}
           {activeTab === "skills" && <SkillsTab agentKey={agentKey} />}
           {activeTab === "memory" && <MemoryTab agentKey={agentKey} />}

@@ -15,6 +15,7 @@ export function MemoryTab({ agentKey }: MemoryTabProps) {
   const [editContent, setEditContent] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [copied, setCopied] = useState(false);
   const queryClient = useQueryClient();
 
   const { data: memoryInfo, isLoading } = useQuery({
@@ -45,6 +46,19 @@ export function MemoryTab({ agentKey }: MemoryTabProps) {
       setIsCreating(false);
     },
   });
+
+  const handleCopy = async () => {
+    const content = isEditing || isCreating ? editContent : fileContent?.content;
+    if (!content) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API can fail in non-secure contexts;
+      // the content is still readable via select-all.
+    }
+  };
 
   if (isLoading) {
     return <div className="p-4 text-muted text-sm">Loading memory info...</div>;
@@ -130,6 +144,18 @@ export function MemoryTab({ agentKey }: MemoryTabProps) {
                   )}
                 </h4>
                 <div className="flex gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={handleCopy}
+                    disabled={
+                      !(isEditing || isCreating
+                        ? editContent
+                        : fileContent?.content)
+                    }
+                  >
+                    {copied ? "Copied" : "Copy"}
+                  </Button>
                   {isEditing || isCreating ? (
                     <>
                       <Button

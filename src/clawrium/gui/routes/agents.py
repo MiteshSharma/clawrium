@@ -579,7 +579,8 @@ async def _chat_hermes(
     hostname = host_record.get("hostname", "")
     agent_name = agent_record.get("agent_name") or agent_key
 
-    instance_key = get_instance_key(hostname, agent_type, agent_name)
+    host_key = host_record.get("key_id") or hostname
+    instance_key = get_instance_key(host_key, agent_type, agent_name)
     secret_entry = get_instance_secrets(instance_key).get("HERMES_API_SERVER_KEY")
     raw_token = secret_entry.get("value") if secret_entry else None
 
@@ -706,7 +707,8 @@ async def _chat_openclaw(
 
     hostname = host_record.get("hostname", "")
     agent_name = agent_record.get("agent_name") or agent_record.get("name") or ""
-    instance_key = get_instance_key(hostname, agent_type, agent_name)
+    host_key = host_record.get("key_id") or hostname
+    instance_key = get_instance_key(host_key, agent_type, agent_name)
     auth, private_key = _resolve_openclaw_credentials(instance_key, gateway)
 
     if not auth:
@@ -860,3 +862,54 @@ def _fetch_logs_via_ssh(
             )
 
     return entries
+
+
+# --- Agent exec endpoint ---
+
+
+class ExecRequest(BaseModel):
+    """Request body for agent exec."""
+
+    command: list[str]
+    timeout: int = 30
+
+
+@router.post("/{agent_key}/exec")
+async def agent_exec(agent_key: str, body: ExecRequest):
+    """Run a command on the agent's host via its native CLI.
+
+    Equivalent to `clawctl agent exec <name> -- <args...>`.
+    Returns stdout, stderr, and return code.
+    """
+    from clawrium.core.agent_exec import run_agent_exec, AgentExecError
+
+    if not body.command:
+        raise HTTPException(status_code=400, detail="command list must not be empty")
+
+    resolved = await asyncio.to_thread(_resolve_agent, agent_key)
+    if not resolved:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+
+    host_record, claw_type, agent_record = resolved
+    hostname = host_record.get("hostname", "")
+    agent_name = agent_record.get("agent_name") or agent_key
+
+    timeout = max(5, min(body.timeout, 120))
+
+    try:
+        stdout, stderr, rc = await asyncio.to_thread(
+            run_agent_exec, hostname, agent_name, claw_type, body.command, timeout
+        )
+    except AgentExecError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("agent exec failed for %s", agent_key)
+        raise HTTPException(
+            status_code=500, detail="exec failed — check server logs"
+        ) from e
+
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "return_code": rc,
+    }
