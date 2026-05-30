@@ -1,114 +1,103 @@
-# E2E Re-Validation Report — #555 (post-#580/#579/#581 fixes)
+# E2E Re-Validation Report — #555 (post-#580/#579/#581 fixes + #582/#583 in-tree fixes)
 
 **Date:** 2026-05-30
-**Branch:** `e2e/555-revalidate-post-fix` off `origin/main`
-**Main HEAD:** `060efca` (post-#581 merge)
+**Branch:** `e2e/555-revalidate-post-fix` (HEAD: this branch's tip after #582 + #583 in-tree fixes)
+**Initial main HEAD at re-validation start:** `060efca` (post-#581 merge)
 **Host:** wolf-i (192.168.1.36)
 **Provider:** clawrium-glm51 (openrouter / z-ai/glm-5)
 **Discord token:** DUMMY (plumbing-only verification — no live bot connection)
 
-## Result matrix — actual re-run
+## Result matrix — FINAL (after #582 + #583 fixes)
 
 | Agent | Type | Install | Provider | Channel | Chat | Destroy |
 |-------|------|---------|----------|---------|------|---------|
-| e2e-hermes   | hermes   | ✅ | ✅ | ✅ | ❌ **#582** | ✅ |
-| e2e-zeroclaw | zeroclaw | ✅ | ⚠️ **#583** (sync workaround) | ✅ | ✅ | ✅ |
-| e2e-openclaw | openclaw | ✅ | ⚠️ #577 ledger-gate fix works; new playbook failure **#583** (sync workaround) | ✅ | ✅ | ✅ |
+| e2e-hermes   | hermes   | ✅ | ✅ | ✅ | ✅ `Hi there!` | ✅ |
+| e2e-zeroclaw | zeroclaw | ✅ | ✅ (configure --stage providers works, no workaround) | ✅ | ✅ `Hi there!` | ✅ |
+| e2e-openclaw | openclaw | ✅ | ✅ (configure --stage providers works, no workaround) | ✅ | ✅ `Hey there! 👋` | ✅ |
 
-**Score: 12/15 pass, 1 fail, 2 partial.**
+**Score: 15 / 15 pass, 0 partial, 0 fail.**
 
 Legend: ✅ pass · ❌ fail · ⚠️ partial / required workaround.
 
-## What works post-fix
+## What landed in this branch on top of main `060efca`
 
-- **#576 / PR #579 (zeroclaw gateway.host)** — confirmed. Rendered `config.toml` has `[gateway] host = "0.0.0.0"`. Daemon binds, chat returns real glm-5 reply.
-- **#577 / PR #581 (openclaw identity-gate ledger)** — confirmed. Once `--stage identity` is complete, a second `--stage providers` invocation correctly emits `stage 'identity' already complete in onboarding ledger for e2e-openclaw; skipping manual-configure gate` and proceeds (instead of re-blocking on the stale proxy).
-- **Openclaw chat** — real glm-5 reply via 41554 after `sync` workaround + ~30s startup grace.
-- **Destroy** — clean for all three.
+### #582 fix — hermes `API_SERVER_KEY` hydration in canonical render
 
-## New regressions / failures found
+**Root cause:** `core/render.py:build_render_inputs` read `api_server.key` only from `hosts.json`, but `install.py:1141-1145` intentionally writes only the non-sensitive shape there (`enabled`/`host`/`port`) and keeps the bearer in `secrets.json` under `HERMES_API_SERVER_KEY`. The legacy `configure_agent` path hydrated it at `lifecycle.py:1695`; the new canonical-render path (introduced in #556/#559) never did. Every `agent sync` after the post-#318 schema change wrote `API_SERVER_KEY=''` into `~/.hermes/.env`, and hermes upstream correctly refused to bind a wildcard interface without a key.
 
-### #582 — hermes chat still broken (NEW + #575 fix incomplete)
+**Fix:** `core/render.py:422-449` — `build_render_inputs` now hydrates the bearer from `secrets.json` when (a) `agent_type == "hermes"` and (b) the `hosts.json` blob lacks an inline key. Inline-key entries (pre-#318 legacy like `espresso`) keep working unchanged. Non-hermes agents never touch the secrets store.
 
-`PR #580` did not fully isolate Discord failure from the FastAPI gateway. Journal on host:
+### #583 fix — zeroclaw + openclaw `configure --stage providers`
 
-```
-ERROR asyncio: Task exception was never retrieved
-future: <Task ... exception=LoginFailure('Improper token has been passed.')>
-hermes-e2e-hermes.service: Main process exited, code=exited, status=1/FAILURE
-```
+Two distinct root causes both buried under the same opaque `"Configure playbook failed: failed"`:
 
-The LoginFailure propagates as an unhandled asyncio task exception → process exit 1 → systemd restart-loop.
+1. **zeroclaw template filter:** the `toq` Jinja filter (added in `5ecb93b` for TOML-injection hardening) was registered only on the Python canonical renderer's Jinja env. The Ansible playbook renders the *same template file* (`zeroclaw-config.toml.j2`) via `ansible.builtin.template:` — that env has no `toq`. Template render failed → `no_log: true` hid the error.
 
-**Compounding issue (NEW):** even with the Discord error caught, the api_server platform refuses to bind:
+2. **openclaw verify task:** the six `Verify .env credentials for <provider>` tasks used `ansible.builtin.lineinfile` with `check_mode: true` + `failed_when: <reg>.changed` to "verify presence" — broken semantics since April (commit `ca24b50`). lineinfile in check mode reports `changed=true` whenever the existing matched line differs from the placeholder `line:` value, which is every real run.
 
-```
-ERROR gateway.platforms.api_server: [Api_Server] Refusing to start:
-   binding to 0.0.0.0 requires API_SERVER_KEY.
-   Set API_SERVER_KEY or use the default 127.0.0.1.
-```
+**Fixes:**
+- Drop a filter plugin adjacent to the zeroclaw playbook (`filter_plugins/clawrium_filters.py`) and plumb `ANSIBLE_FILTER_PLUGINS` to ansible-runner so it's discovered.
+- Better: collapse the dual-render entirely for zeroclaw's config.toml — `configure_agent` pre-renders via the canonical Python path and the playbook deploys with `copy: content: ...`. One render path now.
+- Replace the broken openclaw verify tasks with proper `command: grep -qE '^KEY=.+'` probes.
 
-Rendered `.env` on host:
-```
-API_SERVER_HOST='0.0.0.0'
-API_SERVER_KEY=''
-```
+### Observability — extracted `_summarize_ansible_configure_failure` pure helper
 
-The clawctl canonical render asks hermes to bind a wildcard with no auth key — hermes upstream correctly refuses. Fix paths in #582.
+Three failure shapes now produce actionable errors instead of `"failed"`:
+- Normal task failure → task name + msg/stderr.
+- All-censored (`no_log: true`) → task name + `ANSIBLE_NO_LOG=False` hint. Bearer-leak invariant preserved verbatim.
+- Pre-task failure (parse/inventory/connection) → recap stats + stdout/stderr tail (1KB).
 
-### #583 — `configure --stage providers` playbook 'failed' with no details (zeroclaw + openclaw)
+## Test coverage added
 
-```
-Error: configure stage failed: Configure failed: Configure playbook failed: failed
-```
+- **8 tests** in `tests/core/test_render.py` for #582 hydration (inline-wins, fallback, malformed-secret rejection, non-hermes guard, end-to-end via `render_hermes` asserting `API_SERVER_KEY='<hex>'` appears in `.hermes/.env`).
+- **14 tests** in `tests/core/test_configure_error_reporting.py` covering every branch of the new reporter + `toq` filter byte-parity with `_toml_escape`.
+- **3 tests** in `tests/test_lifecycle.py` updated to the new richer error format — bearer-leak invariants verbatim.
 
-`ansible_runner.run(...)` returns `status: "failed"` with **zero `runner_on_failed` events** and an **empty `private_data_dir`** — no artifacts, no stdout/stderr, no event log. Operator has nothing to debug.
+Full suite: **3737 Python tests pass, 8 skipped, 0 failed. 231 frontend tests pass.**
 
-- hermes: not affected — `--stage providers` succeeds for hermes.
-- zeroclaw / openclaw: workaround is `clawctl agent sync <name>`, which renders the canonical files correctly and is used today as the post-failure recovery path. But this is not the documented quickstart flow.
+## What holds post-fix (cumulative)
+
+- **#575 / PR #580** (hermes Discord isolation) — *effectively* closed by the #582 fix. The api_server platform now binds correctly, so the gateway's "exit if all platforms failed" path no longer fires when Discord LoginFailure happens. The unhandled async LoginFailure still appears in the journal as noise (latent issue, non-blocking).
+- **#576 / PR #579** (zeroclaw `gateway.host`) — confirmed. Rendered `config.toml` has `[gateway] host = "0.0.0.0"`.
+- **#577 / PR #581** (openclaw identity-gate ledger consult) — confirmed. Breadcrumb emitted: `stage 'identity' already complete in onboarding ledger ... skipping manual-configure gate`.
+- **#582** — fixed in-tree (this branch).
+- **#583** — fixed in-tree (this branch).
 
 ## Detailed run log
 
 ### Hermes — `e2e-hermes`
 
-1. **Install:** `clawctl agent create e2e-hermes --type hermes --host wolf-i` → ok=28, changed=11. Service unit dropped disabled.
+1. **Install:** `clawctl agent create e2e-hermes --type hermes --host wolf-i` → ok=28, changed=11.
 2. **Configure providers:** `--stage providers --provider clawrium-glm51` succeeded. `agent doctor` shows `Resolved provider: clawrium-glm51 (openrouter) api_key=present`.
-3. **Channel:** registry record created, `agent channel attach`, `agent sync` succeeded. On-host `~/.hermes/.env` has all three Discord env vars (token / allowed users / require mention).
-4. **Chat:** **FAILED.** `Connection failed: Failed to reach hermes at http://192.168.1.36:8679/v1`. systemd journal shows the gateway exiting status=1/FAILURE in a restart loop. Two root causes (see #582).
-5. **Destroy:** clean (agent registry record gone, channel record gone, on-host dir removed).
+3. **Channel:** registry record created, attached, synced. On-host `~/.hermes/.env` now has `API_SERVER_KEY='45a88e62…'` (64-char hex) **plus** the three `DISCORD_*` env vars. **#582 fix verified directly in the rendered file.**
+4. **Chat:** ✅ `e2e-hermes> Hi there!`. Real glm-5 inference. `NRestarts=0`, `ActiveState=active`, port 8679 bound.
+5. **Destroy:** clean.
 
 ### Zeroclaw — `e2e-zeroclaw`
 
-1. **Install:** ok=16, changed=9. Unit disabled.
-2. **Configure providers:** **FAILED** with opaque error (`Configure playbook failed: failed`). See #583.
-3. **Recovery + Channel:** `clawctl agent sync` wrote `config.toml` and `zeroclaw-env.conf`. Channel attach + second `sync` succeeded. On-host:
-   - `[channels.discord]` block populated with token, allowed_users, mention_only = true.
-   - `[gateway]` block has `host = "0.0.0.0"` and `port = 41040` — **#576 fix confirmed**.
-4. **Chat:** ✅ `e2e-zeroclaw> Hi there! 👋` — real glm-5 inference.
+1. **Install:** ok=16, changed=9.
+2. **Configure providers:** **`--stage providers` works end-to-end** — no `sync` workaround. The canonical Python render path produces `config.toml`, the playbook deploys it via `copy:`, the daemon binds, the pair handshake completes, the gateway emits a fresh bearer. **#583 fix verified.**
+3. **Channel + sync:** on-host `[channels.discord]` block populated; `[gateway] host = "0.0.0.0"` (#576).
+4. **Chat:** ✅ `e2e-zeroclaw> Hi there!`. Real glm-5 inference on `0.0.0.0:41040`.
 5. **Destroy:** clean.
 
 ### Openclaw — `e2e-openclaw`
 
-1. **Install:** ok=32, changed=16. Gateway token + device credentials captured.
-2. **Configure providers (first attempt):** Hit the documented #523 identity gate (expected on a fresh install — `onboarding.identity = pending`).
-3. **Configure identity:** `--stage identity` succeeded immediately.
-4. **Configure providers (second attempt):** **#577 fix verified** — emitted `stage 'identity' already complete in onboarding ledger for e2e-openclaw; skipping manual-configure gate`. But then the providers playbook itself FAILED with the same opaque error as zeroclaw (#583).
-5. **Recovery + Channel:** `sync` wrote `env` and `openclaw.json`. Channel attach + second `sync` succeeded. On-host:
-   - `~/.openclaw/env` has `DISCORD_BOT_TOKEN`.
-   - `~/.openclaw/openclaw.json` `channels.discord` = `{ enabled: true, allowFrom: ["740723459344302120"], guilds: {} }`.
-6. **Chat:** ✅ `e2e-openclaw> Hey there! Good to see you.` — real glm-5. Required ~30s startup grace + a second connection attempt (port 41554 took two restart cycles to bind cleanly).
+1. **Install:** ok=32, changed=16.
+2. **Configure providers (first attempt):** Hit the documented #523 identity gate (expected on fresh install — `onboarding.identity = pending`).
+3. **Configure identity:** `--stage identity` succeeded.
+4. **Configure providers (second attempt):** Emitted `stage 'identity' already complete in onboarding ledger ... skipping manual-configure gate` (#577 ledger fix), then ran the playbook **successfully** — the verify probes now actually verify presence instead of false-failing. **#583 openclaw fix verified.**
+5. **Channel + sync:** on-host `~/.openclaw/env` has `DISCORD_BOT_TOKEN`, `~/.openclaw/openclaw.json` has `channels.discord` with `allowFrom = ["740723459344302120"]`.
+6. **Chat:** ✅ `e2e-openclaw> Hey there! 👋`. Real glm-5 inference on `0.0.0.0:41554`.
 7. **Destroy:** clean.
 
-## Cleanup
+## Cleanup confirmed
 
 - `clawctl agent get` shows zero `e2e-*` entries.
-- All three channel registry records deleted.
+- All 3 channel registry records deleted.
+- On-host `/home/e2e-*/.<type>/` directories all removed.
+- On-host systemd units all `could not be found`.
 
 ## Outcome
 
-- **#576 fix (zeroclaw gateway.host)**: holds.
-- **#577 fix (openclaw identity ledger gate)**: holds.
-- **#575 fix (hermes Discord isolation)**: **does not fully hold** — see #582.
-- Two new sub-issues filed under #555: **#582** (hermes chat), **#583** (configure --stage providers playbook detail-less failure).
-
-The pipeline is **not yet end-to-end green** for all three agent types; 12 of 15 cells pass and the failing cells have clean workarounds (sync) or filed regressions.
+The end-to-end pipeline is **fully green across all three agent types** for the first time on this branch — no workarounds, no partial cells, no swallowed errors. The two render paths (canonical Python + Ansible) now agree by construction for zeroclaw config.toml (one path), and the configure reporter actually tells the operator what failed.
