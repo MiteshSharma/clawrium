@@ -851,12 +851,18 @@ def test_gateway_host_defaults_to_wildcard_when_key_missing(stores):
     assert inputs.gateway is not None and inputs.gateway.host == "0.0.0.0"
 
 
-def test_gateway_host_default_round_trips_through_render_zeroclaw(stores):
-    """#576 / ATX W1: extend the default assertion to call the actual
-    `render_zeroclaw` Jinja path and confirm the rendered `config.toml`
-    contains `host = "0.0.0.0"` under `[gateway]`. The assembler-only
-    assertion above would stay green even if a template regression
-    dropped the field — the on-host daemon is what consumes this."""
+@pytest.mark.parametrize("host_value", ["", "   ", "\t \t"])
+def test_gateway_host_default_round_trips_through_render_zeroclaw(
+    stores, host_value
+):
+    """#576 / ATX W1 + iter-2 W: extend the default assertion to call
+    the actual `render_zeroclaw` Jinja path and confirm the rendered
+    `config.toml` contains `host = "0.0.0.0"` under `[gateway]`. The
+    assembler-only assertion above would stay green even if a template
+    regression rendered the pre-strip raw value — the on-host daemon
+    is what consumes this. Parametrized over the same blank set as the
+    assembler test so a whitespace-only input also has a Jinja-path
+    assertion."""
     stores.agent = (
         {"hostname": "host-1"},
         "zeroclaw",
@@ -864,7 +870,12 @@ def test_gateway_host_default_round_trips_through_render_zeroclaw(stores):
             "agent_name": "alpha",
             "providers": [{"name": "or", "role": "primary", "model": ""}],
             "config": {
-                "gateway": {"host": "", "port": 40000, "auth": "tk", "bind": "lan"},
+                "gateway": {
+                    "host": host_value,
+                    "port": 40000,
+                    "auth": "tk",
+                    "bind": "lan",
+                },
             },
         },
     )
@@ -874,9 +885,15 @@ def test_gateway_host_default_round_trips_through_render_zeroclaw(stores):
     rendered = render_zeroclaw(inputs)
     toml_body = rendered.files[".zeroclaw/config.toml"]
     # The rendered TOML must carry the wildcard bind under [gateway].
-    # An empty host (which the daemon refuses) would render as `host = ""`.
+    # An empty/whitespace host (which the daemon refuses) would render
+    # as `host = ""` or `host = "   "` respectively.
     assert 'host = "0.0.0.0"' in toml_body
     assert 'host = ""' not in toml_body
+    if host_value.strip() != host_value or host_value:
+        # The raw pre-strip value must not survive into the rendered
+        # TOML — guards against a future template change that bypasses
+        # the assembler's strip+default.
+        assert f'host = "{host_value}"' not in toml_body
 
 
 def test_gateway_host_preserves_explicit_value(stores):
@@ -931,6 +948,10 @@ def test_hermes_render_ignores_gateway_host_default(stores):
     stores.provider_api_keys["or"] = "sk-1"
     inputs = build_render_inputs("alpha")
     rendered = render_hermes(inputs)
+    # Pin the hermes output shape so the negative-only assertions below
+    # aren't vacuously true if a future refactor changes the file map.
+    assert ".hermes/.env" in rendered.files
+    assert "HERMES_INFERENCE_PROVIDER" in rendered.files[".hermes/.env"]
     for path, body in rendered.files.items():
         # The zeroclaw-shaped `[gateway]` TOML block must not appear in
         # any hermes output file.
