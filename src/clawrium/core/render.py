@@ -24,6 +24,7 @@ before any production code paths depend on it.
 
 from __future__ import annotations
 
+import functools as _functools
 from dataclasses import dataclass, field
 
 __all__ = [
@@ -629,13 +630,13 @@ def render_hermes(inputs: RenderInputs) -> RenderedFiles:
     )
 
 
-def _render_hermes_template(template_name: str, **context) -> str:
-    """Render a hermes canonical template under
-    `clawrium.platform.registry.hermes.templates` via importlib.resources.
+@_functools.lru_cache(maxsize=8)
+def _hermes_template(template_name: str):
+    """Load + compile a hermes canonical template once per process.
 
-    StrictUndefined so any missing context variable raises at render time
-    rather than silently producing an empty string. `shq` / `yq` filters
-    mirror `_shell_quote` / `_yaml_quote` exactly.
+    Memoized so `render_hermes`' two template renders per invocation do not
+    re-read the wheel resource or re-compile the Jinja AST. The cache is
+    keyed on filename; identity of returned template is stable.
     """
     from importlib.resources import files
 
@@ -646,6 +647,11 @@ def _render_hermes_template(template_name: str, **context) -> str:
     )
     template_source = template_path.read_text(encoding="utf-8")
 
+    # autoescape=False is INTENTIONAL: shq/yq filters handle all shell and
+    # YAML quoting already, and the output files are shell EnvironmentFile
+    # bodies / YAML — not HTML. Flipping autoescape to True would
+    # double-encode every shq/yq-quoted value (e.g. `'sk-or-1'` →
+    # `&#x27;sk-or-1&#x27;`) and corrupt the on-host files silently.
     env = Environment(
         undefined=StrictUndefined,
         trim_blocks=True,
@@ -655,8 +661,18 @@ def _render_hermes_template(template_name: str, **context) -> str:
     )
     env.filters["shq"] = lambda v: _shell_quote(str(v))
     env.filters["yq"] = lambda v: _yaml_quote(str(v))
-    template = env.from_string(template_source)
-    return template.render(**context)
+    return env.from_string(template_source)
+
+
+def _render_hermes_template(template_name: str, **context) -> str:
+    """Render a hermes canonical template under
+    `clawrium.platform.registry.hermes.templates` via importlib.resources.
+
+    StrictUndefined so any missing context variable raises at render time
+    rather than silently producing an empty string. `shq` / `yq` filters
+    mirror `_shell_quote` / `_yaml_quote` exactly.
+    """
+    return _hermes_template(template_name).render(**context)
 
 
 # Zeroclaw provider section table. Each entry: (kind_string,)

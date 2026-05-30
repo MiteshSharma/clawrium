@@ -42,6 +42,15 @@ SLACK_HOME_CHANNEL={{ channel.home_channel | shq }}
 SLACK_HOME_CHANNEL_NAME={{ channel.home_channel_name | shq }}
 {% endif %}
 {% endfor %}
+{# Integration loop emits per-integration env vars. Two types are
+   intentional no-ops here:
+     - `atlassian`: credentials render into `config.yaml`'s `mcp_servers:`
+       block, not the env file. The MCP server reads creds from its own
+       `env:` mapping, not from the daemon's process environment.
+     - `git`: identity (user.name/user.email) writes to ~/.gitconfig via
+       a separate render pass, not into the systemd EnvironmentFile.
+   Both are validated up-front by render_hermes' whitelist; any other
+   integration type raises before rendering. #}
 {% for intg in integrations %}
 {% if intg.type == 'github' %}
 GITHUB_TOKEN_{{ intg.slug }}={{ intg.creds.get('GITHUB_TOKEN', '') | shq }}

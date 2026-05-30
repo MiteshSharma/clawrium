@@ -1428,3 +1428,94 @@ def test_hermes_atlassian_mcp_servers_byte_lock_w15():
         "      CONFLUENCE_API_TOKEN: 'atl-tk'\n"
     )
     assert expected in yaml
+
+
+# ---------------------------------------------------------------------------
+# ATX round 2 follow-ups.
+# ---------------------------------------------------------------------------
+
+
+_HERMES_SLACK_ENV_OPENROUTER = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENROUTER_API_KEY='sk-or-1'\n"
+    "HERMES_INFERENCE_PROVIDER='openrouter'\n"
+    "SLACK_BOT_TOKEN='xoxb-bot'\n"
+    "SLACK_APP_TOKEN='xapp-app'\n"
+    "SLACK_ALLOWED_USERS='u1,u2'\n"
+    "SLACK_HOME_CHANNEL='C123'\n"
+    "SLACK_HOME_CHANNEL_NAME='general'\n"
+)
+
+
+def test_hermes_render_byte_locks_slack_channel():
+    """W1 (ATX round 2): slack-channel branch needs the same byte-lock
+    discipline as discord and the five provider branches. A whitespace
+    change from `trim_blocks`/`lstrip_blocks` flipping the wrong way
+    would pass substring-only tests undetected."""
+    base = _baseline_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes",
+        provider=base.provider,
+        channels=(
+            ChannelInputs(
+                name="slack-a",
+                type="slack",
+                bot_token="xoxb-bot",
+                app_token="xapp-app",
+                allowed_users=("u1", "u2"),
+                home_channel="C123",
+                home_channel_name="general",
+            ),
+        ),
+        integrations=(),
+        api_server=None,
+    )
+    out = render_hermes(inputs)
+    assert out.files[".hermes/.env"] == _HERMES_SLACK_ENV_OPENROUTER
+
+
+def test_hermes_atlassian_empty_slug_raises_w6():
+    """W6 (ATX round 2): empty-slug guard must trigger. Names made up
+    entirely of slug-stripped characters (dashes, punctuation) produce
+    an empty slug; emit-unquoted-empty-key would be a silent YAML
+    structure corruption."""
+    base = _baseline_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes",
+        provider=base.provider,
+        integrations=(
+            IntegrationInputs(
+                name="!!!",
+                type="atlassian",
+                credentials=(
+                    ("ATLASSIAN_API_TOKEN", "tk"),
+                    ("ATLASSIAN_EMAIL", "u@x"),
+                    ("ATLASSIAN_URL", "https://x"),
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(AgentConfigError, match="slugifies to empty"):
+        render_hermes(inputs)
+
+
+def test_zeroclaw_rejects_mixed_channel_list_w7():
+    """W7 (ATX round 2): a `[discord, slack]` channel list must raise
+    on the slack entry rather than silently emit just the discord block.
+    Locks the new B8 `continue`-based loop's behavior against a future
+    regression to `break` semantics."""
+    base = _zeroclaw_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        channels=(
+            ChannelInputs(name="discord-a", type="discord", bot_token="d-tok"),
+            ChannelInputs(name="slack-b", type="slack", bot_token="s-tok"),
+        ),
+        gateway=base.gateway,
+    )
+    with pytest.raises(AgentConfigError, match="unsupported channel type 'slack'"):
+        render_zeroclaw(inputs)
