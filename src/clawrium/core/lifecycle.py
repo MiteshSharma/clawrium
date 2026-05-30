@@ -907,15 +907,36 @@ def _create_ethos_chat_token(
     user = host.get("user", "xclm")
     port = host.get("port", 22)
 
-    ethos_bin = "/opt/clawrium-node24/bin/ethos"
+    # Probe candidate binary paths in the same order as configure.yaml and
+    # exec.yaml. The NodeSource install places the binary under the npm global
+    # prefix (often /opt/clawrium-node24/bin/); a system-level install lands
+    # it at /usr/local/bin/ethos. The first executable found wins.
+    _probe = (
+        "for p in /opt/clawrium-node24/bin/ethos /usr/local/bin/ethos; do "
+        '[ -x "$p" ] && echo "$p" && break; done'
+    )
 
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes",
-           "-o", "ConnectTimeout=15"]
+    ssh_base = ["ssh", "-o", "StrictHostKeyChecking=yes", "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=15"]
     if port and port != 22:
-        cmd += ["-p", str(port)]
+        ssh_base += ["-p", str(port)]
     if ssh_key:
-        cmd += ["-i", str(ssh_key)]
-    cmd += [
+        ssh_base += ["-i", str(ssh_key)]
+
+    try:
+        probe_result = subprocess.run(
+            ssh_base + [f"{user}@{hostname}", _probe],
+            capture_output=True, text=True, timeout=15,
+        )
+        ethos_bin = probe_result.stdout.strip()
+    except Exception:
+        ethos_bin = ""
+
+    if not ethos_bin:
+        logger.warning("ethos binary not found on %s; skipping ETHOS_CHAT_TOKEN creation", hostname)
+        return None
+
+    cmd = ssh_base + [
         f"{user}@{hostname}",
         f"sudo -u {agent_name} {ethos_bin} api-key create --name clawctl 2>&1",
     ]
