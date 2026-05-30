@@ -2018,6 +2018,10 @@ _OPENCLAW_JSON_BYTE_LOCK = """\
     "reload": {
       "mode": "hybrid",
       "debounceMs": 300
+    },
+    "auth": {
+      "mode": "token",
+      "token": "tkn"
     }
   },
   "session": {
@@ -2345,3 +2349,53 @@ def test_openclaw_model_prefix_idempotent():
         # Critical: prefix must not appear twice.
         prefix = f"{ptype}/"
         assert env.count(prefix + prefix) == 0
+
+
+def test_openclaw_json_gateway_auth_survives_render_cycle():
+    """Round 3 B1: `gateway.auth` MUST flow through `_render_openclaw_json`.
+    Regression test for the silent-wipe class: if the renderer emitted the
+    baseline verbatim (no auth block), F3 sync would overwrite the
+    install-time bearer on every sync."""
+    import json
+
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(
+            name="or", type="openrouter", default_model="m", api_key="sk-1"
+        ),
+        channels=(),
+        integrations=(),
+        gateway=GatewayInputs(
+            host="0.0.0.0",
+            port=40000,
+            auth="bearer-secret-xyz",
+            bind="lan",
+        ),
+    )
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+    assert blob["gateway"]["auth"] == {
+        "mode": "token",
+        "token": "bearer-secret-xyz",
+    }
+
+
+def test_openclaw_json_no_auth_omits_gateway_auth_block():
+    """Round 3 B1 corollary: `gateway.auth=""` must NOT emit a stale auth
+    block. Explicit absence keeps the state machine clean."""
+    import json
+
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(
+            name="or", type="openrouter", default_model="m", api_key="sk-1"
+        ),
+        channels=(),
+        integrations=(),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, auth="", bind="lan"),
+    )
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+    assert "auth" not in blob["gateway"]

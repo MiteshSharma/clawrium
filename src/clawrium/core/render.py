@@ -1077,11 +1077,23 @@ def _render_openclaw_json(
     model = defaults.setdefault("model", {})
     model["primary"] = provider_default_model
 
-    # 2. gateway.port + 3. gateway.bind
+    # 2. gateway.port + 3. gateway.bind + gateway.auth (managed bearer)
+    #
+    # Round 3 B1: `gateway.auth` MUST flow into the JSON. The legacy
+    # `openclaw.json.j2` writes the bearer to `gateway.auth.{mode,token}`
+    # via `install.yaml`; if F3 sync emitted the baseline verbatim
+    # (without auth), it would silently wipe the on-host bearer on every
+    # sync — exactly the silent-wipe class of bug #560 was opened to fix.
     if gateway is not None:
         gw = baseline.setdefault("gateway", {})
         gw["port"] = int(gateway.port or _OPENCLAW_DEFAULT_GATEWAY_PORT)
         gw["bind"] = gateway.bind or "lan"
+        if gateway.auth:
+            gw["auth"] = {"mode": "token", "token": gateway.auth}
+        else:
+            # Drop any stale auth block from the baseline (which has none)
+            # to keep the state explicit: no auth → no `gateway.auth` key.
+            gw.pop("auth", None)
 
     # 4. channels.discord.enabled + 5. channels.discord.allowFrom + guilds.
     channels = baseline.setdefault("channels", {})
