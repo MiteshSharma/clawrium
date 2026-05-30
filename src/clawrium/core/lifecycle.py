@@ -1294,13 +1294,39 @@ def sync_agent(
                     pass
                 continue
             if stage_name in _NO_DECLARATIVE_SURFACE_YET:
+                # Issue #577: consult the onboarding ledger (the same
+                # source `clawctl agent describe` reads) before raising.
+                # If the operator already ran `clawctl agent configure
+                # <name> --stage <stage>`, the stage record will be
+                # `complete` (or `skipped`) on disk — treat this walk as
+                # an idempotent no-op for that stage instead of blocking
+                # the providers / sync path forever with a stale gate.
+                stage_record = (
+                    onboarding.get("stages", {}).get(stage_name, {})
+                )
+                stage_status = stage_record.get("status")
+                if stage_status in (
+                    StageStatus.COMPLETE.value,
+                    StageStatus.SKIPPED.value,
+                ):
+                    # ATX #577 W1: emit a breadcrumb so an operator
+                    # debugging an unexpectedly-quiet sync can see that
+                    # the gate was honored from ledger state rather than
+                    # silently bypassed.
+                    emit(
+                        "sync",
+                        f"stage {stage_name!r} already {stage_status} in "
+                        f"onboarding ledger for {agent_key}; skipping "
+                        f"manual-configure gate",
+                    )
+                    continue
                 raise LifecycleError(
                     f"agent '{agent_key}' (type={agent_type}) requires manual "
                     f"{stage_name} configuration: no clawctl declarative "
                     f"surface exists for the {stage_name} stage yet "
                     f"(tracked in #523). Workaround: complete this stage via "
                     f"'clawctl agent configure {agent_key} --stage {stage_name}', "
-                    f"then re-run sync."
+                    f"then retry this command."
                 )
             try:
                 complete_stage(
