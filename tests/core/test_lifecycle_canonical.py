@@ -719,3 +719,169 @@ def test_zeroclaw_sync_restart_false_still_repairs_bearer(monkeypatch):
     assert repair_called == [True]
     # Event stream confirms emission too.
     assert any(stage == "repair" for stage, _ in events), events
+
+
+# ---------------------------------------------------------------------------
+# #575: _diagnose_unit_failure + _verify_health diagnostic wrapping
+# ---------------------------------------------------------------------------
+
+
+class _FakeChannel:
+    def __init__(self, exit_status: int = 0) -> None:
+        self._exit_status = exit_status
+
+    def recv_exit_status(self) -> int:
+        return self._exit_status
+
+
+class _FakeStream:
+    def __init__(self, payload: bytes, exit_status: int = 0) -> None:
+        self._payload = payload
+        self.channel = _FakeChannel(exit_status)
+
+    def read(self) -> bytes:
+        return self._payload
+
+
+class _FakeSSHClient:
+    """Routes `exec_command` calls by substring match. Each tuple
+    (substring, exit_status, stdout_bytes) describes one expected call;
+    the first matching tuple is consumed. Order does not matter — the
+    helper under test calls `is-active` and `journalctl` in a fixed
+    order but we let the tests assert on outcome only."""
+
+    def __init__(self, scripted: list[tuple[str, int, bytes]]) -> None:
+        self._scripted = list(scripted)
+        self.calls: list[str] = []
+
+    def exec_command(self, command: str, timeout: int | None = None):
+        self.calls.append(command)
+        for i, (needle, rc, payload) in enumerate(self._scripted):
+            if needle in command:
+                self._scripted.pop(i)
+                stream = _FakeStream(payload, rc)
+                return (None, stream, stream)
+        # Unmatched — return empty success so the test surfaces an
+        # AssertionError on `self.calls` rather than a generic exception.
+        stream = _FakeStream(b"", 0)
+        return (None, stream, stream)
+
+
+class TestDiagnoseUnitFailure:
+    def test_discord_login_failure_translated_to_remediation(self):
+        journal = (
+            b"May 30 09:47:56 wolf hermes[2427668]: ERROR asyncio: ...\n"
+            b"discord.errors.LoginFailure: Improper token has been passed.\n"
+            b"systemd[1]: hermes-x.service: Main process exited, "
+            b"code=exited, status=1/FAILURE\n"
+        )
+        client = _FakeSSHClient(
+            [("journalctl", 0, journal)],
+        )
+        diag = lc._diagnose_unit_failure(client, unit="hermes-x.service")
+        assert diag is not None
+        assert "Discord" in diag
+        assert "clawctl channel registry" in diag
+
+    def test_zeroclaw_empty_gateway_host_translated(self):
+        journal = (
+            b"May 30 09:51:18 wolf zeroclaw[2431536]: Error: "
+            b"[required_field_empty] gateway.host must not be empty "
+            b"(gateway.host)\n"
+        )
+        client = _FakeSSHClient(
+            [("journalctl", 0, journal)],
+        )
+        diag = lc._diagnose_unit_failure(client, unit="zeroclaw-x.service")
+        assert diag is not None
+        assert "gateway.host" in diag
+        assert "#576" in diag
+
+    def test_unknown_failure_returns_none(self):
+        """A journal that doesn't match any catalog entry returns None
+        so the caller falls back to the original error message — the
+        diagnostic must never invent a cause."""
+        journal = b"systemd[1]: hermes-x.service: Some unknown failure\n"
+        client = _FakeSSHClient(
+            [("journalctl", 0, journal)],
+        )
+        diag = lc._diagnose_unit_failure(client, unit="hermes-x.service")
+        assert diag is None
+
+    def test_empty_journal_returns_none(self):
+        """Whitespace-only or empty journal output — no pattern can
+        match, so no diagnostic is emitted (rather than a false
+        positive on an empty stream)."""
+        client = _FakeSSHClient(
+            [("journalctl", 0, b"\n\n   \n")],
+        )
+        diag = lc._diagnose_unit_failure(client, unit="hermes-x.service")
+        assert diag is None
+
+    def test_ssh_failure_swallowed(self, monkeypatch):
+        """If the journal fetch raises (SSH disconnect, sudo refused,
+        etc.) the helper must return None so the caller surfaces the
+        original `unit not active` error rather than the diagnostic
+        helper's own error."""
+
+        class _RaisingClient:
+            def exec_command(self, *_a, **_kw):
+                raise RuntimeError("ssh dropped")
+
+        diag = lc._diagnose_unit_failure(
+            _RaisingClient(), unit="hermes-x.service"
+        )
+        assert diag is None
+
+
+class TestVerifyHealthDiagnosticWrap:
+    def test_failure_includes_diagnostic_when_pattern_matches(self):
+        """The error raised by `_verify_health` on a non-active unit
+        must include the diagnostic line — that's the operator-facing
+        win from #575."""
+        scripted = [
+            # `systemctl is-active …` returns non-zero + 'activating'
+            ("is-active", 3, b"activating\n"),
+            # journalctl returns the Discord trace
+            (
+                "journalctl",
+                0,
+                b"discord.errors.LoginFailure: Improper token has been passed.\n",
+            ),
+        ]
+        client = _FakeSSHClient(scripted)
+        with pytest.raises(CanonicalSyncError) as exc:
+            lc._verify_health(
+                client, agent_type="hermes", agent_name="x"
+            )
+        msg = str(exc.value)
+        assert "not active after restart" in msg
+        assert "state='activating'" in msg
+        # The whole win of #575: the operator sees the actual cause
+        # right inside the error, not just the symptom.
+        assert "Diagnosis:" in msg
+        assert "Discord" in msg
+
+    def test_failure_falls_back_to_base_message_on_unknown_pattern(self):
+        scripted = [
+            ("is-active", 3, b"failed\n"),
+            ("journalctl", 0, b"systemd[1]: hermes-x.service: Boom\n"),
+        ]
+        client = _FakeSSHClient(scripted)
+        with pytest.raises(CanonicalSyncError) as exc:
+            lc._verify_health(
+                client, agent_type="hermes", agent_name="x"
+            )
+        msg = str(exc.value)
+        # No diagnostic suffix when no catalog entry matched — the
+        # operator gets the same message as before #575.
+        assert "Diagnosis:" not in msg
+        assert "state='failed'" in msg
+
+    def test_active_unit_no_diagnosis_no_raise(self):
+        scripted = [("is-active", 0, b"active\n")]
+        client = _FakeSSHClient(scripted)
+        # No exception.
+        lc._verify_health(client, agent_type="hermes", agent_name="x")
+        # And no second `journalctl` call — happy path is one round trip.
+        assert all("journalctl" not in c for c in client.calls)

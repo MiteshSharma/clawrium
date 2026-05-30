@@ -296,6 +296,85 @@ def _restart_unit(
         )
 
 
+# #575: when a unit fails to come active after restart, capture the
+# tail of its journal and translate well-known fatal patterns into
+# remediation-shaped messages. The default error (`unit not active
+# after restart (state='activating')`) sends the operator chasing the
+# wrong layer — e.g. the hermes Discord-token crash brings the entire
+# FastAPI gateway down via an unisolated `discord.errors.LoginFailure`
+# in the upstream package, and the chat-port-never-binds symptom
+# points nowhere near the channel registry as the actual cause.
+#
+# Each entry: (regex, summary, remediation). The regex matches any
+# substring of the journal tail (Python `re.search`). The summary
+# is the one-line cause; the remediation is what the operator should
+# do next. Patterns are checked in order — first match wins.
+_KNOWN_UNIT_FATAL_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    (
+        r"discord\.errors\.LoginFailure",
+        "Discord rejected the bot token (LoginFailure / 401 Unauthorized).",
+        "Re-issue the channel record with a valid token: `clawctl channel "
+        "registry delete <name> --yes` + `clawctl channel registry create "
+        "<name> --type discord --token-stdin …` + `clawctl agent sync "
+        "<agent>`. The current hermes upstream does not isolate Discord "
+        "client failures from the gateway process, so a stale or "
+        "fat-fingered token currently takes the chat endpoint down with "
+        "it (tracked in #575).",
+    ),
+    (
+        r"required_field_empty.*gateway\.host",
+        "zeroclaw daemon refused an empty `gateway.host`.",
+        "Re-run `clawctl agent sync <agent>` after `clawctl` is upgraded "
+        "to a release containing the #576 fix, or hand-edit "
+        "`~/.zeroclaw/config.toml` on the host to set `host = \"0.0.0.0\"` "
+        "under `[gateway]` and restart the unit.",
+    ),
+    (
+        r"OPENROUTER_API_KEY.*not set|No inference provider configured",
+        "Provider credentials missing from the rendered config.",
+        "Run `clawctl agent doctor <agent>` — it should show "
+        "`api_key=present`. If it shows `missing`, re-run "
+        "`clawctl agent configure <agent> --stage providers --provider "
+        "<id>` and confirm the provider record carries a credential.",
+    ),
+)
+
+
+def _diagnose_unit_failure(
+    client: paramiko.SSHClient,
+    *,
+    unit: str,
+    timeout: int = 15,
+) -> str | None:
+    """Tail a failed unit's journal and look for known fatal patterns.
+
+    Returns a one-line remediation-shaped diagnostic, or None if no
+    pattern matched. Failures inside this helper (SSH disconnect,
+    sudo denied, etc.) deliberately return None — diagnostics must
+    never mask the original `unit not active` error.
+    """
+    import re
+
+    cmd = (
+        f"sudo journalctl --unit {shlex.quote(unit)} "
+        f"--no-pager --lines 100 2>/dev/null || true"
+    )
+    try:
+        _, out, _ = client.exec_command(cmd, timeout=timeout)
+        out.channel.recv_exit_status()
+        journal = out.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+    if not journal.strip():
+        return None
+
+    for pattern, summary, remediation in _KNOWN_UNIT_FATAL_PATTERNS:
+        if re.search(pattern, journal):
+            return f"{summary} {remediation}"
+    return None
+
+
 def _verify_health(
     client: paramiko.SSHClient,
     *,
@@ -309,9 +388,15 @@ def _verify_health(
     rc = out.channel.recv_exit_status()
     state = out.read().decode("utf-8", errors="replace").strip()
     if rc != 0 or state != "active":
-        raise CanonicalSyncError(
+        diagnostic = _diagnose_unit_failure(
+            client, unit=unit, timeout=timeout
+        )
+        base = (
             f"unit {unit} is not active after restart (state={state!r})"
         )
+        if diagnostic:
+            raise CanonicalSyncError(f"{base}. Diagnosis: {diagnostic}")
+        raise CanonicalSyncError(base)
 
 
 def sync_agent_canonical(
