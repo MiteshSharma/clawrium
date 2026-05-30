@@ -248,7 +248,9 @@ def test_sync_state_ready_agent_not_found_populates_error(monkeypatch):
         verify=False,
         on_event=lambda s, m: events.append((s, m)),
     )
-    assert result.success
+    # B2 (ATX #555 polish round 3): registry incoherence is a real
+    # failure — caller must see success=False AND a populated error.
+    assert result.success is False
     assert result.error is not None
     assert "registry record missing" in result.error
     assert "agent gone" in result.error
@@ -269,7 +271,11 @@ def test_sync_state_ready_generic_exception_populates_error(monkeypatch):
         verify=False,
         on_event=lambda s, m: events.append((s, m)),
     )
-    assert result.success
+    # B2 (ATX #555 polish round 3): IO/permission failures on the
+    # state write are real failures — surface `success=False` so a CLI
+    # handler does not print "sync complete" with a stuck non-READY
+    # agent.
+    assert result.success is False
     assert result.error is not None
     assert "state=READY" in result.error
     assert "disk full" in result.error
@@ -282,6 +288,70 @@ def test_open_ssh_raises_when_no_private_key(monkeypatch):
     monkeypatch.setattr(lc, "get_host_private_key", lambda _: None)
     with pytest.raises(CanonicalSyncError, match="no SSH key registered"):
         lc._open_ssh({"hostname": "h", "key_id": "k"})
+
+
+def test_open_ssh_wraps_authentication_exception(monkeypatch, tmp_path):
+    """B7 (ATX #555 polish round 3): paramiko's
+    `AuthenticationException` from `client.connect()` must surface as
+    `CanonicalSyncError` naming the host."""
+    import paramiko
+
+    key_path = tmp_path / "k"
+    key_path.write_text("dummy")
+    monkeypatch.setattr(lc, "get_host_private_key", lambda _: key_path)
+    monkeypatch.setattr(
+        paramiko.SSHClient,
+        "connect",
+        lambda self, **kw: (_ for _ in ()).throw(
+            paramiko.AuthenticationException("bad creds")
+        ),
+    )
+    with pytest.raises(
+        CanonicalSyncError,
+        match=r"SSH connection to 'h\.example' failed: bad creds",
+    ):
+        lc._open_ssh({"hostname": "h.example", "key_id": "k"})
+
+
+def test_open_ssh_wraps_oserror(monkeypatch, tmp_path):
+    """B7 (ATX #555 polish round 3): OSError (network unreachable, dns
+    failure, etc.) must surface as `CanonicalSyncError` referencing the
+    host."""
+    import paramiko
+
+    key_path = tmp_path / "k"
+    key_path.write_text("dummy")
+    monkeypatch.setattr(lc, "get_host_private_key", lambda _: key_path)
+    monkeypatch.setattr(
+        paramiko.SSHClient,
+        "connect",
+        lambda self, **kw: (_ for _ in ()).throw(OSError("network unreachable")),
+    )
+    with pytest.raises(
+        CanonicalSyncError,
+        match=r"network error reaching 'h\.example': network unreachable",
+    ):
+        lc._open_ssh({"hostname": "h.example", "key_id": "k"})
+
+
+def test_open_ssh_wraps_bad_host_key(monkeypatch, tmp_path):
+    """B7 (ATX #555 polish round 3): `BadHostKeyException` (key swap
+    on a previously-recorded host) must surface as `CanonicalSyncError`
+    flagging the MITM hazard, not silently auto-accept."""
+    import paramiko
+
+    key_path = tmp_path / "k"
+    key_path.write_text("dummy")
+    monkeypatch.setattr(lc, "get_host_private_key", lambda _: key_path)
+
+    def _connect(self, **kw):
+        # Construct minimal BadHostKeyException — paramiko's __init__
+        # takes hostname, got_key, expected_key.
+        raise paramiko.BadHostKeyException("h.example", MagicMock(), MagicMock())
+
+    monkeypatch.setattr(paramiko.SSHClient, "connect", _connect)
+    with pytest.raises(CanonicalSyncError, match=r"could be a MITM"):
+        lc._open_ssh({"hostname": "h.example", "key_id": "k"})
 
 
 def test_sync_unknown_agent_type_raises(monkeypatch):
@@ -478,12 +548,14 @@ def test_atomic_write_raises_when_sftp_write_fails():
 # ---------------------------------------------------------------------------
 
 
-def test_zeroclaw_sync_restart_false_skips_restart_and_repair(monkeypatch):
-    """When `restart=False`, neither `_restart_unit` nor
-    `_zeroclaw_repair_after_start` must be called — even on zeroclaw.
-    The AGENTS.md gateway-token-lifecycle rule binds when restart IS
-    requested; opting out means the operator accepts the stale bearer
-    trade-off documented in `clawctl agent sync --no-restart`."""
+def test_zeroclaw_sync_restart_false_still_repairs_bearer(monkeypatch):
+    """B1 (ATX #555 polish round 3): zeroclaw must always re-pair the
+    gateway bearer on sync regardless of `restart`. AGENTS.md
+    "Gateway Token Lifecycle (zeroclaw)" §437 is explicit: "There is
+    no idempotent-skip path." `restart=False` skips `_restart_unit`
+    but the bearer re-mint runs unconditionally so a remote
+    `clawctl agent chat` does not 401 indefinitely against the cached
+    `hosts.json.gateway.auth`."""
     from clawrium.core.render import (
         GatewayInputs,
         ProviderInputs,
@@ -558,9 +630,7 @@ def test_zeroclaw_sync_restart_false_skips_restart_and_repair(monkeypatch):
 
     assert result.success
     assert restart_called == []
-    assert repair_called == []
-    # W8 (ATX #555 polish round 2): event-stream assertion — `repair`
-    # stage must never be emitted when `restart=False`, even on a
-    # zeroclaw. This catches a future regression where the gate moves
-    # off `restart` without updating the event emission.
-    assert not any(stage == "repair" for stage, _ in events), events
+    # B1 round-3: re-pair MUST run even with restart=False on zeroclaw.
+    assert repair_called == [True]
+    # Event stream confirms emission too.
+    assert any(stage == "repair" for stage, _ in events), events

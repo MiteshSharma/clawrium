@@ -25,6 +25,7 @@ before any production code paths depend on it.
 from __future__ import annotations
 
 import functools as _functools
+import re
 from dataclasses import dataclass, field
 
 __all__ = [
@@ -490,12 +491,40 @@ def _systemd_quote(value: str) -> str:
     systemd performs variable substitution in double-quoted
     `Environment=` values BEFORE handing them to the process — a token
     like `ghp_$SOMETHING` would otherwise be silently corrupted to
-    `ghp_` at unit load.
+    `ghp_` at unit load. Escapes `%` → `%%` (round-3 W2) because
+    systemd also performs specifier expansion (`%h`, `%n`, `%u`, etc.)
+    in the same pass — a credential containing `%n` would otherwise be
+    silently rewritten to the unit name.
     """
     cleaned = value.replace("\x00", "").replace("\r", "").replace("\n", "")
     cleaned = cleaned.replace("\\", "\\\\").replace('"', '\\"')
-    cleaned = cleaned.replace("$", "$$")
+    cleaned = cleaned.replace("%", "%%").replace("$", "$$")
     return f'"{cleaned}"'
+
+
+# W4 (ATX #555 polish round 3): the bare `{{ agent_name }}` Jinja
+# interpolation is used by the hermes mcp_servers.command path and the
+# `# Re-render with `clawctl agent configure {{ agent_name }}`` header
+# comment present in every canonical template. Validate at the entry
+# point of every renderer (not just hermes) so a future template that
+# starts interpolating the name into a sensitive position cannot be
+# fed a malicious value via the pure-function API.
+_AGENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def _validate_agent_name(value: object) -> str:
+    """Return `value` if it matches the agent_name grammar, else raise.
+
+    Accepts `object` rather than `str` so the round-3 W6 hazard
+    (passing `None`) raises `AgentConfigError` instead of `TypeError`
+    inside the regex engine.
+    """
+    if not isinstance(value, str) or not _AGENT_NAME_RE.match(value):
+        raise AgentConfigError(
+            f"agent_name must match ^[a-z][a-z0-9_-]{{0,31}}$; got "
+            f"{value!r}"
+        )
+    return value
 
 
 def _toml_escape(value: str) -> str:
@@ -572,20 +601,7 @@ def render_hermes(inputs: RenderInputs) -> RenderedFiles:
     exactly one output line; the function does NOT conditionally emit a
     section based on whether a hosts.json field happened to be populated.
     """
-    # W3 (ATX #555 polish round 2): defense-in-depth guard. The
-    # canonical YAML template interpolates `{{ agent_name }}` into the
-    # bare path `/home/<name>/.local/bin/uvx` (mcp_servers.command),
-    # which is NOT yq-quoted. `core.lifecycle` validates agent_name
-    # upstream against the same pattern, but the pure renderer must not
-    # assume callers passed pre-validated inputs.
-    import re as _re
-
-    if not _re.match(r"^[a-z][a-z0-9_-]{0,31}$", inputs.agent_name):
-        raise AgentConfigError(
-            f"render_hermes: agent_name {inputs.agent_name!r} does not "
-            f"match `^[a-z][a-z0-9_-]{{0,31}}$`; refusing to interpolate "
-            f"into the mcp_servers.command path."
-        )
+    _validate_agent_name(inputs.agent_name)
 
     ptype = inputs.provider.type
     if ptype not in _HERMES_SUPPORTED_PROVIDERS:
@@ -759,6 +775,8 @@ def render_zeroclaw(inputs: RenderInputs) -> RenderedFiles:
     about destroys daemon-managed sections (gateway pairing state, security
     knobs, memory backends, cost.prices, hooks, etc.).
     """
+    _validate_agent_name(inputs.agent_name)
+
     ptype = inputs.provider.type
 
     if ptype not in _ZEROCLAW_PROVIDER_KINDS:
@@ -980,6 +998,7 @@ def render_openclaw(inputs: RenderInputs) -> RenderedFiles:
     `json.dumps` formatting), matching the silent-wipe-prevention contract
     introduced for zeroclaw in #565.
     """
+    _validate_agent_name(inputs.agent_name)
     ptype = inputs.provider.type
     if ptype not in _OPENCLAW_SUPPORTED_PROVIDERS:
         raise AgentConfigError(

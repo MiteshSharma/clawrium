@@ -458,18 +458,17 @@ def sync_agent_canonical(
     finally:
         client.close()
 
-    # B1 (#437): zeroclaw daemon does not persist bearer state across
-    # systemd restarts. After a restart, the cached bearer in
-    # hosts.json.gateway.auth is stale; the daemon will enforce a
-    # freshly-minted token on its next request. Re-pair unconditionally
-    # whenever sync is operating on a zeroclaw with `restart=True` —
-    # AGENTS.md's "Gateway Token Lifecycle (zeroclaw)" explicitly
-    # forbids an idempotent-skip path here. The restart block above
-    # already force-restarts zeroclaw on no-drift sync for exactly this
-    # invariant. The pair playbook is the single source of truth for
-    # the handshake — reuse `_zeroclaw_repair_after_start` rather than
-    # reimplementing.
-    if restart and inputs.agent_type == "zeroclaw":
+    # B1 (#437, ATX #555 polish round 3): zeroclaw daemon does not
+    # persist bearer state across systemd restarts. AGENTS.md "Gateway
+    # Token Lifecycle (zeroclaw)" is explicit: "clawctl agent
+    # configure, clawctl agent sync, and clawctl agent restart all
+    # mint a fresh bearer and overwrite hosts.json.gateway.auth
+    # atomically. There is no idempotent-skip path. Do not add a
+    # --no-rotate flag — branching here is the bug the original ATX
+    # Round 1 B3 code introduced." Re-pair unconditionally on every
+    # zeroclaw sync regardless of `restart`. The pair playbook is the
+    # single source of truth for the handshake.
+    if inputs.agent_type == "zeroclaw":
         from clawrium.core.lifecycle import _zeroclaw_repair_after_start
 
         emit("repair", f"re-pairing zeroclaw gateway for {agent_name}")
@@ -516,7 +515,14 @@ def sync_agent_canonical(
     # polish): emit on the `_ITE` branch too — mid-walk agents previously
     # produced a clean success line followed by an unexplained failure
     # from `start_agent`.
+    # B2 (ATX #555 polish round 3): only the InvalidTransitionError
+    # branch represents "expected, non-fatal" — the agent is mid-walk
+    # and start_agent will surface the stage. Both registry-incoherence
+    # and generic-exception branches set success=False so a CLI handler
+    # gating on `.success` does not print "✓ sync complete" while the
+    # agent is stuck in a non-READY state.
     transition_error: str | None = None
+    state_write_ok = True
     try:
         _transition(hostname, agent_key, _OS.READY)
     except _ITE as exc:
@@ -533,12 +539,14 @@ def sync_agent_canonical(
             f"clawctl agent start."
         )
         emit("sync", f"warning: {transition_error}")
+        state_write_ok = False
     except Exception as exc:
         transition_error = (
             f"could not write state=READY to hosts.json: {exc!s}. "
             f"Re-run sync to commit state."
         )
         emit("sync", f"warning: {transition_error}")
+        state_write_ok = False
 
     emit(
         "sync",
@@ -546,7 +554,7 @@ def sync_agent_canonical(
         f"{len(files_unchanged)} unchanged",
     )
     return CanonicalSyncResult(
-        success=True,
+        success=state_write_ok,
         agent=agent_name,
         host=hostname,
         files_written=tuple(files_written),
