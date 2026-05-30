@@ -868,12 +868,13 @@ def _render_zeroclaw_config_template(
 # silently produce a broken config — GCP client libs reject token
 # strings. Vertex support belongs in a follow-up that extends the
 # credential schema with a credential-kind field (path vs bearer).
-_OPENCLAW_PROVIDER_ENV = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-    "zai": "ZAI_API_KEY",
-}
+_OPENCLAW_SUPPORTED_PROVIDERS = frozenset(
+    {"openrouter", "anthropic", "openai", "bedrock", "ollama", "zai"}
+)
+_OPENCLAW_SUPPORTED_CHANNELS = frozenset({"discord", "slack"})
+_OPENCLAW_SUPPORTED_INTEGRATIONS = frozenset(
+    {"github", "atlassian", "linear", "notion", "gitlab", "git"}
+)
 _OPENCLAW_MODEL_PREFIX = {
     "openrouter": "openrouter/",
     "bedrock": "bedrock/",
@@ -881,100 +882,225 @@ _OPENCLAW_MODEL_PREFIX = {
 
 
 def render_openclaw(inputs: RenderInputs) -> RenderedFiles:
-    """Render openclaw's `.env`."""
+    """Render openclaw's `.openclaw/env` (Jinja) + `.openclaw/openclaw.json`
+    (JSON baseline deep-update).
+
+    Both files are loaded as canonical resources via `importlib.resources` so
+    the wheel ships them. Env is rendered from
+    `openclaw-env.canonical.j2`; JSON is loaded from `openclaw.json` baseline
+    and the five clawctl-managed paths are deep-updated from `inputs`:
+
+      - `channels.discord.enabled`
+      - `channels.discord.allowFrom` (from inputs.channels[discord].allowed_users)
+      - `channels.discord.guilds`    (nested reshape from allowed_guilds + allowed_channels)
+      - `gateway.port` + `gateway.bind`
+      - `agents.defaults.model.primary` (from inputs.provider.default_model + type prefix)
+
+    Every other key in the baseline is preserved byte-identically (modulo
+    `json.dumps` formatting), matching the silent-wipe-prevention contract
+    introduced for zeroclaw in #565.
+    """
     ptype = inputs.provider.type
-    env_lines: list[str] = []
-    env_lines.append(
-        f"# Managed by clawrium (clawctl). Re-render with "
-        f"`clawctl agent configure {inputs.agent_name}`."
-    )
-    if inputs.gateway is not None:
-        # Shell-quote `bind` so a CRLF-injected value can't smuggle an
-        # extra `KEY=VALUE` line into the EnvironmentFile.
-        env_lines.append(
-            f"OPENCLAW_GATEWAY_BIND={_shell_quote(inputs.gateway.bind or 'lan')}"
-        )
-        env_lines.append(f"OPENCLAW_GATEWAY_PORT={int(inputs.gateway.port or 40000)}")
-        env_lines.append(
-            f"OPENCLAW_GATEWAY_AUTH_MODE={'token' if inputs.gateway.auth else 'none'}"
-        )
-        env_lines.append(
-            f"OPENCLAW_GATEWAY_AUTH_TOKEN={_shell_quote(inputs.gateway.auth)}"
+    if ptype not in _OPENCLAW_SUPPORTED_PROVIDERS:
+        raise AgentConfigError(
+            f"render_openclaw does not support provider type {ptype!r}. "
+            f"Supported: {sorted(_OPENCLAW_SUPPORTED_PROVIDERS)}"
         )
 
+    # Up-front validation: channel + integration types, dual-discord +
+    # dual-slack guards (matches hermes/zeroclaw patterns from Phases 1+2).
+    seen_channel_types: dict[str, str] = {}
+    discord_channel: ChannelInputs | None = None
+    for channel in inputs.channels:
+        if channel.type not in _OPENCLAW_SUPPORTED_CHANNELS:
+            raise AgentConfigError(
+                f"render_openclaw: unsupported channel type {channel.type!r}. "
+                f"Supported: {sorted(_OPENCLAW_SUPPORTED_CHANNELS)}"
+            )
+        prior = seen_channel_types.get(channel.type)
+        if prior is not None:
+            raise AgentConfigError(
+                f"render_openclaw: agent {inputs.agent_name!r} has "
+                f"multiple {channel.type} channels attached "
+                f"({prior!r}, {channel.name!r}); openclaw emits one "
+                f"{channel.type.upper()}_BOT_TOKEN env var and the "
+                f"`channels.{channel.type}` block in openclaw.json holds "
+                f"one allowlist — detach one with `clawctl channel detach`."
+            )
+        seen_channel_types[channel.type] = channel.name
+        if channel.type == "discord":
+            discord_channel = channel
+
+    for integration in inputs.integrations:
+        if integration.type not in _OPENCLAW_SUPPORTED_INTEGRATIONS:
+            raise AgentConfigError(
+                f"render_openclaw: unsupported integration type "
+                f"{integration.type!r}. "
+                f"Supported: {sorted(_OPENCLAW_SUPPORTED_INTEGRATIONS)}"
+            )
+
+    # --- Build prefixed model id (used by both env + openclaw.json) -------
     model_id = inputs.provider.default_model
     prefix = _OPENCLAW_MODEL_PREFIX.get(ptype, "")
     if prefix and not model_id.startswith(prefix):
         model_id = prefix + model_id
-    env_lines.append(f"OPENCLAW_DEFAULT_MODEL={_shell_quote(model_id)}")
 
-    if ptype in _OPENCLAW_PROVIDER_ENV:
-        env_lines.append(
-            f"{_OPENCLAW_PROVIDER_ENV[ptype]}={_shell_quote(inputs.provider.api_key)}"
-        )
-    elif ptype == "bedrock":
-        env_lines.append(f"AWS_ACCESS_KEY_ID={_shell_quote(inputs.provider.aws_access_key)}")
-        env_lines.append(f"AWS_SECRET_ACCESS_KEY={_shell_quote(inputs.provider.aws_secret_key)}")
-    elif ptype == "ollama":
-        env_lines.append(f"OPENCLAW_OLLAMA_URL={_shell_quote(inputs.provider.endpoint)}")
-    else:
-        raise AgentConfigError(
-            f"render_openclaw does not support provider type {ptype!r}. "
-            f"Supported: {sorted(_OPENCLAW_PROVIDER_ENV) + ['bedrock', 'ollama']}"
-        )
-
-    for channel in inputs.channels:
-        if channel.type == "discord":
-            env_lines.append(f"DISCORD_BOT_TOKEN={_shell_quote(channel.bot_token)}")
-        elif channel.type == "slack":
-            env_lines.append(f"SLACK_BOT_TOKEN={_shell_quote(channel.bot_token)}")
-            env_lines.append(f"SLACK_APP_TOKEN={_shell_quote(channel.app_token)}")
-        else:
-            raise AgentConfigError(
-                f"render_openclaw: unsupported channel type {channel.type!r}"
-            )
-
+    # --- Integration views for the env template ---------------------------
+    integration_views: list[dict] = []
     last_github_token = ""
     for integration in inputs.integrations:
+        if integration.type == "git":
+            # `git` is a clientside-only identity integration; no env var.
+            continue
         creds = dict(integration.credentials)
+        view: dict = {"type": integration.type}
         if integration.type == "github":
-            token = creds.get("GITHUB_TOKEN", "")
             slug = _integration_slug(integration.name)
-            env_lines.append(f"GITHUB_TOKEN_{slug}={_shell_quote(token)}")
+            token = creds.get("GITHUB_TOKEN", "")
+            view["slug"] = slug
+            view["token"] = token
             last_github_token = token
         elif integration.type == "gitlab":
-            env_lines.append(f"GITLAB_TOKEN={_shell_quote(creds.get('GITLAB_TOKEN', ''))}")
-            if "GITLAB_URL" in creds:
-                env_lines.append(f"GITLAB_URL={_shell_quote(creds['GITLAB_URL'])}")
+            view["gitlab_token"] = creds.get("GITLAB_TOKEN", "")
+            view["has_gitlab_url"] = "GITLAB_URL" in creds
+            view["gitlab_url"] = creds.get("GITLAB_URL", "")
         elif integration.type == "atlassian":
             url = creds.get("ATLASSIAN_URL", "").rstrip("/")
-            email = creds.get("ATLASSIAN_EMAIL", "")
-            token = creds.get("ATLASSIAN_API_TOKEN", "")
-            env_lines.append(f"JIRA_URL={_shell_quote(url)}")
-            env_lines.append(f"CONFLUENCE_URL={_shell_quote(url + '/wiki')}")
-            env_lines.append(f"JIRA_EMAIL={_shell_quote(email)}")
-            env_lines.append(f"CONFLUENCE_EMAIL={_shell_quote(email)}")
-            env_lines.append(f"JIRA_API_TOKEN={_shell_quote(token)}")
-            env_lines.append(f"CONFLUENCE_API_TOKEN={_shell_quote(token)}")
+            view["atlassian_url"] = url
+            view["confluence_url"] = url + "/wiki"
+            view["atlassian_email"] = creds.get("ATLASSIAN_EMAIL", "")
+            view["atlassian_api_token"] = creds.get("ATLASSIAN_API_TOKEN", "")
         elif integration.type == "linear":
-            env_lines.append(
-                f"LINEAR_API_KEY={_shell_quote(creds.get('LINEAR_API_KEY', ''))}"
-            )
+            view["linear_api_key"] = creds.get("LINEAR_API_KEY", "")
         elif integration.type == "notion":
-            env_lines.append(
-                f"NOTION_API_KEY={_shell_quote(creds.get('NOTION_API_KEY', ''))}"
-            )
-        elif integration.type == "git":
-            continue
-        else:
-            raise AgentConfigError(
-                f"render_openclaw: unsupported integration type {integration.type!r}"
-            )
-    if last_github_token:
-        env_lines.append(f"GITHUB_TOKEN={_shell_quote(last_github_token)}")
+            view["notion_api_key"] = creds.get("NOTION_API_KEY", "")
+        integration_views.append(view)
 
-    env_body = "\n".join(env_lines) + "\n"
-    # Path is `.openclaw/env` (no leading dot on the filename) to match
-    # the configure playbook's lineinfile target. A dot-prefixed name
-    # would silently render to a file the playbook never reads.
-    return RenderedFiles(files={".openclaw/env": env_body})
+    env_body = _render_openclaw_template(
+        "openclaw-env.canonical.j2",
+        agent_name=inputs.agent_name,
+        provider=inputs.provider,
+        gateway=inputs.gateway,
+        default_model_id=model_id,
+        channels=inputs.channels,
+        integrations=integration_views,
+        last_github_token=last_github_token,
+    )
+
+    # --- openclaw.json: load baseline + deep-update managed paths ---------
+    json_body = _render_openclaw_json(
+        provider_default_model=model_id,
+        gateway=inputs.gateway,
+        discord_channel=discord_channel,
+    )
+
+    return RenderedFiles(
+        files={
+            ".openclaw/env": env_body,
+            ".openclaw/openclaw.json": json_body,
+        }
+    )
+
+
+@_functools.lru_cache(maxsize=4)
+def _openclaw_template(template_name: str):
+    """Load + compile an openclaw canonical template once per process."""
+    from importlib.resources import files
+
+    from jinja2 import Environment, StrictUndefined
+
+    template_path = files(
+        "clawrium.platform.registry.openclaw.templates"
+    ).joinpath(template_name)
+    template_source = template_path.read_text(encoding="utf-8")
+
+    env = Environment(
+        undefined=StrictUndefined,
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+        autoescape=False,
+    )
+    env.filters["shq"] = lambda v: _shell_quote(str(v))
+    return env.from_string(template_source)
+
+
+def _render_openclaw_template(template_name: str, **context) -> str:
+    """Render an openclaw canonical template via importlib.resources."""
+    return _openclaw_template(template_name).render(**context)
+
+
+@_functools.lru_cache(maxsize=1)
+def _openclaw_json_baseline() -> str:
+    """Load the openclaw.json baseline text once per process.
+
+    Returns the raw text; `_render_openclaw_json` re-parses on every call so
+    deep-updates don't mutate the shared baseline dict.
+    """
+    from importlib.resources import files
+
+    return (
+        files("clawrium.platform.registry.openclaw.templates")
+        .joinpath("openclaw.json")
+        .read_text(encoding="utf-8")
+    )
+
+
+def _render_openclaw_json(
+    *,
+    provider_default_model: str,
+    gateway: "GatewayInputs | None",
+    discord_channel: "ChannelInputs | None",
+) -> str:
+    """Deep-update the openclaw.json baseline with the 5 clawctl-managed paths.
+
+    Every other key in the baseline is preserved byte-for-byte (modulo
+    json.dumps formatting). Output uses `indent=2, sort_keys=False` to keep
+    section order stable for diffability.
+    """
+    import json
+
+    baseline = json.loads(_openclaw_json_baseline())
+
+    # 1. agents.defaults.model.primary
+    agents = baseline.setdefault("agents", {})
+    defaults = agents.setdefault("defaults", {})
+    model = defaults.setdefault("model", {})
+    model["primary"] = provider_default_model
+
+    # 2. gateway.port + 3. gateway.bind
+    if gateway is not None:
+        gw = baseline.setdefault("gateway", {})
+        gw["port"] = int(gateway.port or 18789)
+        gw["bind"] = gateway.bind or "lan"
+
+    # 4. channels.discord.enabled + 5. channels.discord.allowFrom + guilds.
+    channels = baseline.setdefault("channels", {})
+    discord = channels.setdefault(
+        "discord", {"enabled": False, "allowFrom": [], "guilds": {}}
+    )
+    if discord_channel is not None:
+        discord["enabled"] = True
+        discord["allowFrom"] = list(discord_channel.allowed_users)
+        # Reshape flat allowed_guilds[] + allowed_channels[] into the
+        # nested {<guild>: {users: [...], channels: {<chan>: {allow: true}}}}
+        # structure openclaw's daemon expects.
+        guilds_block: dict = {}
+        for guild_id in discord_channel.allowed_guilds:
+            guilds_block[guild_id] = {
+                "users": list(discord_channel.allowed_users),
+                "channels": {
+                    chan_id: {"allow": True}
+                    for chan_id in discord_channel.allowed_channels
+                },
+            }
+        discord["guilds"] = guilds_block
+    else:
+        # No discord channel attached → leave defaults (`enabled: false`,
+        # empty allowFrom, empty guilds). Baseline already has this shape;
+        # explicit reset prevents stale values surviving across renders.
+        discord["enabled"] = False
+        discord["allowFrom"] = []
+        discord["guilds"] = {}
+
+    return json.dumps(baseline, indent=2, sort_keys=False) + "\n"

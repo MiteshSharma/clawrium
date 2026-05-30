@@ -822,7 +822,7 @@ def test_openclaw_file_keys_are_exact_set():
         gateway=GatewayInputs(host="0.0.0.0", port=40000, auth="tk", bind="lan"),
     )
     out = render_openclaw(inputs)
-    assert set(out.files.keys()) == {".openclaw/env"}
+    assert set(out.files.keys()) == {".openclaw/env", ".openclaw/openclaw.json"}
 
 
 def test_yaml_quote_strips_nul_and_cr():
@@ -1698,3 +1698,284 @@ def test_hermes_discord_allow_all_users_byte_lock_atx_r4_w6():
     )
     env_default = render_hermes(inputs_default).files[".hermes/.env"]
     assert "DISCORD_ALLOW_ALL_USERS" not in env_default
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 (#560): Jinja-template regression locks for render_openclaw.
+#
+# Byte-for-byte expected outputs captured from the prior list-of-strings
+# implementation. Any drift in the new Jinja + json.loads/deep-update flow
+# MUST be intentional and surface here as a test failure with a clear diff.
+# ---------------------------------------------------------------------------
+
+
+def _openclaw_inputs(*, ptype: str) -> RenderInputs:
+    base = _baseline_inputs(ptype=ptype)
+    return RenderInputs(
+        agent_name=base.agent_name,
+        agent_type="openclaw",
+        provider=base.provider,
+        channels=base.channels,
+        integrations=base.integrations,
+        api_server=base.api_server,
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, auth="tkn", bind="lan"),
+    )
+
+
+_OPENCLAW_ENV_OPENROUTER = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENCLAW_GATEWAY_BIND='lan'\n"
+    "OPENCLAW_GATEWAY_PORT=40000\n"
+    "OPENCLAW_GATEWAY_AUTH_MODE=token\n"
+    "OPENCLAW_GATEWAY_AUTH_TOKEN='tkn'\n"
+    "OPENCLAW_DEFAULT_MODEL='openrouter/anthropic/claude-opus-4.7'\n"
+    "OPENROUTER_API_KEY='sk-or-1'\n"
+    "DISCORD_BOT_TOKEN='discord-bot'\n"
+    "GITHUB_TOKEN_GH_A='ghp_a'\n"
+    "GITHUB_TOKEN='ghp_a'\n"
+)
+
+_OPENCLAW_ENV_ANTHROPIC = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENCLAW_GATEWAY_BIND='lan'\n"
+    "OPENCLAW_GATEWAY_PORT=40000\n"
+    "OPENCLAW_GATEWAY_AUTH_MODE=token\n"
+    "OPENCLAW_GATEWAY_AUTH_TOKEN='tkn'\n"
+    "OPENCLAW_DEFAULT_MODEL='claude-opus-4-7'\n"
+    "ANTHROPIC_API_KEY='sk-ant-1'\n"
+    "DISCORD_BOT_TOKEN='discord-bot'\n"
+    "GITHUB_TOKEN_GH_A='ghp_a'\n"
+    "GITHUB_TOKEN='ghp_a'\n"
+)
+
+_OPENCLAW_ENV_OPENAI = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENCLAW_GATEWAY_BIND='lan'\n"
+    "OPENCLAW_GATEWAY_PORT=40000\n"
+    "OPENCLAW_GATEWAY_AUTH_MODE=token\n"
+    "OPENCLAW_GATEWAY_AUTH_TOKEN='tkn'\n"
+    "OPENCLAW_DEFAULT_MODEL='gpt-5'\n"
+    "OPENAI_API_KEY='sk-oa-1'\n"
+    "DISCORD_BOT_TOKEN='discord-bot'\n"
+    "GITHUB_TOKEN_GH_A='ghp_a'\n"
+    "GITHUB_TOKEN='ghp_a'\n"
+)
+
+_OPENCLAW_ENV_BEDROCK = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENCLAW_GATEWAY_BIND='lan'\n"
+    "OPENCLAW_GATEWAY_PORT=40000\n"
+    "OPENCLAW_GATEWAY_AUTH_MODE=token\n"
+    "OPENCLAW_GATEWAY_AUTH_TOKEN='tkn'\n"
+    "OPENCLAW_DEFAULT_MODEL='bedrock/anthropic.claude-opus-4-1-v1:0'\n"
+    "AWS_ACCESS_KEY_ID='AKIA-1'\n"
+    "AWS_SECRET_ACCESS_KEY='secret-1'\n"
+    "DISCORD_BOT_TOKEN='discord-bot'\n"
+    "GITHUB_TOKEN_GH_A='ghp_a'\n"
+    "GITHUB_TOKEN='ghp_a'\n"
+)
+
+_OPENCLAW_ENV_OLLAMA = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENCLAW_GATEWAY_BIND='lan'\n"
+    "OPENCLAW_GATEWAY_PORT=40000\n"
+    "OPENCLAW_GATEWAY_AUTH_MODE=token\n"
+    "OPENCLAW_GATEWAY_AUTH_TOKEN='tkn'\n"
+    "OPENCLAW_DEFAULT_MODEL='llama3'\n"
+    "OPENCLAW_OLLAMA_URL='http://10.0.0.5:11434'\n"
+    "DISCORD_BOT_TOKEN='discord-bot'\n"
+    "GITHUB_TOKEN_GH_A='ghp_a'\n"
+    "GITHUB_TOKEN='ghp_a'\n"
+)
+
+_OPENCLAW_ENV_ZAI = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENCLAW_GATEWAY_BIND='lan'\n"
+    "OPENCLAW_GATEWAY_PORT=40000\n"
+    "OPENCLAW_GATEWAY_AUTH_MODE=token\n"
+    "OPENCLAW_GATEWAY_AUTH_TOKEN='tkn'\n"
+    "OPENCLAW_DEFAULT_MODEL='glm-4.5'\n"
+    "ZAI_API_KEY='sk-zai-1'\n"
+    "DISCORD_BOT_TOKEN='discord-bot'\n"
+    "GITHUB_TOKEN_GH_A='ghp_a'\n"
+    "GITHUB_TOKEN='ghp_a'\n"
+)
+
+
+@pytest.mark.parametrize(
+    "ptype,expected",
+    [
+        ("openrouter", _OPENCLAW_ENV_OPENROUTER),
+        ("anthropic", _OPENCLAW_ENV_ANTHROPIC),
+        ("openai", _OPENCLAW_ENV_OPENAI),
+        ("bedrock", _OPENCLAW_ENV_BEDROCK),
+        ("ollama", _OPENCLAW_ENV_OLLAMA),
+        ("zai", _OPENCLAW_ENV_ZAI),
+    ],
+)
+def test_openclaw_env_byte_lock(ptype, expected):
+    """Phase 3: byte-equivalence lock for `.openclaw/env` across all 6
+    supported provider types. Any drift in the Jinja template must be
+    intentional and surface here with a clear diff."""
+    out = render_openclaw(_openclaw_inputs(ptype=ptype))
+    assert out.files[".openclaw/env"] == expected
+
+
+def test_openclaw_json_managed_paths_populated():
+    """Phase 3: assert all 5 clawctl-managed paths in openclaw.json are
+    deep-updated from inputs."""
+    import json
+
+    base = _baseline_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type="openclaw",
+        provider=base.provider,
+        channels=(
+            ChannelInputs(
+                name="discord-a",
+                type="discord",
+                bot_token="dt",
+                allowed_users=("u1", "u2"),
+                allowed_guilds=("g1",),
+                allowed_channels=("c1", "c2"),
+            ),
+        ),
+        integrations=(),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, auth="tkn", bind="lan"),
+    )
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+
+    # 1. agents.defaults.model.primary (openrouter prefix applied)
+    assert (
+        blob["agents"]["defaults"]["model"]["primary"]
+        == "openrouter/anthropic/claude-opus-4.7"
+    )
+    # 2. gateway.port
+    assert blob["gateway"]["port"] == 40000
+    # 3. gateway.bind
+    assert blob["gateway"]["bind"] == "lan"
+    # 4. channels.discord.enabled + allowFrom
+    assert blob["channels"]["discord"]["enabled"] is True
+    assert blob["channels"]["discord"]["allowFrom"] == ["u1", "u2"]
+    # 5. channels.discord.guilds — nested reshape
+    assert blob["channels"]["discord"]["guilds"] == {
+        "g1": {
+            "users": ["u1", "u2"],
+            "channels": {
+                "c1": {"allow": True},
+                "c2": {"allow": True},
+            },
+        }
+    }
+
+
+def test_openclaw_json_daemon_sections_preserved():
+    """Phase 3: assert previously-unmanaged daemon sections survive the
+    render byte-identical (mirrors what #565 added for zeroclaw).
+
+    Sections asserted:
+      - env.shellEnv          (shellEnv enabled + timeoutMs)
+      - tools.exec            (host, security, ask)
+      - session.*             (dmScope, threadBindings, reset)
+      - agents.defaults.heartbeat
+      - browser               (enabled: false at minimum)
+    """
+    import json
+
+    inputs = _openclaw_inputs(ptype="openrouter")
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+
+    # env.shellEnv
+    assert blob["env"]["shellEnv"]["enabled"] is True
+    assert blob["env"]["shellEnv"]["timeoutMs"] == 15000
+
+    # tools.exec
+    assert blob["tools"]["exec"] == {
+        "host": "gateway",
+        "security": "full",
+        "ask": "off",
+    }
+
+    # session blocks
+    assert blob["session"]["dmScope"] == "per-channel-peer"
+    assert blob["session"]["threadBindings"] == {
+        "enabled": True,
+        "idleHours": 24,
+        "maxAgeHours": 168,
+    }
+    assert blob["session"]["reset"] == {
+        "mode": "daily",
+        "atHour": 4,
+        "idleMinutes": 120,
+    }
+
+    # agents.defaults.heartbeat
+    assert blob["agents"]["defaults"]["heartbeat"] == {
+        "every": "30m",
+        "target": "last",
+    }
+
+    # browser presence (enabled: false)
+    assert blob["browser"]["enabled"] is False
+
+
+def test_openclaw_dual_discord_channels_raises():
+    """Phase 3: two attached discord channels must raise — openclaw renders
+    one DISCORD_BOT_TOKEN env var and one channels.discord allowlist."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(
+            name="or", type="openrouter", default_model="m", api_key="sk-1"
+        ),
+        channels=(
+            ChannelInputs(name="d1", type="discord", bot_token="t1"),
+            ChannelInputs(name="d2", type="discord", bot_token="t2"),
+        ),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, bind="lan"),
+    )
+    with pytest.raises(AgentConfigError, match="multiple discord channels"):
+        render_openclaw(inputs)
+
+
+def test_openclaw_dual_slack_channels_raises():
+    """Phase 3: two attached slack channels must raise — same shape as
+    dual-discord guard."""
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(
+            name="or", type="openrouter", default_model="m", api_key="sk-1"
+        ),
+        channels=(
+            ChannelInputs(name="s1", type="slack", bot_token="b1", app_token="a1"),
+            ChannelInputs(name="s2", type="slack", bot_token="b2", app_token="a2"),
+        ),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, bind="lan"),
+    )
+    with pytest.raises(AgentConfigError, match="multiple slack channels"):
+        render_openclaw(inputs)
+
+
+def test_openclaw_json_no_discord_attached_emits_empty_block():
+    """Phase 3: with no discord channel attached, channels.discord must
+    have enabled=false + empty allowFrom + empty guilds."""
+    import json
+
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="openclaw",
+        provider=ProviderInputs(
+            name="or", type="openrouter", default_model="m", api_key="sk-1"
+        ),
+        channels=(),
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, bind="lan"),
+    )
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+    assert blob["channels"]["discord"]["enabled"] is False
+    assert blob["channels"]["discord"]["allowFrom"] == []
+    assert blob["channels"]["discord"]["guilds"] == {}
