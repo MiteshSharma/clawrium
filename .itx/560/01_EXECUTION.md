@@ -213,3 +213,54 @@ failures unchanged (pre-existing — Phases 1+2 carry the same baseline).
 **PR URL**: https://github.com/ric03uec/clawrium/pull/568 (stacked on
 PR #567 / Phase 2, which is merged into the base branch
 `issue-560-p1-drop-canonical-flag`).
+
+### Phase 3 — Round 3 Follow-up (user-requested "fix blockers")
+
+**Stage**: phase-3-execute-round-3-followup
+**Skill**: /itx:execute (continuation)
+**Timestamp**: 2026-05-29T20:45:00Z
+**Model**: claude-opus-4-7
+
+```prompt
+fix blockers
+```
+
+**Output**: commit `5e0a3ca` addresses the Round 3 ATX blockers that
+had been previously deferred as out-of-scope. The user's explicit
+"fix blockers" instruction reclassified them as in-scope:
+
+- B2 (synthesized baseline schema provenance): expanded
+  `_openclaw_json_baseline` docstring documenting the legacy
+  `openclaw.json.j2` as the schema source of truth, every key path
+  flowing through the baseline, and explicitly anchoring Phase 4's
+  wolf-i live dry-run as the schema verification step.
+- B3 (rich-markup injection in `sync.py`): wrapped `agent_label`
+  interpolation with `rich.markup.escape`. Regression test
+  `test_sync_gateway_token_rotated_escapes_rich_markup_in_agent_key`
+  added against a hostile `[/yellow][bold red]INJECTED[/bold red]`
+  payload.
+- B4 (conditional re-pair violates #437): dropped `files_written`
+  qualifier from both the restart gate (now zeroclaw force-restarts
+  on no-drift) and the re-pair gate (now zeroclaw re-pairs
+  unconditionally on every `restart=True` sync). Honors AGENTS.md
+  §Gateway Token Lifecycle "no idempotent-skip path" invariant.
+  Regression test `test_canonical_sync_repairs_zeroclaw_even_with_no_drift`
+  added.
+- W1 (stale sync.py docstring): corrected to describe current re-pair
+  behavior rather than the pre-#566 gap.
+
+### Round 4 ATX (post-fix)
+
+ATX Round 4 ran but the reviewer ran against the wrong worktree
+(`clawrium-issue-560-p2`, Phase 2 branch) rather than this PR's
+`clawrium-issue-560-p3` worktree. Round 4 findings cross-reference
+against the Phase 2 diff, not Phase 3 — the round-3 in-scope fixes in
+commit `5e0a3ca` were not visible to that reviewer. PR comment
+explaining the confusion + status table:
+https://github.com/ric03uec/clawrium/pull/568#issuecomment-4581542372
+
+**Final state**: 5 commits on PR #568. All in-scope blockers across
+rounds 1-3 addressed with regression tests. 3624 tests pass (+23 net
+new); 45 baseline `tests/test_configure_zeroclaw.py` failures
+unchanged. `make lint` clean. PR ready for human review and Phase 4
+wolf-i live verify.
