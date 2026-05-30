@@ -10,24 +10,29 @@ export function useAgent(key: string) {
   });
 }
 
-export const WEB_UI_AGENT_TYPES = new Set(["hermes", "zeroclaw"]);
-
 // Agent types whose dashboard SPA requires an in-browser pairing
 // handshake. Keep in sync with `_PAIRING_AGENT_TYPES` in
 // `src/clawrium/gui/routes/fleet.py`. Today only zeroclaw — hermes
 // serves its dashboard without an in-process pairing step.
 export const PAIRING_AGENT_TYPES = new Set(["zeroclaw"]);
 
-export function useAgentWebUI(key: string, agentType: string, status: string) {
+// B2 (#560 / #567): the agent-type allowlist that used to live here
+// (`WEB_UI_AGENT_TYPES`) was a client-side duplicate of the backend
+// manifest resolver in `src/clawrium/core/web_ui.py:resolve`. Adding
+// `features.web_ui` to a new agent's manifest had to also touch this
+// file to make the button render — exactly the "single gate" violation
+// AGENTS.md explicitly forbids. The hook now always fetches the
+// backend `/web-ui` endpoint and the caller renders the button based
+// on `data.available`. The backend returns `available: false` with a
+// human-readable `reason` for any agent type whose manifest does not
+// declare `features.web_ui`, so the network cost is one cheap GET per
+// detail-page view (results are tanstack-cached and the response is
+// memoized by `query.state.data?.available` for refetch).
+export function useAgentWebUI(key: string, status: string) {
   return useQuery({
     queryKey: ["agent-web-ui", key, status],
     queryFn: () => api.getAgentWebUI(key),
-    // Allowlist of agent types whose manifest declares `features.web_ui`.
-    // Other types return available=false from the backend, but we skip the
-    // fetch to avoid a useless round-trip per detail page view. Keep this
-    // in sync with the agent manifests under
-    // src/clawrium/platform/registry/<type>/manifest.yaml.
-    enabled: !!key && WEB_UI_AGENT_TYPES.has(agentType),
+    enabled: !!key,
     // Retry an unavailable tunnel every 30s so a transient failure clears
     // itself once the host is reachable again. We stop retrying as soon as
     // the tunnel is up to keep the reaper map quiet.
