@@ -2779,6 +2779,113 @@ class TestSyncAgent:
         assert result["error"] is not None
         assert "registry record missing" in result["error"]
 
+    def test_sync_invalid_transition_stays_success_true(self):
+        """W2 (ATX #555 polish round 5): `InvalidTransitionError` from
+        the post-configure READY transition is the ONLY exception
+        branch that must stay `success=True` — the agent is mid-walk
+        (PROVIDERS/IDENTITY/CHANNELS), configure_agent already
+        succeeded, and `clawctl agent start` will surface the actual
+        stage. Pin this contract so a future refactor that
+        accidentally lumps `_ITE_post` into the `success=False` branch
+        is caught by CI."""
+        from clawrium.core.onboarding import InvalidTransitionError
+
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "opc-work": {
+                    "type": "openclaw",
+                    "onboarding": {"state": "ready"},
+                    "config": {
+                        "gateway": {"port": 40000},
+                        "provider": {
+                            "name": "test",
+                            "type": "ollama",
+                            "endpoint": "http://localhost:11434",
+                            "default_model": "llama3",
+                        },
+                    },
+                }
+            },
+        }
+
+        events: list = []
+
+        def on_event(stage, message):
+            events.append((stage, message))
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.configure_agent",
+                return_value=(True, None),
+            ):
+                with patch(
+                    "clawrium.core.onboarding.transition_state",
+                    side_effect=InvalidTransitionError("stuck in PROVIDERS"),
+                ):
+                    result = sync_agent(
+                        "192.168.1.100", "openclaw", on_event=on_event
+                    )
+
+        assert result["success"] is True
+        assert result["error"] is None
+        # W1 round-5: a `note:` line emitted on the mid-walk branch so
+        # the CLI can surface why state didn't advance to READY.
+        assert any(
+            "skipped state=READY" in msg
+            and "PROVIDERS" in msg
+            for _, msg in events
+        ), events
+
+    def test_sync_agent_not_found_surfaces_success_false(self):
+        """W3 (ATX #555 polish round 5): companion to
+        `test_sync_registry_incoherence_surfaces_success_false` —
+        `AgentNotFoundError` shares the except tuple with
+        `OnboardingNotFoundError`. Both must surface as
+        `success=False` + populated `error`."""
+        from clawrium.core.onboarding import AgentNotFoundError
+
+        host = {
+            "hostname": "192.168.1.100",
+            "key_id": "test",
+            "agent_name": "xclm",
+            "port": 22,
+            "agents": {
+                "opc-work": {
+                    "type": "openclaw",
+                    "onboarding": {"state": "ready"},
+                    "config": {
+                        "gateway": {"port": 40000},
+                        "provider": {
+                            "name": "test",
+                            "type": "ollama",
+                            "endpoint": "http://localhost:11434",
+                            "default_model": "llama3",
+                        },
+                    },
+                }
+            },
+        }
+
+        with patch("clawrium.core.lifecycle.get_host", return_value=host):
+            with patch(
+                "clawrium.core.lifecycle.configure_agent",
+                return_value=(True, None),
+            ):
+                with patch(
+                    "clawrium.core.onboarding.transition_state",
+                    side_effect=AgentNotFoundError("agent vanished"),
+                ):
+                    result = sync_agent("192.168.1.100", "openclaw")
+
+        assert result["success"] is False
+        assert result["error"] is not None
+        assert "registry record missing" in result["error"]
+        assert "agent vanished" in result["error"]
+
     def test_sync_state_write_io_failure_surfaces_success_false(self):
         """B-NEW-2 (ATX #555 polish round 4): IO/permission failures
         on the READY transition must also surface `success=False` —

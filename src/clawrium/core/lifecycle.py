@@ -1410,13 +1410,21 @@ def sync_agent(
     state_write_err: str | None = None
     try:
         _transition_post(hostname, agent_key, _OS_post.READY)
-    except _ITE_post:
+    except _ITE_post as exc:
         # Stuck mid-walk at PROVIDERS/IDENTITY/CHANNELS, or idempotent
         # READY→READY. No recovery via re-sync; agent is configured
-        # remotely, only the local state pointer is stale. Silent is
-        # correct — start_agent will surface the non-READY state.
-        # ATX iter-3 W-NEW-1.
-        pass
+        # remotely, only the local state pointer is stale. Don't fail
+        # the sync (configure_agent already succeeded) but emit so the
+        # CLI does not print "✓ sync complete" without context — next
+        # `clawctl agent start` will otherwise fail with no breadcrumb.
+        # W1 (ATX #555 polish round 5) mirrors
+        # lifecycle_canonical.py's _ITE branch.
+        emit(
+            "sync",
+            f"note: skipped state=READY transition for {agent_key} "
+            f"(agent is mid-walk: {exc!s}). `clawctl agent start` will "
+            f"surface the current onboarding stage.",
+        )
     except (_ANF_post, _ONF_post) as exc:
         # Registry incoherence: the agent or onboarding record vanished
         # between configure_agent succeeding and the READY write. No
