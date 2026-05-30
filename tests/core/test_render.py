@@ -2731,3 +2731,276 @@ def test_openclaw_json_no_auth_omits_gateway_auth_block():
     body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
     blob = json.loads(body)
     assert "auth" not in blob["gateway"]
+
+
+# ---------------------------------------------------------------------------
+# #582: HERMES_API_SERVER_KEY must be hydrated from secrets.json
+#
+# install.py writes the api_server shape (enabled/host/port) into hosts.json
+# but NOT the bearer — the key lives in secrets.json under the canonical
+# instance key. The legacy configure_agent path hydrates it at
+# lifecycle.py:1695; the canonical render path must do the same or every
+# `agent sync` writes API_SERVER_KEY='' and hermes refuses to bind a
+# wildcard interface.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def hermes_secret_stores(stores, monkeypatch):
+    """Adds in-memory fakes for the secrets-store hooks the render path
+    reaches into to hydrate HERMES_API_SERVER_KEY. Returns the existing
+    `stores` bundle with an extra `.instance_secrets` dict attached."""
+    instance_secrets: dict[str, dict[str, dict]] = {}
+
+    def _get_instance_key(host: str, claw_type: str, claw_name: str) -> str:
+        return f"{host}:{claw_type}:{claw_name}"
+
+    def _get_instance_secrets(instance_key: str):
+        return dict(instance_secrets.get(instance_key, {}))
+
+    monkeypatch.setattr(
+        "clawrium.core.secrets.get_instance_key", _get_instance_key
+    )
+    monkeypatch.setattr(
+        "clawrium.core.secrets.get_instance_secrets", _get_instance_secrets
+    )
+
+    stores.instance_secrets = instance_secrets  # type: ignore[attr-defined]
+    return stores
+
+
+def _hermes_agent_with_api_server(
+    *,
+    api_server: dict | None,
+    host_key_id: str | None = "host-1",
+    agent_name: str = "alpha",
+):
+    """Build a (host_record, agent_type, agent_record) triple matching
+    the post-install shape: hermes agent with an openrouter primary
+    attachment and a non-sensitive api_server block in hosts.json.
+
+    `api_server` is the dict written under `config.api_server`. Pass
+    `None` to omit the block entirely.
+    """
+    host = {"hostname": "host-1"}
+    if host_key_id is not None:
+        host["key_id"] = host_key_id
+    cfg: dict = {}
+    if api_server is not None:
+        cfg["api_server"] = api_server
+    return (
+        host,
+        "hermes",
+        {
+            "agent_name": agent_name,
+            "providers": [{"name": "or", "role": "primary", "model": ""}],
+            "config": cfg,
+        },
+    )
+
+
+def _seed_openrouter_provider(stores):
+    stores.providers["or"] = {
+        "name": "or",
+        "type": "openrouter",
+        "default_model": "anthropic/claude-opus-4.7",
+    }
+    stores.provider_api_keys["or"] = "sk-or-1"
+
+
+VALID_HEX_KEY = "a" * 64  # 64-char lowercase hex — matches _is_valid_hermes_api_server_key
+
+
+def test_hermes_api_server_key_hydrated_from_secrets_when_missing_in_hosts_json(
+    hermes_secret_stores,
+):
+    """#582 fix: hosts.json carries only the shape (enabled/host/port),
+    secrets.json carries the bearer. The canonical render must hydrate
+    the bearer from secrets.json keyed by `host_key_id:hermes:agent_name`
+    so that every sync renders a non-empty API_SERVER_KEY."""
+    stores = hermes_secret_stores
+    stores.agent = _hermes_agent_with_api_server(
+        api_server={"enabled": True, "host": "0.0.0.0", "port": 8642},
+    )
+    _seed_openrouter_provider(stores)
+    stores.instance_secrets["host-1:hermes:alpha"] = {
+        "HERMES_API_SERVER_KEY": {"value": VALID_HEX_KEY}
+    }
+
+    inputs = build_render_inputs("alpha")
+
+    assert inputs.api_server is not None
+    assert inputs.api_server.key == VALID_HEX_KEY
+    assert inputs.api_server.host == "0.0.0.0"
+    assert inputs.api_server.port == 8642
+
+
+def test_hermes_api_server_key_inline_in_hosts_json_wins_over_secrets(
+    hermes_secret_stores,
+):
+    """Backwards compat with pre-#318 hermes entries that persisted the
+    bearer inline in hosts.json (e.g. legacy `espresso`). If the blob
+    already carries a key, the render path uses it verbatim and does
+    NOT clobber it with whatever happens to be in secrets.json."""
+    stores = hermes_secret_stores
+    inline = "b" * 64
+    stores.agent = _hermes_agent_with_api_server(
+        api_server={
+            "enabled": True,
+            "host": "0.0.0.0",
+            "port": 8642,
+            "key": inline,
+        },
+    )
+    _seed_openrouter_provider(stores)
+    # A different secret in secrets.json — must NOT be picked up because
+    # the inline value already satisfied the hydration check.
+    stores.instance_secrets["host-1:hermes:alpha"] = {
+        "HERMES_API_SERVER_KEY": {"value": "c" * 64}
+    }
+
+    inputs = build_render_inputs("alpha")
+
+    assert inputs.api_server is not None
+    assert inputs.api_server.key == inline
+
+
+def test_hermes_api_server_key_uses_hostname_when_key_id_absent(
+    hermes_secret_stores,
+):
+    """Pre-#448 host records did not carry `key_id`. The instance-key
+    lookup must fall back to `hostname` so legacy hosts still get their
+    bearer hydrated."""
+    stores = hermes_secret_stores
+    stores.agent = _hermes_agent_with_api_server(
+        api_server={"enabled": True, "host": "0.0.0.0", "port": 8642},
+        host_key_id=None,  # legacy: no key_id field
+    )
+    _seed_openrouter_provider(stores)
+    stores.instance_secrets["host-1:hermes:alpha"] = {
+        "HERMES_API_SERVER_KEY": {"value": VALID_HEX_KEY}
+    }
+
+    inputs = build_render_inputs("alpha")
+
+    assert inputs.api_server is not None
+    assert inputs.api_server.key == VALID_HEX_KEY
+
+
+def test_hermes_api_server_key_invalid_secret_falls_through_to_empty(
+    hermes_secret_stores,
+):
+    """Defensive: if secrets.json was hand-edited to a malformed value
+    (not 64-char lowercase hex), the validator rejects it and the render
+    emits an empty key rather than silently shipping garbage into the
+    EnvironmentFile. The configure_agent path will surface the error to
+    the operator; render's job is to not propagate a bad bearer."""
+    stores = hermes_secret_stores
+    stores.agent = _hermes_agent_with_api_server(
+        api_server={"enabled": True, "host": "0.0.0.0", "port": 8642},
+    )
+    _seed_openrouter_provider(stores)
+    stores.instance_secrets["host-1:hermes:alpha"] = {
+        "HERMES_API_SERVER_KEY": {"value": "not-hex-and-too-short"}
+    }
+
+    inputs = build_render_inputs("alpha")
+
+    assert inputs.api_server is not None
+    assert inputs.api_server.key == ""
+
+
+def test_hermes_api_server_key_missing_secret_falls_through_to_empty(
+    hermes_secret_stores,
+):
+    """Defensive: no entry in secrets.json at all — render returns
+    empty rather than crashing. configure_agent surfaces the real
+    error; render stays pure."""
+    stores = hermes_secret_stores
+    stores.agent = _hermes_agent_with_api_server(
+        api_server={"enabled": True, "host": "0.0.0.0", "port": 8642},
+    )
+    _seed_openrouter_provider(stores)
+    # Intentionally no entry in instance_secrets for host-1:hermes:alpha.
+
+    inputs = build_render_inputs("alpha")
+
+    assert inputs.api_server is not None
+    assert inputs.api_server.key == ""
+
+
+def test_non_hermes_agent_does_not_hydrate_api_server_key(
+    hermes_secret_stores, monkeypatch
+):
+    """The secrets.json reach-through is hermes-specific (zeroclaw and
+    openclaw don't use HERMES_API_SERVER_KEY). For a non-hermes agent,
+    the render path must not touch the secrets store at all — guards
+    against accidentally hydrating an unrelated agent's secret onto a
+    different agent type."""
+    stores = hermes_secret_stores
+
+    # Tripwire: if anything calls get_instance_secrets while rendering a
+    # non-hermes agent, the test fails loudly.
+    called: list[str] = []
+
+    def _tripwire(instance_key: str):
+        called.append(instance_key)
+        return {}
+
+    monkeypatch.setattr(
+        "clawrium.core.secrets.get_instance_secrets", _tripwire
+    )
+
+    # Build a zeroclaw agent record with an api_server block (this is
+    # synthetic — zeroclaw doesn't use api_server in production, but
+    # the render code shouldn't care: it should branch on agent_type).
+    host = {"hostname": "host-1", "key_id": "host-1"}
+    stores.agent = (
+        host,
+        "zeroclaw",
+        {
+            "agent_name": "alpha",
+            "providers": [{"name": "or", "role": "primary", "model": ""}],
+            "config": {
+                "api_server": {"host": "0.0.0.0", "port": 8642},
+                "gateway": {"host": "0.0.0.0", "port": 41040},
+            },
+        },
+    )
+    _seed_openrouter_provider(stores)
+
+    inputs = build_render_inputs("alpha")
+
+    assert called == [], (
+        f"render must not consult secrets.json for non-hermes agents; "
+        f"got lookups: {called}"
+    )
+    assert inputs.api_server is not None
+    # No inline key, no hydration → empty.
+    assert inputs.api_server.key == ""
+
+
+def test_hermes_api_server_key_propagates_into_rendered_env(
+    hermes_secret_stores,
+):
+    """End-to-end inside the render layer: build_render_inputs +
+    render_hermes together must produce a `.hermes/.env` whose
+    `API_SERVER_KEY=` line carries the bearer hydrated from
+    secrets.json. This is the assertion that fails without the #582
+    fix — and the one that would have caught the regression at the
+    canonical-render layer instead of needing an E2E run."""
+    stores = hermes_secret_stores
+    stores.agent = _hermes_agent_with_api_server(
+        api_server={"enabled": True, "host": "0.0.0.0", "port": 8642},
+    )
+    _seed_openrouter_provider(stores)
+    stores.instance_secrets["host-1:hermes:alpha"] = {
+        "HERMES_API_SERVER_KEY": {"value": VALID_HEX_KEY}
+    }
+
+    inputs = build_render_inputs("alpha")
+    rendered = render_hermes(inputs)
+    env_body = rendered.files[".hermes/.env"]
+
+    assert f"API_SERVER_KEY='{VALID_HEX_KEY}'" in env_body
+    assert "API_SERVER_KEY=''" not in env_body

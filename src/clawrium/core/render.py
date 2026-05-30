@@ -422,6 +422,31 @@ def build_render_inputs(agent_name: str) -> RenderInputs:
     api_server_input: APIServerInputs | None = None
     api_server_blob = config_blob.get("api_server")
     if isinstance(api_server_blob, dict):
+        # Hermes API_SERVER_KEY lives in secrets.json (install.py:1138-1145
+        # writes only the non-sensitive shape to hosts.json by design). The
+        # legacy configure_agent path hydrates it at lifecycle.py:1695; the
+        # canonical render path must do the same or every `agent sync`
+        # writes `API_SERVER_KEY=''` into ~/.hermes/.env and the gateway
+        # refuses to bind a wildcard interface without a key (#582).
+        key_value = _clean_secret(api_server_blob.get("key"))
+        if not key_value and agent_type == "hermes":
+            from clawrium.core.install import _is_valid_hermes_api_server_key
+            from clawrium.core.secrets import (
+                get_instance_key,
+                get_instance_secrets,
+            )
+
+            instance_key = get_instance_key(
+                host_record.get("key_id") or hostname,
+                "hermes",
+                agent_key,
+            )
+            entry = get_instance_secrets(instance_key).get(
+                "HERMES_API_SERVER_KEY"
+            )
+            candidate = entry.get("value") if entry else None
+            if _is_valid_hermes_api_server_key(candidate):
+                key_value = _clean_secret(candidate)
         api_server_input = APIServerInputs(
             host=str(api_server_blob.get("host", "")),
             port=int(api_server_blob.get("port", 0) or 0),
@@ -429,7 +454,7 @@ def build_render_inputs(agent_name: str) -> RenderInputs:
             # silently truncate the systemd EnvironmentFile after
             # API_SERVER_KEY=, dropping every var below it. Sanitize at
             # assembly time, same as provider/channel/integration secrets.
-            key=_clean_secret(api_server_blob.get("key")),
+            key=key_value,
         )
 
     gateway_input: GatewayInputs | None = None

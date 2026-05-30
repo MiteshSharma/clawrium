@@ -143,6 +143,126 @@ def _get_logs_dir() -> Path:
     return logs_dir
 
 
+def _summarize_ansible_configure_failure(
+    result: object, log_dir: str
+) -> str:
+    """Turn an ansible-runner failed `result` into an actionable error string.
+
+    Three failure shapes are handled, in priority order:
+      1. A `runner_on_failed` event with uncensored `res.msg` or
+         `res.stderr` → surface task name + the underlying message.
+      2. Every failing task had `no_log: true` (res is `{"censored": ...}`)
+         → surface task name + a hint on how to see the real error
+         without leaking whatever the censored res contains (bearer
+         tokens, API keys).
+      3. ansible-runner failed before any task ran (playbook parse error,
+         inventory load error, connection error) → surface the recap
+         stats / verbose stdout / stderr instead of the useless
+         `"failed"` literal.
+
+    A pure function over the runner result so it can be unit-tested
+    without spinning a real Ansible job. #583.
+    """
+    status = getattr(result, "status", "failed")
+    rc = getattr(result, "rc", "?")
+    error_msg = f"Configure playbook failed: {status}"
+    found_task_failure = False
+    censored_failure_task: str | None = None
+    # `result.events` is consumed-on-iteration in ansible-runner ≥ 2.x
+    # — capture into a list once so the multi-pass walks below all see
+    # the same events. Defensive against both list and generator
+    # implementations.
+    events = list(getattr(result, "events", []) or [])
+    for event in events:
+        if event.get("event") != "runner_on_failed":
+            continue
+        event_data = event.get("event_data", {}) or {}
+        res = event_data.get("res", {}) or {}
+        if res.get("censored"):
+            # Remember the FIRST censored failure for the hint branch;
+            # subsequent ones don't add information.
+            if censored_failure_task is None:
+                censored_failure_task = event_data.get(
+                    "task", "<unknown task>"
+                )
+            continue
+        task_name = event_data.get("task", "<unknown task>")
+        # ATX #445 iter-3 NW4: `is not None` so a `{"msg": None}` entry
+        # doesn't short-circuit error_msg to None and leak an empty
+        # string up the stack.
+        msg = res.get("msg")
+        if msg is not None:
+            error_msg = f"task {task_name!r}: {msg}"
+            found_task_failure = True
+            break
+        stderr = res.get("stderr")
+        if stderr is not None:
+            error_msg = f"task {task_name!r}: {stderr}"
+            found_task_failure = True
+            break
+
+    if found_task_failure:
+        return error_msg
+
+    if censored_failure_task is not None:
+        return (
+            f"task {censored_failure_task!r} failed but output was "
+            f"suppressed by `no_log: true`. Re-run with "
+            f"ANSIBLE_NO_LOG=False in the environment, or "
+            f"temporarily set `no_log: false` on the task, to see "
+            f"the underlying error."
+        )
+
+    # Pre-task failure — no task events fired. Pull together whatever
+    # ansible-runner did emit so the operator has something to debug.
+    pre_task_errors: list[str] = []
+    for event in events:
+        etype = event.get("event")
+        if etype in ("error", "verbose"):
+            stdout = event.get("stdout") or ""
+            if stdout.strip():
+                pre_task_errors.append(stdout.strip())
+        elif etype == "playbook_on_stats":
+            event_data = event.get("event_data", {}) or {}
+            if event_data:
+                pre_task_errors.append(f"recap: {event_data}")
+
+    # `result.stdout` / `result.stderr` are file-like — read at most
+    # ~4KB so a stack trace fits but a giant playbook dump doesn't.
+    def _safe_read(stream) -> str:
+        if stream is None:
+            return ""
+        try:
+            return stream.read(4096) or ""
+        except Exception:
+            return ""
+
+    stdout_blob = _safe_read(getattr(result, "stdout", None))
+    stderr_blob = _safe_read(getattr(result, "stderr", None))
+
+    detail_parts: list[str] = []
+    if pre_task_errors:
+        detail_parts.append(" | ".join(pre_task_errors))
+    if stderr_blob.strip():
+        detail_parts.append(f"stderr: {stderr_blob.strip()}")
+    if stdout_blob.strip() and not pre_task_errors:
+        # Trim to last 1KB so a parse traceback is visible without
+        # flooding the CLI with the full playbook dump.
+        tail = stdout_blob.strip()[-1024:]
+        detail_parts.append(f"stdout: {tail}")
+
+    if detail_parts:
+        return (
+            f"Configure playbook failed before any task ran "
+            f"(status={status}, rc={rc}): " + "; ".join(detail_parts)
+        )
+    return (
+        f"Configure playbook failed (status={status}, "
+        f"rc={rc}) — ansible-runner produced no events "
+        f"or output. Check {log_dir} for artifacts."
+    )
+
+
 def _safe_host_display(host: dict, hostname: str) -> str:
     """Return a filesystem-safe host display string for log dir naming.
 
@@ -2062,6 +2182,46 @@ def configure_agent(
             f"Invalid agent_name format: '{unix_agent_name}'. Must start with lowercase letter and contain only lowercase letters, digits, hyphens, underscores (max 32 chars)",
         )
 
+    # #583: pre-render canonical config files via `clawrium.core.render`
+    # and hand them to the Ansible playbook as plain string vars. The
+    # playbook then deploys with `copy: content: ...` instead of
+    # `ansible.builtin.template:`. This collapses the dual-render path
+    # (Jinja-in-Python AND Jinja-in-Ansible against the same template
+    # file) into a single source of truth — closing the same class of
+    # bug as #555/#582, where one render path silently diverges from
+    # the other.
+    #
+    # Today only zeroclaw config.toml is pre-rendered (it uses the
+    # custom `toq` filter that Ansible's Jinja env can't discover
+    # reliably under ansible-runner's private_data_dir layout). Hermes
+    # and openclaw playbook templates still render via Ansible's
+    # template module — they don't use custom filters, so the dual
+    # path doesn't bite them yet. Extending to them is a follow-up.
+    prerendered_files: dict[str, str] = {}
+    if resolved_type == "zeroclaw":
+        try:
+            from clawrium.core.render import build_render_inputs, render_zeroclaw
+
+            render_inputs = build_render_inputs(unix_agent_name)
+            rendered = render_zeroclaw(render_inputs)
+            # Key matches the rendered.files dict from render_zeroclaw —
+            # the playbook references this by its full key so the var
+            # name and the file path stay locked together.
+            prerendered_files[".zeroclaw/config.toml"] = (
+                rendered.files[".zeroclaw/config.toml"]
+            )
+        except Exception as exc:
+            # Surface the render failure with the same error shape the
+            # Ansible reporter uses, so the operator sees a single
+            # consistent failure mode instead of two.
+            logger.warning(
+                "Pre-render of zeroclaw config.toml failed for %s: %s — "
+                "configure will fall back to the playbook template task "
+                "and likely fail with the same error.",
+                unix_agent_name,
+                exc,
+            )
+
     # Build Ansible inventory with API key passed directly
     ansible_vars = {
         "agent_name": unix_agent_name,
@@ -2076,6 +2236,9 @@ def configure_agent(
         "slack_bot_token": slack_bot_token,
         "slack_app_token": slack_app_token,
         "integrations": integrations_data,
+        "prerendered_zeroclaw_config_toml": prerendered_files.get(
+            ".zeroclaw/config.toml", ""
+        ),
     }
 
     # Issue #437: zeroclaw always re-pairs on configure. No skip path,
@@ -2124,11 +2287,24 @@ def configure_agent(
     else:
         configure_timeout = 60
 
+    # #583: per-claw `filter_plugins/` directory adjacent to the playbook.
+    # Ansible's auto-discovery does not find it reliably under
+    # ansible-runner's private_data_dir layout, so we plumb it as an
+    # explicit env var. Mirrors the Jinja filters registered in
+    # `clawrium.core.render` (e.g. `toq`) so both render paths agree.
+    filter_plugin_dir = playbook_path.parent / "filter_plugins"
+    ansible_runner_envvars: dict[str, str] = {}
+    if filter_plugin_dir.is_dir():
+        ansible_runner_envvars["ANSIBLE_FILTER_PLUGINS"] = str(
+            filter_plugin_dir
+        )
+
     try:
         result = ansible_runner.run(
             private_data_dir=str(operation_log_dir),
             inventory=inventory,
             playbook=str(playbook_path),
+            envvars=ansible_runner_envvars or None,
             quiet=True,
             timeout=configure_timeout,
         )
@@ -2137,32 +2313,9 @@ def configure_agent(
             return False, "Configure operation timed out"
 
         if result.status != "successful":
-            error_msg = f"Configure playbook failed: {result.status}"
-            for event in result.events:
-                if event.get("event") == "runner_on_failed":
-                    event_data = event.get("event_data", {})
-                    res = event_data.get("res", {})
-                    # ATX #445 W1: a `no_log: true` task that fails surfaces
-                    # `{"censored": "..."}` in res; skip it so we don't read
-                    # `msg`/`stderr` keys that may carry the bearer if a
-                    # debug-mode daemon echoes the Authorization header back
-                    # in its 401 body.
-                    if res.get("censored"):
-                        continue
-                    # ATX #445 iter-3 NW4: `if "msg" in res` would fire on a
-                    # `{"msg": None}` entry and set error_msg = None, leaking
-                    # an empty error string up the stack. Use `is not None`
-                    # so the loop falls through to stderr / generic prefix.
-                    # ATX iter-4 S-F: symmetric `.get` access on both lines.
-                    msg = res.get("msg")
-                    if msg is not None:
-                        error_msg = msg
-                        break
-                    stderr = res.get("stderr")
-                    if stderr is not None:
-                        error_msg = stderr
-                        break
-            return False, error_msg
+            return False, _summarize_ansible_configure_failure(
+                result, str(operation_log_dir)
+            )
 
         # ZeroClaw: extract the bearer token + gateway URL the configure
         # playbook minted via the pairing handshake. configure.yaml emits

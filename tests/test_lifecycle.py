@@ -1435,10 +1435,12 @@ class TestConfigureAgentZeroclawBearerForwarding:
         assert "zc_LEAK_FROM_CONFIGURE" not in (error or ""), (
             f"configure_agent censored-guard regressed: {error!r}"
         )
-        # ATX iter-3 S3 / NW4: exact equality so the format itself is
-        # locked (not just a substring), and a silent None return would
-        # fail loudly.
-        assert error == "Configure playbook failed: failed"
+        # #583: the bearer-leak contract is the load-bearing one and
+        # still holds verbatim. The wording around it changed because
+        # the reporter now surfaces a `no_log: true` hint with the
+        # failing task name instead of the bare prefix.
+        assert "no_log: true" in (error or "")
+        assert "ANSIBLE_NO_LOG=False" in (error or "")
 
     def test_configure_all_censored_events_falls_back_to_generic_error(
         self, tmp_path: Path
@@ -1485,8 +1487,12 @@ class TestConfigureAgentZeroclawBearerForwarding:
             ],
         )
         assert success is False
+        # #583: bearer must still not leak — that contract is the load-bearing
+        # one. The wording around it changed because the reporter now
+        # surfaces a `no_log: true` hint instead of the bare prefix.
         assert "zc_" not in (error or "")
-        assert error == "Configure playbook failed: failed"
+        assert "no_log: true" in (error or "")
+        assert "ANSIBLE_NO_LOG=False" in (error or "")
 
     def test_configure_timeout_returns_friendly_error(self, tmp_path: Path):
         """ATX iter-4 NW-B: pin the configure timeout branch. The
@@ -1543,7 +1549,12 @@ class TestConfigureAgentZeroclawBearerForwarding:
         )
         assert success is False
         assert error is not None
-        assert error == "Configure playbook failed: failed"
+        # #583: when msg AND stderr are both None, the reporter now
+        # falls through to the pre-task summary (no events to attribute
+        # to a task name). The load-bearing contract — error is never
+        # None — still holds.
+        assert "None" not in error
+        assert "Configure playbook failed" in error
 
     def test_configure_zeroclaw_missing_gateway_fails_port_validation(
         self, tmp_path: Path
