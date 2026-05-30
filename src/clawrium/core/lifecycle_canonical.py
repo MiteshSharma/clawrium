@@ -94,7 +94,12 @@ _SECRET_KEY_SUFFIXES = (
     "_SECRET_KEY",
     "_PASSWORD",
     "_CREDENTIALS",
-    "_KEY",  # broad; AWS_ACCESS_KEY_ID, etc.
+    "_KEY",  # broad; matches AWS_SECRET_ACCESS_KEY, GATEWAY_AUTH_KEY, etc.
+    # B5 (ATX #555 polish): explicit names for secret env vars whose
+    # suffix would NOT otherwise match (e.g. `AWS_ACCESS_KEY_ID` ends
+    # in `_ID`, not `_KEY`). Listed by exact suffix so they're picked
+    # up by the `endswith` check on the captured key.
+    "_KEY_ID",
 )
 
 
@@ -421,11 +426,16 @@ def sync_agent_canonical(
         #   reboot, `systemctl restart`, etc.).
         # - Other agent types (hermes, openclaw) keep the file-drift-gated
         #   restart so a true no-op sync stays cheap.
-        zeroclaw_force_restart = (
+        # W-D (ATX #555 polish round 4): renamed from
+        # `zeroclaw_force_restart` — the re-pair runs unconditionally
+        # (B1 round-3); this flag specifically tracks the "no
+        # file-drift but zeroclaw still needs a systemctl restart for
+        # bearer rotation to take effect" sub-case.
+        zeroclaw_needs_force_restart = (
             restart and inputs.agent_type == "zeroclaw" and not files_written
         )
-        if restart and (files_written or zeroclaw_force_restart):
-            if zeroclaw_force_restart:
+        if restart and (files_written or zeroclaw_needs_force_restart):
+            if zeroclaw_needs_force_restart:
                 emit(
                     "restart",
                     f"restarting {inputs.agent_type}-{agent_name}.service "
@@ -453,18 +463,17 @@ def sync_agent_canonical(
     finally:
         client.close()
 
-    # B1 (#437): zeroclaw daemon does not persist bearer state across
-    # systemd restarts. After a restart, the cached bearer in
-    # hosts.json.gateway.auth is stale; the daemon will enforce a
-    # freshly-minted token on its next request. Re-pair unconditionally
-    # whenever sync is operating on a zeroclaw with `restart=True` —
-    # AGENTS.md's "Gateway Token Lifecycle (zeroclaw)" explicitly
-    # forbids an idempotent-skip path here. The restart block above
-    # already force-restarts zeroclaw on no-drift sync for exactly this
-    # invariant. The pair playbook is the single source of truth for
-    # the handshake — reuse `_zeroclaw_repair_after_start` rather than
-    # reimplementing.
-    if restart and inputs.agent_type == "zeroclaw":
+    # B1 (#437, ATX #555 polish round 3): zeroclaw daemon does not
+    # persist bearer state across systemd restarts. AGENTS.md "Gateway
+    # Token Lifecycle (zeroclaw)" is explicit: "clawctl agent
+    # configure, clawctl agent sync, and clawctl agent restart all
+    # mint a fresh bearer and overwrite hosts.json.gateway.auth
+    # atomically. There is no idempotent-skip path. Do not add a
+    # --no-rotate flag — branching here is the bug the original ATX
+    # Round 1 B3 code introduced." Re-pair unconditionally on every
+    # zeroclaw sync regardless of `restart`. The pair playbook is the
+    # single source of truth for the handshake.
+    if inputs.agent_type == "zeroclaw":
         from clawrium.core.lifecycle import _zeroclaw_repair_after_start
 
         emit("repair", f"re-pairing zeroclaw gateway for {agent_name}")
@@ -503,23 +512,46 @@ def sync_agent_canonical(
         transition_state as _transition,
     )
 
+    # B1 (ATX #555 polish): surface state-write failures on the result.
+    # Host-side write + bearer re-pair already succeeded; the sync is
+    # not a hard failure, but `start_agent` gates on state == READY so
+    # without a populated `error` field the operator sees `success=True`
+    # with a stuck non-READY agent and no diagnostic. W1 (ATX #555
+    # polish): emit on the `_ITE` branch too — mid-walk agents previously
+    # produced a clean success line followed by an unexplained failure
+    # from `start_agent`.
+    # B2 (ATX #555 polish round 3): only the InvalidTransitionError
+    # branch represents "expected, non-fatal" — the agent is mid-walk
+    # and start_agent will surface the stage. Both registry-incoherence
+    # and generic-exception branches set success=False so a CLI handler
+    # gating on `.success` does not print "✓ sync complete" while the
+    # agent is stuck in a non-READY state.
+    transition_error: str | None = None
+    state_write_ok = True
     try:
         _transition(hostname, agent_key, _OS.READY)
-    except _ITE:
-        pass
+    except _ITE as exc:
+        emit(
+            "sync",
+            f"note: skipped state=READY transition for {agent_key} "
+            f"(agent is mid-walk: {exc!s}). `clawctl agent start` will "
+            f"surface the current onboarding stage.",
+        )
     except (_ANF, _ONF) as exc:
-        emit(
-            "sync",
-            f"warning: registry record missing for {agent_key} after "
-            f"sync: {exc!s}. Inspect hosts.json before running "
-            f"clawctl agent start.",
+        transition_error = (
+            f"registry record missing for {agent_key} after sync: "
+            f"{exc!s}. Inspect hosts.json before running "
+            f"clawctl agent start."
         )
+        emit("sync", f"warning: {transition_error}")
+        state_write_ok = False
     except Exception as exc:
-        emit(
-            "sync",
-            f"warning: could not write state=READY to hosts.json: "
-            f"{exc!s}. Re-run sync to commit state.",
+        transition_error = (
+            f"could not write state=READY to hosts.json: {exc!s}. "
+            f"Re-run sync to commit state."
         )
+        emit("sync", f"warning: {transition_error}")
+        state_write_ok = False
 
     emit(
         "sync",
@@ -527,10 +559,11 @@ def sync_agent_canonical(
         f"{len(files_unchanged)} unchanged",
     )
     return CanonicalSyncResult(
-        success=True,
+        success=state_write_ok,
         agent=agent_name,
         host=hostname,
         files_written=tuple(files_written),
         files_unchanged=tuple(files_unchanged),
         diffs=tuple(diffs),
+        error=transition_error,
     )

@@ -625,14 +625,16 @@ def test_openclaw_openrouter_prefixes_model():
     assert "OPENROUTER_API_KEY='sk-or-1'" in env
 
 
-def test_render_no_branch_on_unset_optional_field():
-    """`render_hermes` must not branch on whether home_channel is empty.
+def test_render_home_channel_guarded_when_empty():
+    """W4 (ATX #555 polish): empty home_channel must NOT emit the var.
 
-    Two inputs that differ only in unset/empty optional fields should
-    produce structurally identical output (same line count, same keys).
+    The legacy template guarded each DISCORD_HOME_CHANNEL* var with
+    `{% if %}`; the canonical template now does the same. Empty string
+    vs absent is semantically distinct for the daemon's env-var config
+    path — emitting `DISCORD_HOME_CHANNEL=''` makes the daemon treat
+    "no home channel" as "explicitly empty" instead of "unset".
     """
     base = _baseline_inputs(ptype="openrouter")
-    # Variant: empty home_channel.
     variant = RenderInputs(
         agent_name=base.agent_name,
         agent_type=base.agent_type,
@@ -652,12 +654,10 @@ def test_render_no_branch_on_unset_optional_field():
         api_server=base.api_server,
         gateway=base.gateway,
     )
-    a = render_hermes(base).files[".hermes/.env"].splitlines()
-    b = render_hermes(variant).files[".hermes/.env"].splitlines()
-    # Same number of lines — emission is unconditional.
-    assert len(a) == len(b)
-    # The DISCORD_HOME_CHANNEL line is present in both (empty quoted in variant).
-    assert any(line.startswith("DISCORD_HOME_CHANNEL=") for line in b)
+    env = render_hermes(variant).files[".hermes/.env"]
+    assert not any(
+        line.startswith("DISCORD_HOME_CHANNEL=") for line in env.splitlines()
+    ), env
 
 
 def test_renderers_reject_unsupported_provider_type_defensively():
@@ -982,6 +982,98 @@ def test_shell_quote_escapes_single_quote():
     assert _shell_quote("plain") == "'plain'"
 
 
+def test_shell_quote_strips_nul_cr_lf():
+    """B5 (ATX #555 polish round 3): NUL truncates systemd
+    EnvironmentFile at the byte; CR/LF breaks the
+    one-assignment-per-line grammar. All three must be stripped before
+    POSIX quoting."""
+    from clawrium.core.render import _shell_quote
+
+    assert _shell_quote("foo\x00bar") == "'foobar'"
+    assert _shell_quote("foo\nbar") == "'foobar'"
+    assert _shell_quote("foo\rbar") == "'foobar'"
+    assert _shell_quote("a\x00b\nc\rd") == "'abcd'"
+    # Empty-string edge case still produces a valid empty POSIX literal.
+    assert _shell_quote("") == "''"
+
+
+def test_systemd_quote_strips_nul_and_escapes_dollar_percent():
+    """B4 + round-3 W2 (ATX #555 polish round 3): `_systemd_quote` must
+    strip NUL (EnvironmentFile truncation), escape `$` → `$$` (systemd
+    variable expansion on Environment= values), and escape `%` → `%%`
+    (systemd specifier expansion `%h`, `%n`, etc.)."""
+    from clawrium.core.render import _systemd_quote
+
+    assert _systemd_quote("ghp_$FOO") == '"ghp_$$FOO"'
+    assert _systemd_quote("ghp_%n") == '"ghp_%%n"'
+    assert _systemd_quote("a$b%c") == '"a$$b%%c"'
+    # NUL stripped.
+    assert _systemd_quote("foo\x00bar") == '"foobar"'
+    # CR/LF stripped.
+    assert _systemd_quote("foo\nbar\rbaz") == '"foobarbaz"'
+    # Backslash and quote still escaped.
+    assert _systemd_quote('a"b\\c') == '"a\\"b\\\\c"'
+
+
+def test_toml_escape_strips_nul_and_escapes_cr_lf():
+    """B6 (ATX #555 polish round 3): NUL must be stripped (TOML spec
+    rejects bare NUL; some parsers silently truncate). CR must be
+    escaped as `\\r` not emitted bare. LF as `\\n`."""
+    from clawrium.core.render import _toml_escape
+
+    assert _toml_escape("foo\x00bar") == "foobar"
+    assert _toml_escape("foo\rbar") == "foo\\rbar"
+    assert _toml_escape("foo\nbar") == "foo\\nbar"
+    # Combined.
+    out = _toml_escape("a\x00b\rc\nd")
+    assert "\x00" not in out
+    assert "\r" not in out
+    assert "\n" not in out
+    assert out == "ab\\rc\\nd"
+    # W-C (ATX #555 polish round 4): backslash and double quote must
+    # be escaped too — these are the TOML basic-string break-out
+    # characters and the regression that started B3 in round 1.
+    assert _toml_escape('a"b') == 'a\\"b'
+    assert _toml_escape("a\\b") == "a\\\\b"
+    assert _toml_escape("a\tb") == "a\\tb"
+
+
+def test_zeroclaw_toml_injection_payload_nul_and_cr():
+    """B6 (ATX #555 polish round 3): extend the B3 TOML injection
+    regression with NUL and CR payloads. Asserts the parsed body has
+    NUL stripped + CR properly escaped and the rendered body contains
+    no literal NUL or bare CR."""
+    import tomllib
+
+    base = _zeroclaw_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type="zeroclaw",
+        provider=ProviderInputs(
+            name="or",
+            type="openrouter",
+            default_model="m",
+            # NUL + CR + LF + quote + backslash all in the api_key.
+            api_key="sk-\x00\r\n\"\\evil",
+        ),
+        gateway=GatewayInputs(
+            host="1.2.3.4\x00\r",
+            port=40000,
+            allow_public_bind=True,
+        ),
+    )
+    toml_body = render_zeroclaw(inputs).files[".zeroclaw/config.toml"]
+    # The rendered body must contain no literal NUL.
+    assert "\x00" not in toml_body
+    parsed = tomllib.loads(toml_body)
+    # NUL stripped, CR + LF preserved via escape, quote/backslash escaped.
+    assert (
+        parsed["providers"]["models"]["openrouter"]["api_key"]
+        == 'sk-\r\n"\\evil'
+    )
+    assert parsed["gateway"]["host"] == "1.2.3.4\r"
+
+
 def test_hermes_bedrock_config_yaml_section_pinned():
     """Iter-3 W1: pin the bedrock config.yaml content too, not just env."""
     inputs = _baseline_inputs(ptype="bedrock")
@@ -1101,8 +1193,6 @@ _MAURICE_LIKE_ENV_OPENROUTER = (
     "DISCORD_ALLOWED_CHANNELS=''\n"
     "DISCORD_REQUIRE_MENTION='true'\n"
     "DISCORD_HOME_CHANNEL='general'\n"
-    "DISCORD_HOME_CHANNEL_NAME=''\n"
-    "DISCORD_HOME_CHANNEL_THREAD_ID=''\n"
     "GITHUB_TOKEN_GH_M='ghp_m'\n"
     "GITHUB_TOKEN='ghp_m'\n"
 )
@@ -1196,6 +1286,73 @@ def test_hermes_render_byte_locks_espresso_ollama():
     assert out.files[".hermes/config.yaml"] == _ESPRESSO_LIKE_YAML_OLLAMA
     # Explicit absence-assertion: W5 — no auxiliary block for ollama.
     assert "auxiliary:" not in out.files[".hermes/config.yaml"]
+
+
+def test_zeroclaw_toml_string_interpolations_escape_special_chars():
+    """B3 (ATX #555 polish): every TOML double-quoted-string interpolation
+    in zeroclaw-config.toml.j2 must run through the `toq` filter so a
+    quote, backslash, or newline inside any clawctl-controlled value
+    cannot terminate the string early or break out of the field.
+
+    Attack model: an API key containing `"` could otherwise close the
+    string and inject arbitrary TOML keys — e.g. `require_pairing =
+    false` silently disabling gateway auth. A `\\` would produce an
+    invalid escape and brick TOML parse.
+
+    The body must parse cleanly as TOML AND every injected special
+    char must round-trip into the parsed string value verbatim.
+    """
+    import tomllib
+
+    base = _zeroclaw_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type="zeroclaw",
+        provider=ProviderInputs(
+            name="or",
+            type="openrouter",
+            default_model='evil"\\model\n',
+            api_key='sk-"]\\evil\n',
+        ),
+        channels=(
+            ChannelInputs(
+                name="discord-evil",
+                type="discord",
+                bot_token='token"\\\n',
+                allowed_users=('u"1', "u\\2"),
+                allowed_guilds=('g"\\1',),
+                stream_mode='partial"\\',
+            ),
+        ),
+        gateway=GatewayInputs(
+            host='1.2.3.4" require_pairing = false #',
+            port=40000,
+            allow_public_bind=True,
+        ),
+    )
+    toml_body = render_zeroclaw(inputs).files[".zeroclaw/config.toml"]
+    parsed = tomllib.loads(toml_body)
+
+    # Injection-via-host must NOT toggle require_pairing.
+    assert parsed["gateway"]["require_pairing"] is True
+    assert parsed["gateway"]["host"] == '1.2.3.4" require_pairing = false #'
+
+    # Provider values round-trip.
+    assert parsed["providers"]["fallback"] == "openrouter"
+    assert (
+        parsed["providers"]["models"]["openrouter"]["model"]
+        == 'evil"\\model\n'
+    )
+    assert (
+        parsed["providers"]["models"]["openrouter"]["api_key"]
+        == 'sk-"]\\evil\n'
+    )
+
+    # Discord values round-trip.
+    assert parsed["channels"]["discord"]["bot_token"] == 'token"\\\n'
+    assert parsed["channels"]["discord"]["allowed_users"] == ['u"1', "u\\2"]
+    assert parsed["channels"]["discord"]["allowed_guilds"] == ['g"\\1']
+    assert parsed["channels"]["discord"]["stream_mode"] == 'partial"\\'
 
 
 def test_zeroclaw_rejects_non_discord_channel_b8():
@@ -1427,6 +1584,8 @@ def test_hermes_atlassian_mcp_servers_byte_lock_w15():
         "    model: \"claude-haiku-4-5-20251001\"\n"
         "mcp_servers:\n"
         "  my_atl:\n"
+        '    command: "/home/alpha/.local/bin/uvx"\n'
+        '    args: ["--from", "mcp-atlassian==0.21.1", "mcp-atlassian"]\n'
         "    env:\n"
         "      JIRA_URL: 'https://acme.atlassian.net'\n"
         "      JIRA_USERNAME: 'u@x.com'\n"
@@ -1650,9 +1809,6 @@ _HERMES_DISCORD_ALLOW_ALL_USERS_ENV = (
     "DISCORD_ALLOWED_CHANNELS=''\n"
     "DISCORD_REQUIRE_MENTION='true'\n"
     "DISCORD_ALLOW_ALL_USERS=true\n"
-    "DISCORD_HOME_CHANNEL=''\n"
-    "DISCORD_HOME_CHANNEL_NAME=''\n"
-    "DISCORD_HOME_CHANNEL_THREAD_ID=''\n"
 )
 
 
@@ -1770,6 +1926,7 @@ _OPENCLAW_ENV_BEDROCK = (
     "OPENCLAW_DEFAULT_MODEL='bedrock/anthropic.claude-opus-4-1-v1:0'\n"
     "AWS_ACCESS_KEY_ID='AKIA-1'\n"
     "AWS_SECRET_ACCESS_KEY='secret-1'\n"
+    "AWS_DEFAULT_REGION='us-east-1'\n"
     "DISCORD_BOT_TOKEN='discord-bot'\n"
     "GITHUB_TOKEN_GH_A='ghp_a'\n"
     "GITHUB_TOKEN='ghp_a'\n"
