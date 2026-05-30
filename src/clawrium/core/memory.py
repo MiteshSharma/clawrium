@@ -517,7 +517,8 @@ def _run_memory_playbook(
             None,
             (
                 f"SSH key for host '{key_id}' not found. "
-                f"Run 'clm host init {host['hostname']}' to provision it."
+                f"Run 'clawctl host create {host['hostname']} --user xclm --alias <name>' "
+                f"to register it (see docs/host-preparation.md for host setup)."
             ),
         )
 

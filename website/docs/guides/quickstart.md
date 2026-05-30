@@ -69,20 +69,22 @@ clawctl service init
 ✓ SSH client found: OpenSSH_9.0p1
 ✓ Dependencies validated
 
-Clawrium is ready! Next: clawctl host create --bootstrap <hostname> --user <user>
+Clawrium is ready! Next: clawctl host create <hostname> --user xclm --alias <name>
 ```
 
 ## Step 3: Prepare a Host
 
-Initialize the target host. Clawrium generates a unique keypair and sets up the `xclm` management user:
+Register the target host. On first run Clawrium generates a per-host
+keypair and prints the manual `xclm` setup commands you need to paste on
+the host (see the [Host Setup guide](host-setup.md) for full
+Linux + macOS instructions):
 
 ```bash
-clawctl host create --bootstrap 192.168.1.100 --user myuser
+clawctl host create 192.168.1.100 --user xclm --alias mybox
 ```
 
-Replace:
-- `192.168.1.100` with your target host's IP or hostname
-- `myuser` with a user that has sudo privileges on the target
+Replace `192.168.1.100` with your target host's IP or hostname and
+`mybox` with a friendly alias.
 
 ```
 Generating SSH keypair for 192.168.1.100...
@@ -247,7 +249,7 @@ Disconnected.
 
 ## Troubleshooting
 
-### Connection refused during host init
+### Connection refused during `clawctl host create`
 
 SSH isn't running or is blocked by firewall on the target host:
 
@@ -257,14 +259,12 @@ sudo systemctl status sshd
 sudo ufw allow ssh
 ```
 
-### Permission denied during host init
+### Permission denied during `clawctl host create`
 
-Your SSH user doesn't have sudo privileges. Verify on the target:
-
-```bash
-sudo whoami
-# Should output: root
-```
+The `xclm` management user hasn't been created on the target, or the per-host
+public key hasn't been added to `~xclm/.ssh/authorized_keys`. Follow the
+manual setup commands printed by `clawctl host create` on its first run, or
+see the [Host Setup guide](host-setup.md) for the full Linux + macOS steps.
 
 ### Agent won't start
 
