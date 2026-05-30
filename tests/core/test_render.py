@@ -1076,3 +1076,159 @@ def test_hermes_atlassian_credentials_absent_from_env():
     assert "ATLASSIAN" not in env
     assert "JIRA" not in env
     assert "CONFLUENCE" not in env
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 (#560): Jinja-template regression locks for render_hermes.
+#
+# The byte-for-byte expected outputs below were captured from the prior
+# list-of-strings implementation of `render_hermes`. Any drift in the new
+# Jinja template flow MUST be intentional and surface here as a test
+# failure with a clear diff — that is the entire point of locking these.
+# ---------------------------------------------------------------------------
+
+
+_MAURICE_LIKE_ENV_OPENROUTER = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure maurice`.\n"
+    "OPENROUTER_API_KEY='sk-or-maurice'\n"
+    "HERMES_INFERENCE_PROVIDER='openrouter'\n"
+    "API_SERVER_ENABLED=1\n"
+    "API_SERVER_HOST='127.0.0.1'\n"
+    "API_SERVER_PORT=8642\n"
+    "API_SERVER_KEY='maurice-key'\n"
+    "DISCORD_BOT_TOKEN='discord-maurice'\n"
+    "DISCORD_ALLOWED_USERS='u1,u2'\n"
+    "DISCORD_ALLOWED_CHANNELS=''\n"
+    "DISCORD_REQUIRE_MENTION='true'\n"
+    "DISCORD_HOME_CHANNEL='general'\n"
+    "DISCORD_HOME_CHANNEL_NAME=''\n"
+    "DISCORD_HOME_CHANNEL_THREAD_ID=''\n"
+    "GITHUB_TOKEN_GH_M='ghp_m'\n"
+    "GITHUB_TOKEN='ghp_m'\n"
+)
+
+
+_MAURICE_LIKE_YAML_OPENROUTER = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure maurice`.\n"
+    "model:\n"
+    "  provider: \"openrouter\"\n"
+    "  base_url: \"https://openrouter.ai/api/v1\"\n"
+    "  default: 'anthropic/claude-opus-4.7'\n"
+    "auxiliary:\n"
+    "  title_generation:\n"
+    "    model: \"anthropic/claude-haiku-4.5\"\n"
+)
+
+
+_ESPRESSO_LIKE_ENV_OLLAMA = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure espresso`.\n"
+    "HERMES_INFERENCE_PROVIDER='custom'\n"
+    "API_SERVER_ENABLED=1\n"
+    "API_SERVER_HOST='127.0.0.1'\n"
+    "API_SERVER_PORT=8642\n"
+    "API_SERVER_KEY='espresso-key'\n"
+)
+
+
+_ESPRESSO_LIKE_YAML_OLLAMA = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure espresso`.\n"
+    "model:\n"
+    "  provider: \"custom\"\n"
+    "  base_url: 'http://10.0.0.5:11434/v1'\n"
+    "  default: 'llama3'\n"
+)
+
+
+def test_hermes_render_byte_locks_maurice_openrouter():
+    """Regression lock: the Jinja-driven render must produce these exact bytes."""
+    inputs = RenderInputs(
+        agent_name="maurice",
+        agent_type="hermes",
+        provider=ProviderInputs(
+            name="or",
+            type="openrouter",
+            default_model="anthropic/claude-opus-4.7",
+            api_key="sk-or-maurice",
+        ),
+        channels=(
+            ChannelInputs(
+                name="discord-m",
+                type="discord",
+                bot_token="discord-maurice",
+                allowed_users=("u1", "u2"),
+                require_mention=True,
+                home_channel="general",
+            ),
+        ),
+        integrations=(
+            IntegrationInputs(
+                name="gh-m",
+                type="github",
+                credentials=(("GITHUB_TOKEN", "ghp_m"),),
+            ),
+        ),
+        api_server=APIServerInputs(host="127.0.0.1", port=8642, key="maurice-key"),
+    )
+    out = render_hermes(inputs)
+    assert out.files[".hermes/.env"] == _MAURICE_LIKE_ENV_OPENROUTER
+    assert out.files[".hermes/config.yaml"] == _MAURICE_LIKE_YAML_OPENROUTER
+
+
+def test_hermes_render_byte_locks_espresso_ollama():
+    """Regression lock: ollama path renders bytes-exact. Locks the W5
+    decision to omit `auxiliary.title_generation` for ollama (the local
+    model is already cheap; a remote aux pin defeats the point)."""
+    inputs = RenderInputs(
+        agent_name="espresso",
+        agent_type="hermes",
+        provider=ProviderInputs(
+            name="ol",
+            type="ollama",
+            default_model="llama3",
+            endpoint="http://10.0.0.5:11434",
+        ),
+        channels=(),
+        integrations=(),
+        api_server=APIServerInputs(host="127.0.0.1", port=8642, key="espresso-key"),
+    )
+    out = render_hermes(inputs)
+    assert out.files[".hermes/.env"] == _ESPRESSO_LIKE_ENV_OLLAMA
+    assert out.files[".hermes/config.yaml"] == _ESPRESSO_LIKE_YAML_OLLAMA
+    # Explicit absence-assertion: W5 — no auxiliary block for ollama.
+    assert "auxiliary:" not in out.files[".hermes/config.yaml"]
+
+
+def test_zeroclaw_rejects_non_discord_channel_b8():
+    """B8: non-discord channels must raise, not silently drop."""
+    base = _zeroclaw_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        channels=(
+            ChannelInputs(name="slack-x", type="slack", bot_token="xoxb"),
+        ),
+        gateway=base.gateway,
+    )
+    with pytest.raises(AgentConfigError, match="unsupported channel type 'slack'"):
+        render_zeroclaw(inputs)
+
+
+def test_zeroclaw_rejects_non_github_integration_b9():
+    """B9: non-github (and non-git) integrations must raise, not silently drop."""
+    base = _zeroclaw_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        integrations=(
+            IntegrationInputs(
+                name="linear-x",
+                type="linear",
+                credentials=(("LINEAR_API_KEY", "lk_1"),),
+            ),
+        ),
+        gateway=base.gateway,
+    )
+    with pytest.raises(AgentConfigError, match="unsupported integration type 'linear'"):
+        render_zeroclaw(inputs)

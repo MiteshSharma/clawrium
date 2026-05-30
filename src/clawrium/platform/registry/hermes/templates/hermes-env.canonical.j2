@@ -1,0 +1,61 @@
+# Managed by clawrium (clawctl). Re-render with `clawctl agent configure {{ agent_name }}`.
+{% if provider.type == 'openrouter' %}
+OPENROUTER_API_KEY={{ provider.api_key | shq }}
+HERMES_INFERENCE_PROVIDER='openrouter'
+{% elif provider.type == 'anthropic' %}
+ANTHROPIC_API_KEY={{ provider.api_key | shq }}
+HERMES_INFERENCE_PROVIDER='anthropic'
+{% elif provider.type == 'openai' %}
+OPENAI_API_KEY={{ provider.api_key | shq }}
+HERMES_INFERENCE_PROVIDER='openai'
+{% elif provider.type == 'bedrock' %}
+AWS_ACCESS_KEY_ID={{ provider.aws_access_key | shq }}
+AWS_SECRET_ACCESS_KEY={{ provider.aws_secret_key | shq }}
+AWS_DEFAULT_REGION={{ (provider.region or 'us-east-1') | shq }}
+HERMES_INFERENCE_PROVIDER='bedrock'
+{% elif provider.type == 'ollama' %}
+HERMES_INFERENCE_PROVIDER='custom'
+{% endif %}
+{% if api_server is not none %}
+API_SERVER_ENABLED=1
+API_SERVER_HOST={{ api_server.host | shq }}
+API_SERVER_PORT={{ api_server.port | int }}
+API_SERVER_KEY={{ api_server.key | shq }}
+{% endif %}
+{% for channel in channels %}
+{% if channel.type == 'discord' %}
+DISCORD_BOT_TOKEN={{ channel.bot_token | shq }}
+DISCORD_ALLOWED_USERS={{ (channel.allowed_users | join(',')) | shq }}
+DISCORD_ALLOWED_CHANNELS={{ (channel.allowed_channels | join(',')) | shq }}
+DISCORD_REQUIRE_MENTION={{ (channel.require_mention | string | lower) | shq }}
+{% if channel.allow_all_users %}
+DISCORD_ALLOW_ALL_USERS=true
+{% endif %}
+DISCORD_HOME_CHANNEL={{ channel.home_channel | shq }}
+DISCORD_HOME_CHANNEL_NAME={{ channel.home_channel_name | shq }}
+DISCORD_HOME_CHANNEL_THREAD_ID={{ channel.home_channel_thread_id | shq }}
+{% elif channel.type == 'slack' %}
+SLACK_BOT_TOKEN={{ channel.bot_token | shq }}
+SLACK_APP_TOKEN={{ channel.app_token | shq }}
+SLACK_ALLOWED_USERS={{ (channel.allowed_users | join(',')) | shq }}
+SLACK_HOME_CHANNEL={{ channel.home_channel | shq }}
+SLACK_HOME_CHANNEL_NAME={{ channel.home_channel_name | shq }}
+{% endif %}
+{% endfor %}
+{% for intg in integrations %}
+{% if intg.type == 'github' %}
+GITHUB_TOKEN_{{ intg.slug }}={{ intg.creds.get('GITHUB_TOKEN', '') | shq }}
+{% elif intg.type == 'linear' %}
+LINEAR_API_KEY={{ intg.creds.get('LINEAR_API_KEY', '') | shq }}
+{% elif intg.type == 'notion' %}
+NOTION_API_KEY={{ intg.creds.get('NOTION_API_KEY', '') | shq }}
+{% elif intg.type == 'gitlab' %}
+GITLAB_TOKEN={{ intg.creds.get('GITLAB_TOKEN', '') | shq }}
+{% if 'GITLAB_URL' in intg.creds %}
+GITLAB_URL={{ intg.creds.get('GITLAB_URL', '') | shq }}
+{% endif %}
+{% endif %}
+{% endfor %}
+{% if last_github_token %}
+GITHUB_TOKEN={{ last_github_token | shq }}
+{% endif %}
