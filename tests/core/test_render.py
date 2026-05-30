@@ -785,6 +785,181 @@ def test_hermes_atlassian_slug_collision_raises():
         render_hermes(inputs)
 
 
+@pytest.mark.parametrize(
+    "host_value",
+    [
+        # The post-install seed shape — `host = ""` in hosts.json.
+        "",
+        # Whitespace-only: `_clean_secret` strips NUL/CR/LF but not
+        # spaces/tabs. `"   " or "0.0.0.0"` short-circuits to `"   "`
+        # without the `.strip()` guard, and the daemon refuses it the
+        # same way it refuses `""`. B1 from ATX review of the initial
+        # patch.
+        "   ",
+        "\t \t",
+        # NUL-contaminated host: `_clean_secret` strips the NUL to "",
+        # which then defaults via the same code path. Covers parity
+        # with the W6 sanitization at line ~447.
+        "\x00",
+    ],
+)
+def test_gateway_host_defaults_to_wildcard_when_blank(stores, host_value):
+    """#576: zeroclaw's daemon refuses an empty `gateway.host`. The
+    assembler must default to `0.0.0.0` (the documented wildcard bind)
+    so a fresh install whose hosts.json carries any blank/whitespace
+    host value still renders a config.toml the daemon accepts.
+    """
+    stores.agent = (
+        {"hostname": "host-1"},
+        "zeroclaw",
+        {
+            "agent_name": "alpha",
+            "providers": [{"name": "or", "role": "primary", "model": ""}],
+            "config": {
+                "gateway": {
+                    "host": host_value,
+                    "port": 40000,
+                    "auth": "tk",
+                    "bind": "lan",
+                },
+            },
+        },
+    )
+    stores.providers["or"] = {"name": "or", "type": "openrouter", "default_model": "m"}
+    stores.provider_api_keys["or"] = "sk-1"
+    inputs = build_render_inputs("alpha")
+    assert inputs.gateway is not None and inputs.gateway.host == "0.0.0.0"
+
+
+def test_gateway_host_defaults_to_wildcard_when_key_missing(stores):
+    """#576: same default fires when the `host` key is absent entirely,
+    not just empty. Covers the shape some legacy migrations produced."""
+    stores.agent = (
+        {"hostname": "host-1"},
+        "zeroclaw",
+        {
+            "agent_name": "alpha",
+            "providers": [{"name": "or", "role": "primary", "model": ""}],
+            "config": {
+                "gateway": {"port": 40000, "auth": "tk", "bind": "lan"},
+            },
+        },
+    )
+    stores.providers["or"] = {"name": "or", "type": "openrouter", "default_model": "m"}
+    stores.provider_api_keys["or"] = "sk-1"
+    inputs = build_render_inputs("alpha")
+    assert inputs.gateway is not None and inputs.gateway.host == "0.0.0.0"
+
+
+@pytest.mark.parametrize("host_value", ["", "   ", "\t \t"])
+def test_gateway_host_default_round_trips_through_render_zeroclaw(
+    stores, host_value
+):
+    """#576 / ATX W1 + iter-2 W: extend the default assertion to call
+    the actual `render_zeroclaw` Jinja path and confirm the rendered
+    `config.toml` contains `host = "0.0.0.0"` under `[gateway]`. The
+    assembler-only assertion above would stay green even if a template
+    regression rendered the pre-strip raw value — the on-host daemon
+    is what consumes this. Parametrized over the same blank set as the
+    assembler test so a whitespace-only input also has a Jinja-path
+    assertion."""
+    stores.agent = (
+        {"hostname": "host-1"},
+        "zeroclaw",
+        {
+            "agent_name": "alpha",
+            "providers": [{"name": "or", "role": "primary", "model": ""}],
+            "config": {
+                "gateway": {
+                    "host": host_value,
+                    "port": 40000,
+                    "auth": "tk",
+                    "bind": "lan",
+                },
+            },
+        },
+    )
+    stores.providers["or"] = {"name": "or", "type": "openrouter", "default_model": "m"}
+    stores.provider_api_keys["or"] = "sk-1"
+    inputs = build_render_inputs("alpha")
+    rendered = render_zeroclaw(inputs)
+    toml_body = rendered.files[".zeroclaw/config.toml"]
+    # The rendered TOML must carry the wildcard bind under [gateway].
+    # An empty/whitespace host (which the daemon refuses) would render
+    # as `host = ""` or `host = "   "` respectively.
+    assert 'host = "0.0.0.0"' in toml_body
+    assert 'host = ""' not in toml_body
+    if host_value.strip() != host_value or host_value:
+        # The raw pre-strip value must not survive into the rendered
+        # TOML — guards against a future template change that bypasses
+        # the assembler's strip+default.
+        assert f'host = "{host_value}"' not in toml_body
+
+
+def test_gateway_host_preserves_explicit_value(stores):
+    """#576: the default only fills in for blank/missing — an explicit
+    operator value round-trips unchanged. Loopback and a LAN IP are
+    both verified so the `or` path is not silently masking arbitrary
+    non-empty input."""
+    stores.providers["or"] = {"name": "or", "type": "openrouter", "default_model": "m"}
+    stores.provider_api_keys["or"] = "sk-1"
+    for explicit in ("127.0.0.1", "192.168.1.5"):
+        stores.agent = (
+            {"hostname": "host-1"},
+            "zeroclaw",
+            {
+                "agent_name": "alpha",
+                "providers": [{"name": "or", "role": "primary", "model": ""}],
+                "config": {
+                    "gateway": {
+                        "host": explicit,
+                        "port": 40000,
+                        "auth": "tk",
+                        "bind": "lan",
+                    },
+                },
+            },
+        )
+        inputs = build_render_inputs("alpha")
+        assert inputs.gateway is not None and inputs.gateway.host == explicit
+
+
+def test_hermes_render_ignores_gateway_host_default(stores):
+    """#576 / ATX W2: the `0.0.0.0` default is applied unconditionally
+    in `build_render_inputs` because no current renderer other than
+    zeroclaw reads `inputs.gateway.host`. This test pins that
+    invariant: a hermes agent with a blank `config.gateway.host` must
+    still render successfully and its output must not carry the
+    zeroclaw-shaped `[gateway]` block."""
+    stores.agent = (
+        {"hostname": "host-1"},
+        "hermes",
+        {
+            "agent_name": "alpha",
+            "providers": [{"name": "or", "role": "primary", "model": "m"}],
+            "config": {
+                "api_server": {"host": "0.0.0.0", "port": 8642, "key": "k"},
+                # Blank host — would brick zeroclaw, must not affect hermes.
+                "gateway": {"host": "", "port": 40000, "auth": "tk"},
+            },
+        },
+    )
+    stores.providers["or"] = {"name": "or", "type": "openrouter", "default_model": "m"}
+    stores.provider_api_keys["or"] = "sk-1"
+    inputs = build_render_inputs("alpha")
+    rendered = render_hermes(inputs)
+    # Pin the hermes output shape so the negative-only assertions below
+    # aren't vacuously true if a future refactor changes the file map.
+    assert ".hermes/.env" in rendered.files
+    assert "HERMES_INFERENCE_PROVIDER" in rendered.files[".hermes/.env"]
+    for path, body in rendered.files.items():
+        # The zeroclaw-shaped `[gateway]` TOML block must not appear in
+        # any hermes output file.
+        assert "[gateway]" not in body, (
+            f"hermes render leaked zeroclaw [gateway] block into {path}"
+        )
+
+
 def test_clean_secret_applied_to_gateway_auth_and_api_server_key(stores):
     """W1: NUL/CR/LF in gateway.auth or api_server.key must be stripped
     before they hit the systemd EnvironmentFile."""
