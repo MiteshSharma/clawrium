@@ -1232,3 +1232,199 @@ def test_zeroclaw_rejects_non_github_integration_b9():
     )
     with pytest.raises(AgentConfigError, match="unsupported integration type 'linear'"):
         render_zeroclaw(inputs)
+
+
+# ---------------------------------------------------------------------------
+# ATX round 1 follow-ups: explicit positive coverage for paths previously
+# only covered indirectly via the idempotency property.
+# ---------------------------------------------------------------------------
+
+
+def test_hermes_gitlab_integration_emits_token_and_optional_url():
+    """B8 (ATX round 1): gitlab token branch + optional GITLAB_URL must
+    both render. Wrong key name would silently emit empty values; this
+    locks both flavors of the branch."""
+    base = _baseline_inputs(ptype="openrouter")
+    inputs_token_only = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        integrations=(
+            IntegrationInputs(
+                name="gl-1",
+                type="gitlab",
+                credentials=(("GITLAB_TOKEN", "glpat-1"),),
+            ),
+        ),
+        api_server=base.api_server,
+    )
+    env = render_hermes(inputs_token_only).files[".hermes/.env"]
+    assert "GITLAB_TOKEN='glpat-1'" in env
+    assert "GITLAB_URL" not in env
+
+    inputs_with_url = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        integrations=(
+            IntegrationInputs(
+                name="gl-2",
+                type="gitlab",
+                credentials=(
+                    ("GITLAB_TOKEN", "glpat-2"),
+                    ("GITLAB_URL", "https://gitlab.example.com"),
+                ),
+            ),
+        ),
+        api_server=base.api_server,
+    )
+    env2 = render_hermes(inputs_with_url).files[".hermes/.env"]
+    assert "GITLAB_TOKEN='glpat-2'" in env2
+    assert "GITLAB_URL='https://gitlab.example.com'" in env2
+
+
+_HERMES_ANTHROPIC_ENV = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "ANTHROPIC_API_KEY='sk-ant-1'\n"
+    "HERMES_INFERENCE_PROVIDER='anthropic'\n"
+)
+_HERMES_ANTHROPIC_YAML = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "model:\n"
+    "  provider: \"anthropic\"\n"
+    "  default: 'claude-opus-4-7'\n"
+    "auxiliary:\n"
+    "  title_generation:\n"
+    "    model: \"claude-haiku-4-5-20251001\"\n"
+)
+
+
+_HERMES_OPENAI_ENV = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENAI_API_KEY='sk-oa-1'\n"
+    "HERMES_INFERENCE_PROVIDER='openai'\n"
+)
+_HERMES_OPENAI_YAML = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "model:\n"
+    "  provider: \"openai\"\n"
+    "  default: 'gpt-5'\n"
+    "auxiliary:\n"
+    "  title_generation:\n"
+    "    model: \"gpt-5-nano\"\n"
+)
+
+
+_HERMES_BEDROCK_ENV = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "AWS_ACCESS_KEY_ID='AKIA-1'\n"
+    "AWS_SECRET_ACCESS_KEY='secret-1'\n"
+    "AWS_DEFAULT_REGION='us-east-1'\n"
+    "HERMES_INFERENCE_PROVIDER='bedrock'\n"
+)
+_HERMES_BEDROCK_YAML = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "model:\n"
+    "  provider: \"bedrock\"\n"
+    "  default: 'anthropic.claude-opus-4-1-v1:0'\n"
+    "bedrock:\n"
+    "  region: 'us-east-1'\n"
+    "auxiliary:\n"
+    "  title_generation:\n"
+    "    model: \"anthropic.claude-haiku-4-5-20251001-v1:0\"\n"
+)
+
+
+@pytest.mark.parametrize(
+    "ptype,expected_env,expected_yaml",
+    [
+        ("anthropic", _HERMES_ANTHROPIC_ENV, _HERMES_ANTHROPIC_YAML),
+        ("openai", _HERMES_OPENAI_ENV, _HERMES_OPENAI_YAML),
+        ("bedrock", _HERMES_BEDROCK_ENV, _HERMES_BEDROCK_YAML),
+    ],
+)
+def test_hermes_byte_lock_per_provider_branch(ptype, expected_env, expected_yaml):
+    """B9 (ATX round 1): each provider's Jinja branch is byte-locked.
+
+    Substring-only assertions cannot catch wrong line ordering or stray
+    blank lines introduced by `trim_blocks` misconfiguration. This locks
+    the full file body for anthropic, openai, and bedrock branches —
+    completing the matrix alongside the maurice (openrouter) and
+    espresso (ollama) byte-locks.
+    """
+    base = _baseline_inputs(ptype=ptype)
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes",
+        provider=base.provider,
+        channels=(),
+        integrations=(),
+        api_server=None,
+    )
+    out = render_hermes(inputs)
+    assert out.files[".hermes/.env"] == expected_env
+    assert out.files[".hermes/config.yaml"] == expected_yaml
+
+
+def test_zeroclaw_git_integration_is_allowed_w14():
+    """W14 (ATX round 1): `git` is the only non-github integration on
+    zeroclaw's whitelist. Positive path must render without raising and
+    must NOT emit a GITHUB_TOKEN_GIT env var (git identity goes into
+    ~/.gitconfig via a separate render path)."""
+    base = _zeroclaw_inputs(ptype="openrouter")
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type=base.agent_type,
+        provider=base.provider,
+        channels=base.channels,
+        integrations=(
+            IntegrationInputs(
+                name="git-id",
+                type="git",
+                credentials=(("GIT_AUTHOR_NAME", "alpha"),),
+            ),
+        ),
+        gateway=base.gateway,
+    )
+    out = render_zeroclaw(inputs)
+    env = out.files[".zeroclaw/zeroclaw-env.conf"]
+    assert "GITHUB_TOKEN_GIT" not in env
+    assert "GITHUB_TOKEN=" not in env
+
+
+def test_hermes_atlassian_mcp_servers_byte_lock_w15():
+    """W15 (ATX round 1): lock the full `mcp_servers:` YAML block for an
+    atlassian integration. Field ordering and slug derivation are part of
+    the contract — a future "tidy" reordering would silently break
+    downstream YAML consumers that rely on the entry shape."""
+    base = _baseline_inputs(ptype="anthropic")
+    inputs = RenderInputs(
+        agent_name="alpha",
+        agent_type="hermes",
+        provider=base.provider,
+        channels=(),
+        integrations=(
+            IntegrationInputs(
+                name="my-atl",
+                type="atlassian",
+                credentials=(
+                    ("ATLASSIAN_API_TOKEN", "atl-tk"),
+                    ("ATLASSIAN_EMAIL", "u@x.com"),
+                    ("ATLASSIAN_URL", "https://acme.atlassian.net/"),
+                ),
+            ),
+        ),
+    )
+    yaml = render_hermes(inputs).files[".hermes/config.yaml"]
+    expected = (
+        "mcp_servers:\n"
+        "  my_atl:\n"
+        "    env:\n"
+        "      JIRA_URL: 'https://acme.atlassian.net'\n"
+        "      JIRA_USERNAME: 'u@x.com'\n"
+        "      JIRA_API_TOKEN: 'atl-tk'\n"
+        "      CONFLUENCE_URL: 'https://acme.atlassian.net/wiki'\n"
+        "      CONFLUENCE_USERNAME: 'u@x.com'\n"
+        "      CONFLUENCE_API_TOKEN: 'atl-tk'\n"
+    )
+    assert expected in yaml

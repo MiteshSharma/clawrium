@@ -545,14 +545,19 @@ def render_hermes(inputs: RenderInputs) -> RenderedFiles:
 
     for channel in inputs.channels:
         if channel.type not in _HERMES_SUPPORTED_CHANNELS:
+            # W1 (ATX round 1): list supported types so the operator can
+            # diagnose without grepping render.py.
             raise AgentConfigError(
-                f"render_hermes: unsupported channel type {channel.type!r}"
+                f"render_hermes: unsupported channel type {channel.type!r}. "
+                f"Supported: {sorted(_HERMES_SUPPORTED_CHANNELS)}"
             )
 
     for integration in inputs.integrations:
         if integration.type not in _HERMES_SUPPORTED_INTEGRATIONS:
+            # W2 (ATX round 1): same listing rule.
             raise AgentConfigError(
-                f"render_hermes: unsupported integration type {integration.type!r}"
+                f"render_hermes: unsupported integration type {integration.type!r}. "
+                f"Supported: {sorted(_HERMES_SUPPORTED_INTEGRATIONS)}"
             )
 
     integration_views: list[dict] = []
@@ -658,6 +663,7 @@ def _render_hermes_template(template_name: str, **context) -> str:
 _ZEROCLAW_PROVIDER_KINDS = frozenset(
     {"anthropic", "openai", "ollama", "openrouter"}
 )
+_ZEROCLAW_SUPPORTED_INTEGRATIONS = frozenset({"github", "git"})
 
 
 def render_zeroclaw(inputs: RenderInputs) -> RenderedFiles:
@@ -742,7 +748,8 @@ def render_zeroclaw(inputs: RenderInputs) -> RenderedFiles:
     # whitelist and raise AgentConfigError on anything zeroclaw can't
     # express today. `git` is a clientside-only identity integration
     # (~/.gitconfig render lives elsewhere) so it is explicitly skipped.
-    _ZEROCLAW_SUPPORTED_INTEGRATIONS = frozenset({"github", "git"})
+    # W5: defined as module constant for consistency with other
+    # supported-set tables in this module.
     for integration in inputs.integrations:
         if integration.type not in _ZEROCLAW_SUPPORTED_INTEGRATIONS:
             raise AgentConfigError(

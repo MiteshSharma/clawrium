@@ -45,6 +45,11 @@ model:
 {% if atlassian_integrations %}
 mcp_servers:
 {% for entry in atlassian_integrations %}
+{# W6 (ATX round 1): the slug is already restricted to `[a-z0-9_]` by
+   `_integration_slug` (alnum + underscore) before this template sees it,
+   so the YAML key cannot be quote-injected. Defense-in-depth: if the
+   sanitizer is ever weakened, the YAML parser will still reject any
+   slug containing a colon/space/dash because we do not wrap the key. #}
   {{ entry.slug }}:
     env:
       JIRA_URL: {{ entry.url | yq }}
