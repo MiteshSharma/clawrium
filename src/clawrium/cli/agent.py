@@ -2739,8 +2739,8 @@ def open_ui(
     browser at the local end of the tunnel. The tunnel runs until you
     Ctrl-C.
 
-    Hermes and zeroclaw expose a native UI today; agents whose manifests
-    do not declare `features.web_ui` (e.g. openclaw) print a hard-error.
+    Hermes, zeroclaw, and openclaw expose a native UI today; agents whose
+    manifests do not declare `features.web_ui` print a hard-error.
     """
     import signal
     import webbrowser

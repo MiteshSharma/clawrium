@@ -72,10 +72,21 @@ def test_web_ui_404_for_unknown_agent(isolated_config: Path):
     assert resp.status_code == 404
 
 
-def test_web_ui_returns_unavailable_for_non_hermes(isolated_config: Path):
+def test_web_ui_returns_unavailable_when_manifest_lacks_feature(
+    isolated_config: Path,
+):
+    """When `features.web_ui` is absent, the endpoint returns
+    `available: false` with the agent_type embedded in the reason.
+
+    All three bundled agent types now declare `features.web_ui`, so this
+    test patches the resolver to None to exercise the no-feature code
+    path. The seeded agent is openclaw merely to keep the rest of the
+    fixture stable.
+    """
     _seed_hosts(isolated_config, "openclaw")
-    with TestClient(app) as client:
-        resp = client.get("/api/fleet/agents/demo/web-ui")
+    with patch("clawrium.core.web_ui.resolve", return_value=None):
+        with TestClient(app) as client:
+            resp = client.get("/api/fleet/agents/demo/web-ui")
     assert resp.status_code == 200
     body = resp.json()
     assert body["available"] is False
@@ -106,6 +117,38 @@ def test_web_ui_returns_tunnel_url_for_remote_hermes(isolated_config: Path):
     assert body == {
         "available": True,
         "local_url": "http://127.0.0.1:54321/",
+        "reason": None,
+    }
+    mock_ensure.assert_called_once_with("demo")
+
+
+def test_web_ui_returns_tunnel_url_for_remote_openclaw(isolated_config: Path):
+    """openclaw resolves with `bind='wildcard'` and a persisted gateway
+    port; the route returns `available: true` with a local tunnel URL.
+
+    Mirror of the hermes positive test above — anchors the openclaw
+    parity work added with `features.web_ui` in the manifest.
+    """
+    _seed_hosts(isolated_config, "openclaw", {"gateway": {"port": 40456}})
+    resolved = ResolvedUI(
+        host="192.168.1.100",
+        remote_port=40456,
+        bind="wildcard",
+        ssh_config={"user": "xclm"},
+    )
+    with (
+        patch("clawrium.core.web_ui.resolve", return_value=resolved),
+        patch("clawrium.core.web_ui_tunnel.ensure", return_value=54322) as mock_ensure,
+    ):
+        with TestClient(app) as client:
+            resp = client.get("/api/fleet/agents/demo/web-ui")
+            assert "demo" in fleet_mod.WEB_UI_LAST_ACCESS
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "available": True,
+        "local_url": "http://127.0.0.1:54322/",
         "reason": None,
     }
     mock_ensure.assert_called_once_with("demo")
@@ -239,8 +282,29 @@ def test_pairing_code_400_for_non_pairing_agent_type(isolated_config: Path):
     assert "pairing handshake" in resp.json()["detail"].lower()
 
 
-def test_pairing_code_400_when_manifest_lacks_web_ui(isolated_config: Path):
-    """openclaw has no features.web_ui — resolver returns None."""
+def test_pairing_code_400_for_openclaw_not_in_pairing_types(isolated_config: Path):
+    """openclaw declares features.web_ui (so resolve() returns a valid
+    ResolvedUI) but is intentionally NOT in `_PAIRING_AGENT_TYPES` —
+    openclaw uses a gateway bearer token, not zeroclaw's pairing-code
+    handshake. The earlier guard at fleet.py:402 fires first and returns
+    400 with "pairing handshake" in the detail before the
+    "no native web UI" branch is reached.
+    """
+    _seed_hosts(isolated_config, "openclaw", {"gateway": {"port": 40456}})
+    with TestClient(app) as client:
+        resp = client.post("/api/fleet/agents/demo/pairing-code")
+    assert resp.status_code == 400
+    assert "pairing handshake" in resp.json()["detail"].lower()
+
+
+def test_pairing_code_400_when_resolver_returns_none(isolated_config: Path):
+    """When resolve() returns None for a pairing-type agent, the manifest
+    check fires (after the _PAIRING_AGENT_TYPES guard) and returns 400.
+
+    Seeds zeroclaw (a pairing type) so the _PAIRING_AGENT_TYPES guard
+    passes, then patches resolve to None to exercise the no-features.web_ui
+    branch independently of any real manifest.
+    """
     _seed_hosts(isolated_config, "zeroclaw", _zeroclaw_config())
     with patch("clawrium.core.web_ui.resolve", return_value=None):
         with TestClient(app) as client:
