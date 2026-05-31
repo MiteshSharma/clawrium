@@ -34,7 +34,7 @@ export function AgentHeader({ agent }: AgentHeaderProps) {
   //     so the user gets feedback that the system is trying.
   //   - permanent no-UI (`reason` says "does not expose") → button is
   //     hidden entirely; rendering a perma-disabled button on every
-  //     nemoclaw / openclaw page was the previous UX regression.
+  //     nemoclaw page was the previous UX regression.
   const webUI = useAgentWebUI(agent.agent_key, agent.status);
   const webUIPermanentlyUnavailable =
     webUI.data?.available === false &&

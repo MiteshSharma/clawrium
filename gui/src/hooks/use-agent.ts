@@ -40,7 +40,7 @@ export function useAgentWebUI(key: string, status: string) {
     //     polling too: agent type is permanently no-UI; no amount of
     //     refetching changes that. The previous unconditional 30s
     //     interval kept hitting the endpoint forever for every
-    //     nemoclaw / openclaw / etc. fleet member.
+    //     nemoclaw / etc. fleet member.
     //   - available=false with a transient reason (tunnel error,
     //     daemon not reachable, etc.) → keep the 30s retry so a
     //     blip clears itself.
