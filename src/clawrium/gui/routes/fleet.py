@@ -578,11 +578,24 @@ async def agent_connection_token(agent_key: str) -> dict[str, Any]:
             ),
         )
 
+    # Route the lookup through `_resolve_openclaw_credentials` (the same
+    # source the openclaw chat proxy uses) so this endpoint stays
+    # consistent with future bearer rotations. The helper reads the
+    # secrets store first and falls back to the legacy hosts.json field,
+    # auto-migrating on first hit — if we read hosts.json directly here,
+    # a rotation that landed only in the secrets store would silently
+    # return a stale token and the user would see an opaque 401 in the
+    # Control UI. Strip on return to defend against operators who
+    # hand-edited the legacy field with trailing whitespace.
+    from clawrium.gui.routes.agents import _resolve_openclaw_credentials
+
     gateway = (agent_record.get("config") or {}).get("gateway") or {}
-    bearer = gateway.get("auth")
+    bearer, _ = await asyncio.to_thread(
+        _resolve_openclaw_credentials, agent_key, gateway
+    )
     if not isinstance(bearer, str) or not bearer.strip():
-        # No persisted bearer means lifecycle ops have not run successfully.
-        # Mirror the pairing-code endpoint's 409 + operator guidance.
+        # No persisted bearer in either source means lifecycle ops have
+        # not run successfully. Mirror the pairing-code endpoint's 409.
         raise HTTPException(
             status_code=409,
             detail=(
@@ -591,7 +604,7 @@ async def agent_connection_token(agent_key: str) -> dict[str, Any]:
             ),
         )
 
-    return {"token": bearer}
+    return {"token": bearer.strip()}
 
 
 async def reap_idle_tunnels(threshold_seconds: float = 1800.0) -> int:
