@@ -72,6 +72,18 @@ Host preparation instructions live in [`docs/host-preparation.md`](docs/host-pre
 
 The website docs MUST follow `docs/host-preparation.md` exactly. Do not edit `website/docs/guides/host-setup.md` directly.
 
+## Hermes Skills
+
+When a Hermes agent (e.g. Maurice) is asked to work on this repository, it MUST load skills from `.hermes/skills/` and treat them as available alongside its built-in skills. Each skill follows the upstream Hermes skill format documented at https://hermes-agent.nousresearch.com/docs/developer-guide/creating-skills.
+
+All Hermes skills shipped from this repository are scoped to the `clawrium` namespace — the `name:` field in their `SKILL.md` frontmatter MUST be prefixed with `clawrium-` (hermes' only documented separator is the hyphen).
+
+Currently available:
+
+| Skill name | Path | Purpose |
+|---|---|---|
+| `clawrium-release-announcements` | `.hermes/skills/release-announcements/` | Daily release blog draft on Blog Pipeline kanban + Discord announcement |
+
 ## Key Concepts
 
 - **Host**: A machine in your network that runs one or more agents
