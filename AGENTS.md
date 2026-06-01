@@ -72,9 +72,17 @@ Host preparation instructions live in [`docs/host-preparation.md`](docs/host-pre
 
 The website docs MUST follow `docs/host-preparation.md` exactly. Do not edit `website/docs/guides/host-setup.md` directly.
 
-## Mirrored Developer Skills
+## Hermes Skills
 
-Some developer skills are mirrored across `.claude/skills/<name>/SKILL.md` and `.opencode/skills/<name>/SKILL.md` so the same workflow is available from either Claude Code or opencode. For mirrored skills, the two `SKILL.md` files MUST stay byte-identical — any edit to one must be mirrored to the other in the same commit. Currently mirrored: `release-announcements`. (Most `.claude/skills/` skills have an opencode counterpart that has drifted intentionally for project-specific wording — those are not part of this rule; only skills explicitly listed here.)
+When a Hermes agent (e.g. Maurice) is asked to work on this repository, it MUST load skills from `.hermes/skills/` and treat them as available alongside its built-in skills. Each skill follows the upstream Hermes skill format documented at https://hermes-agent.nousresearch.com/docs/developer-guide/creating-skills.
+
+All Hermes skills shipped from this repository are scoped to the `clawrium` namespace — the `name:` field in their `SKILL.md` frontmatter MUST be prefixed with `clawrium-` (hermes' only documented separator is the hyphen).
+
+Currently available:
+
+| Skill name | Path | Purpose |
+|---|---|---|
+| `clawrium-release-announcements` | `.hermes/skills/release-announcements/` | Daily release blog draft on Blog Pipeline kanban + Discord announcement |
 
 ## Key Concepts
 
