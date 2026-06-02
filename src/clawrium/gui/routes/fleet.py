@@ -201,7 +201,20 @@ async def agent_detail(agent_key: str, host: str | None = None):
         if agent_key in agents:
             detail = await asyncio.to_thread(get_agent_detail, agent_key, hostname)
             if detail:
-                return _agent_to_dict(detail)
+                payload = _agent_to_dict(detail)
+                # Issue #592: surface the registry-derived max version for
+                # this host's hardware so the overview tab can render an
+                # "upgrade available" indicator. None when the host's
+                # os/arch has no matching platform entry.
+                from clawrium.core.registry import latest_supported_version
+
+                try:
+                    payload["latest_supported_version"] = latest_supported_version(
+                        detail["agent_type"], h.get("hardware", {})
+                    )
+                except Exception:
+                    payload["latest_supported_version"] = None
+                return payload
 
     raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
 

@@ -4,7 +4,7 @@
   tasks:
     - name: Normalize target Hermes version (strip leading 'v')
       ansible.builtin.set_fact:
-        hermes_target_version: "{{ (claw_version | default('v2026.5.7')) | regex_replace('^v', '') }}"
+        hermes_target_version: "{{ (claw_version | default('v2026.5.29.2')) | regex_replace('^v', '') }}"
 
     - name: Resolve Hermes git tag for installer (always 'v'-prefixed)
       ansible.builtin.set_fact:

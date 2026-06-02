@@ -1038,6 +1038,42 @@ def check_compatibility(
     }
 
 
+def latest_supported_version(claw_name: str, hardware: dict) -> str | None:
+    """Return the max manifest version compatible with the host hardware.
+
+    Filters platform entries to those whose os/os_version/arch match the
+    host (same matching rules as `check_compatibility`), then returns the
+    max `version`. Returns None if no platform entry matches.
+    """
+    try:
+        manifest = load_manifest(claw_name)
+    except ManifestNotFoundError:
+        return None
+
+    versions: list[Version] = []
+    for platform in manifest.get("platforms", []):
+        if platform.get("os") != hardware.get("os"):
+            continue
+        try:
+            if not _version_matches(
+                spec=platform.get("os_version", ""),
+                actual=hardware.get("os_version", ""),
+            ):
+                continue
+        except ValueError:
+            continue
+        if platform.get("arch") != hardware.get("architecture"):
+            continue
+        try:
+            versions.append(Version(platform["version"]))
+        except (InvalidVersion, KeyError):
+            continue
+
+    if not versions:
+        return None
+    return str(max(versions))
+
+
 # ---------------------------------------------------------------------------
 # Hermes version parsing
 #
