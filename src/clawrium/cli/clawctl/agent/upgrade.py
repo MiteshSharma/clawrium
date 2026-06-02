@@ -165,6 +165,10 @@ def upgrade(
         )
 
     if not skip_drift_check:
+        # Pre-init so `changed` is bound even if `emit_error` were ever
+        # to become non-NoReturn (it raises typer.Exit today, but the
+        # invariant should not be implicit). ATX iter-2 S1.
+        changed: list[str] = []
         try:
             changed = _drift_files(host, on_host_name, agent_type)
         except Exception as exc:
@@ -224,8 +228,16 @@ def upgrade(
             if not use_json:
                 stream_action(resource=resource, message=f"{stage}: {message}")
 
+        # ATX iter-2 W1 (issue #592): `restart_agent` signals failure
+        # through *both* a raised LifecycleError (host/onboarding pre-
+        # flight) and a `{"success": False, "error": str}` return on
+        # the stop-fail / repair-fail branches (lifecycle.py:914-926
+        # and :781-795). Without checking the return dict, a failed
+        # re-pair silently falls through to the "upgraded" success
+        # output — exactly the silent-stale-bearer trap AGENTS.md
+        # §"Gateway Token Lifecycle" calls out.
         try:
-            restart_agent(
+            restart_result = restart_agent(
                 hostname=hostname,
                 claw_name=agent_type,
                 agent_name=on_host_name,
@@ -234,6 +246,12 @@ def upgrade(
         except LifecycleError as exc:
             emit_error(
                 f"upgrade installed but post-install restart failed: {exc}",
+                hint="run `clawctl agent restart` to rotate the gateway token",
+            )
+        if not restart_result.get("success"):
+            emit_error(
+                "upgrade installed but post-install restart failed: "
+                f"{restart_result.get('error') or 'unknown lifecycle error'}",
                 hint="run `clawctl agent restart` to rotate the gateway token",
             )
 

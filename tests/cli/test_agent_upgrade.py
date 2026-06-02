@@ -322,6 +322,47 @@ def test_upgrade_zeroclaw_invokes_restart_agent_for_bearer_rotation(
     mock_restart.assert_called_once()
 
 
+def test_upgrade_zeroclaw_surfaces_failed_restart_as_error(
+    isolated_config: Path, _patch_drift_clean
+):
+    """ATX iter-2 W1: a `success=False` return from `restart_agent` must
+
+    NOT fall through as a silent "upgraded" success. The bearer rotation
+    guarantee in AGENTS.md is conditional on confirmed restart success.
+    """
+    _write_host(isolated_config, "zeroclaw", "0.6.0")
+
+    def _fake_install(*args, **kwargs):
+        return {
+            "success": True,
+            "agent": "zeroclaw",
+            "version": "0.7.5",
+            "host": "192.168.1.100",
+            "playbooks_run": [],
+            "error": None,
+        }
+
+    def _fake_restart_failed(*args, **kwargs):
+        return {
+            "success": False,
+            "agent": "zeroclaw",
+            "host": "192.168.1.100",
+            "error": "systemd unit failed to come up",
+        }
+
+    with patch(
+        "clawrium.core.install.run_installation", side_effect=_fake_install
+    ), patch(
+        "clawrium.core.lifecycle.restart_agent", side_effect=_fake_restart_failed
+    ):
+        result = runner.invoke(
+            app, ["agent", "upgrade", "test-agent", "--yes"], env=os.environ
+        )
+    assert result.exit_code != 0, result.output
+    assert "restart failed" in result.output.lower()
+    assert "systemd unit failed to come up" in result.output
+
+
 def test_upgrade_openclaw_does_not_invoke_restart_agent(
     isolated_config: Path, _patch_drift_clean
 ):
