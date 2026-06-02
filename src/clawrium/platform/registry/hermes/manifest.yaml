@@ -191,3 +191,41 @@ platforms:
         ripgrep: "*"
         ffmpeg: "*"
         uv: "*"
+  - version: "2026.5.29.2"
+    os: ubuntu
+    os_version: "24.04"
+    arch: x86_64
+    sha256: "82978b9ed77fc851d9f0dc5009e69790424e344ea3e856a5948bd78b30981481"
+    requirements:
+      min_memory_mb: 2048
+      gpu_required: false
+      dependencies:
+        python: ">=3.11"
+        ripgrep: "*"
+        ffmpeg: "*"
+        uv: "*"
+  - version: "2026.5.29.2"
+    os: ubuntu
+    os_version: "22.04"
+    arch: x86_64
+    sha256: "82978b9ed77fc851d9f0dc5009e69790424e344ea3e856a5948bd78b30981481"
+    requirements:
+      min_memory_mb: 2048
+      gpu_required: false
+      dependencies:
+        python: ">=3.11"
+        ripgrep: "*"
+        ffmpeg: "*"
+        uv: "*"
+  - version: "2026.5.29.2"
+    os: macos
+    os_version: ">=14"
+    arch: arm64
+    sha256: "82978b9ed77fc851d9f0dc5009e69790424e344ea3e856a5948bd78b30981481"
+    requirements:
+      min_memory_mb: 2048
+      gpu_required: false
+      dependencies:
+        ripgrep: "*"
+        ffmpeg: "*"
+        uv: "*"

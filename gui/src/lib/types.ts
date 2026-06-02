@@ -66,6 +66,9 @@ export interface AgentDetail extends AgentSummary {
   device_id: string;
   onboarding_step: string;
   gateway_port: number | null;
+  // Max manifest version compatible with this host's hardware. `null`
+  // when the host's os/arch has no matching platform entry. Issue #592.
+  latest_supported_version: string | null;
 }
 
 export interface ActionResponse {
