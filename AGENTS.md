@@ -72,6 +72,43 @@ Host preparation instructions live in [`docs/host-preparation.md`](docs/host-pre
 
 The website docs MUST follow `docs/host-preparation.md` exactly. Do not edit `website/docs/guides/host-setup.md` directly.
 
+## Changelog & Release Notes
+
+Clawrium tracks every change across every release. There are two layers:
+
+- **Root [`CHANGELOG.md`](CHANGELOG.md)** — the working log for the
+  **current, unreleased version only**. All new work is documented here as
+  it lands, under the `## [Unreleased]` heading.
+- **[`docs/releases/<version>/`](docs/releases/)** — one folder per shipped
+  release, each containing a frozen `CHANGELOG.md`. On every release cut the
+  `itx:release` skill archives the root changelog into a new
+  `docs/releases/<version>/CHANGELOG.md` and then resets the root file to an
+  empty `[Unreleased]` template. The per-version folder may also hold
+  detailed migration instructions for that release.
+
+`docs/releases/` is therefore the single place to read the full history of
+what changed in any release. Do not delete entries from it.
+
+### Update Rules
+
+Update the root `CHANGELOG.md` (under `## [Unreleased]`) as part of the same
+change that introduces the behavior — not as an afterthought:
+
+- **Every new feature** gets an entry under `### Added` with a short, plain
+  description of what it does (one or two lines, user-facing language).
+- **Every behavior change** goes under `### Changed`; **every notable bug
+  fix** goes under `### Fixed`, referencing the issue/PR number where one
+  exists (e.g. `#555`).
+- **Every breaking change** MUST be documented under `### BREAKING`. State
+  what breaks, why, and exactly what operators must do to recover (commands,
+  config edits). If there is no automated migration, say so explicitly and
+  give the manual steps. Breaking changes are non-negotiable to document —
+  an undocumented breaking change is a release blocker.
+- Documentation-only changes go under `### Documentation`.
+
+The `itx:release` skill handles archiving and resetting the changelog at cut
+time; contributors only ever edit the root file's `[Unreleased]` section.
+
 ## Hermes Skills
 
 When a Hermes agent (e.g. Maurice) is asked to work on this repository, it MUST load skills from `.hermes/skills/` and treat them as available alongside its built-in skills. Each skill follows the upstream Hermes skill format documented at https://hermes-agent.nousresearch.com/docs/developer-guide/creating-skills.
@@ -98,6 +135,7 @@ Currently available:
 - Repository: https://github.com/ric03uec/clawrium
 - Project Board: https://github.com/users/ric03uec/projects/1
 - Version: 26.6.0
+- Changelog: [`CHANGELOG.md`](CHANGELOG.md) (current unreleased) · [`docs/releases/`](docs/releases/) (per-release archive)
 
 ## Gateway Token Lifecycle (zeroclaw)
 
