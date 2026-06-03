@@ -163,8 +163,8 @@ def test_restart_macos_kickstart_when_loaded(monkeypatch):
     # Exactly two kickstart -k commands; no install_service path.
     assert len(client.commands) == 2
     assert all("kickstart -k" in c for c in client.commands)
-    assert "system/ai.clawrium.hermes.h1.dashboard" in client.commands[0]
-    assert "system/ai.clawrium.hermes.h1" in client.commands[1]
+    assert client.commands[0].endswith("system/ai.clawrium.hermes.h1.dashboard")
+    assert client.commands[1].endswith("system/ai.clawrium.hermes.h1")
 
 
 def test_restart_macos_falls_back_to_bootstrap_when_not_loaded(monkeypatch):

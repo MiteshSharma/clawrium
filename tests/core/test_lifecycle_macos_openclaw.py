@@ -284,6 +284,141 @@ def test_remove_service_macos_bails_on_real_bootout_error(monkeypatch):
     assert deleted == []
 
 
+def test_configure_agent_fails_when_host_missing_after_configure(monkeypatch):
+    """B6: a successful core configure followed by host disappearance
+    must surface a clear error and NOT trigger restart."""
+    monkeypatch.setattr(
+        "clawrium.core.lifecycle.configure_agent", lambda **_kw: (True, None)
+    )
+    monkeypatch.setattr("clawrium.core.hosts.get_host", lambda _h: None)
+
+    restart_calls: list = []
+    monkeypatch.setattr(
+        lifecycle_macos,
+        "restart_agent_macos",
+        lambda *a, **kw: restart_calls.append("called") or (True, None),
+    )
+
+    ok, err = lifecycle_macos.configure_agent(
+        hostname="x", claw_name="openclaw", config_data={}, agent_name="o1"
+    )
+    assert ok is False
+    assert err and "not found after configure" in err
+    assert restart_calls == []
+
+
+def test_configure_agent_fails_when_agent_record_missing(monkeypatch):
+    """B6: agent record disappearing post-configure must surface a clear
+    error, not silently no-op."""
+    monkeypatch.setattr(
+        "clawrium.core.lifecycle.configure_agent", lambda **_kw: (True, None)
+    )
+    # Host present but the agent record is gone.
+    monkeypatch.setattr(
+        "clawrium.core.hosts.get_host",
+        lambda _h: {"hostname": "x", "os_family": "darwin", "agents": {}},
+    )
+
+    restart_calls: list = []
+    monkeypatch.setattr(
+        lifecycle_macos,
+        "restart_agent_macos",
+        lambda *a, **kw: restart_calls.append("called") or (True, None),
+    )
+
+    ok, err = lifecycle_macos.configure_agent(
+        hostname="x", claw_name="openclaw", config_data={}, agent_name="o1"
+    )
+    assert ok is False
+    assert err and "missing after configure" in err
+    assert restart_calls == []
+
+
+def test_remove_service_macos_hermes_boots_out_dashboard_then_gateway(monkeypatch):
+    """B4: hermes coverage gap — `remove_service_macos` must bootout the
+    dashboard label FIRST, then the gateway, before deleting each plist."""
+    deleted: list = []
+
+    def fake_remove_plist(_c, _n, **kw):
+        deleted.append(kw["kind"])
+
+    monkeypatch.setattr(lifecycle_macos, "remove_plist", fake_remove_plist)
+    client = _FakeClient(responses=[(0, "", ""), (0, "", "")])
+    monkeypatch.setattr(lifecycle_macos, "_ssh", lambda _h: client)
+
+    ok, err = lifecycle_macos.remove_service_macos(
+        {"hostname": "x"}, "h1"  # agent_type defaults to hermes
+    )
+    assert ok is True
+    assert err is None
+    bootouts = [c for c in client.commands if "bootout" in c]
+    assert len(bootouts) == 2
+    assert bootouts[0].endswith("system/ai.clawrium.hermes.h1.dashboard")
+    assert bootouts[1].endswith("system/ai.clawrium.hermes.h1")
+    assert deleted == ["dashboard", "gateway"]
+
+
+def test_remove_service_macos_hermes_bails_when_gateway_bootout_fails(monkeypatch):
+    """B4: if the second bootout (gateway) genuinely fails, the gateway
+    plist MUST stay on disk so the operator sees the orphan, while the
+    dashboard plist (already removed) is reported in the error context."""
+    deleted: list = []
+
+    def fake_remove_plist(_c, _n, **kw):
+        deleted.append(kw["kind"])
+
+    monkeypatch.setattr(lifecycle_macos, "remove_plist", fake_remove_plist)
+    client = _FakeClient(
+        responses=[
+            (0, "", ""),  # dashboard bootout OK
+            (5, "", "Operation not permitted"),  # gateway bootout REAL failure
+        ]
+    )
+    monkeypatch.setattr(lifecycle_macos, "_ssh", lambda _h: client)
+
+    ok, err = lifecycle_macos.remove_service_macos({"hostname": "x"}, "h1")
+    assert ok is False
+    assert err and "bootout (gateway)" in err
+    # Dashboard cleanup ran before gateway bootout failed.
+    assert deleted == ["dashboard"]
+
+
+def test_bootstrap_tolerance_rc17_file_exists(monkeypatch):
+    """Narrowed already-loaded matrix: rc=17 + 'File exists' → success."""
+    client = _FakeClient(responses=[(17, "", "File exists")])
+    ok, err = lifecycle_macos._bootstrap_with_tolerance(
+        client, "o1", kind="gateway", agent_type="openclaw"
+    )
+    assert ok is True
+    assert err is None
+
+
+def test_bootstrap_tolerance_rc149_already(monkeypatch):
+    """Narrowed already-loaded matrix: rc=149 + 'already' → success."""
+    client = _FakeClient(
+        responses=[(149, "", "Bootstrap failed: 149: Operation already in progress")]
+    )
+    ok, err = lifecycle_macos._bootstrap_with_tolerance(
+        client, "o1", kind="gateway", agent_type="openclaw"
+    )
+    assert ok is True
+    assert err is None
+
+
+def test_bootstrap_tolerance_rejects_malformed_plist(monkeypatch):
+    """Critical regression: rc=5 with a plist-config error must NOT be
+    swallowed by the old bare-'service' substring marker."""
+    client = _FakeClient(
+        responses=[(5, "", "Service configuration invalid: bad XML")]
+    )
+    ok, err = lifecycle_macos._bootstrap_with_tolerance(
+        client, "o1", kind="gateway", agent_type="openclaw"
+    )
+    assert ok is False
+    assert err and "rc=5" in err
+    assert "Service configuration invalid" in err
+
+
 def test_launchd_helpers_reject_shell_metacharacter_agent_name():
     """B5: defense-in-depth — agent_name with shell metacharacters must
     be refused by write_plist / remove_plist before any sudo runs."""

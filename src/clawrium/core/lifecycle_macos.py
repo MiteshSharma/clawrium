@@ -217,9 +217,16 @@ def _bootstrap_with_tolerance(
     if rc == 0:
         return True, None
     combined = (out + err).lower()
-    already_loaded = any(
-        marker in combined
-        for marker in ("already", "input/output", "file exists", "service")
+    # Explicit (rc, marker) pairs — bare 'service' substring used
+    # previously over-matched malformed-plist errors (e.g. rc=5
+    # 'Service configuration invalid: ...') and silently reported
+    # success. Anything outside this matrix bubbles up as a real failure.
+    already_loaded = (
+        rc == 37
+        or (rc == 17 and "file exists" in combined)
+        or (rc == 5 and "input/output" in combined)
+        or (rc == 149 and "already" in combined)
+        or "service already loaded" in combined
     )
     if already_loaded:
         return True, None
