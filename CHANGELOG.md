@@ -53,4 +53,13 @@ release.
 
 ### Fixed
 
+- Openclaw pairing now negotiates gateway protocol v3..v4, unblocking
+  fresh installs against the currently-pinned openclaw v2026.5.28
+  (`expectedProtocol=4`) on both Linux and macOS while remaining
+  backward compatible with hosts still running v2026.4.2-era daemons
+  (`expectedProtocol=3`). The pair script also surfaces a clear
+  `supports v3-v4, daemon expected vN` error when a future daemon
+  advertises an unsupported protocol, so the next operator hitting
+  the bump knows exactly what to update (#608).
+
 ### Documentation

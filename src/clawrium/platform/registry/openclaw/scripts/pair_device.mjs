@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 /**
- * OpenClaw Device Pairing Script (v2)
+ * OpenClaw Device Pairing Script
  *
  * Uses bootstrap token for simplified localhost auto-pairing.
+ *
+ * Negotiates gateway protocol v3..v4 (issue #608) so the same script works
+ * against v2026.4.2 (v3-only) and v2026.5.28+ (v4-only) daemons. Signature
+ * payload schemas v2 and v3 are both selectable via a function table —
+ * default is v2 because both daemon versions accept it (v4 daemon tries v3
+ * then falls back to v2). Bumping to a v3-payload default is a follow-up
+ * once v3-only daemons exist in the field.
  *
  * Usage: node pair_device.mjs <gateway_url> <bootstrap_token>
  * Output: JSON with deviceId, deviceToken, privateKeyPem
@@ -13,6 +20,10 @@ import crypto from 'crypto';
 
 const [,, gatewayUrl, bootstrapToken] = process.argv;
 
+const MIN_SUPPORTED_PROTOCOL = 3;
+const MAX_SUPPORTED_PROTOCOL = 4;
+const DEFAULT_PAYLOAD_VERSION = 'v2';
+
 if (!gatewayUrl || !bootstrapToken) {
   console.error(JSON.stringify({
     error: 'Missing required arguments',
@@ -21,28 +32,81 @@ if (!gatewayUrl || !bootstrapToken) {
   process.exit(1);
 }
 
-// Generate Ed25519 keypair for device identity
 function generateDeviceKeypair() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
     publicKeyEncoding: { type: 'spki', format: 'der' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
   });
-  // Extract raw public key (last 32 bytes of DER)
   const rawPublicKey = publicKey.slice(-32);
   const publicKeyB64 = rawPublicKey.toString('base64url');
-  // Device ID is hash of public key
   const deviceId = crypto.createHash('sha256').update(rawPublicKey).digest('hex');
   return { deviceId, publicKeyB64, privateKeyPem: privateKey };
 }
 
-// Sign challenge with private key using v2 payload format
-function signChallenge(privateKeyPem, nonce, deviceId, signedAt, token, clientId, clientMode, role, scopes) {
+function normalizeDeviceMetadata(value) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return trimmed.toLowerCase();
+}
+
+// Function table keyed by payload schema version. Server-side schemas live in
+// the openclaw gateway-client package (buildDeviceAuthPayload / V3 in
+// client.ts). Keep this in sync when adding v4+.
+const PAYLOAD_BUILDERS = {
+  v2(p) {
+    return [
+      'v2',
+      p.deviceId,
+      p.clientId,
+      p.clientMode,
+      p.role,
+      p.scopes.join(','),
+      String(p.signedAtMs),
+      p.token ?? '',
+      p.nonce,
+    ].join('|');
+  },
+  v3(p) {
+    return [
+      'v3',
+      p.deviceId,
+      p.clientId,
+      p.clientMode,
+      p.role,
+      p.scopes.join(','),
+      String(p.signedAtMs),
+      p.token ?? '',
+      p.nonce,
+      normalizeDeviceMetadata(p.platform),
+      normalizeDeviceMetadata(p.deviceFamily),
+    ].join('|');
+  },
+};
+
+function buildSignaturePayload(version, params) {
+  const builder = PAYLOAD_BUILDERS[version];
+  if (!builder) {
+    throw new Error(`Unsupported signature payload version: ${version}`);
+  }
+  return builder(params);
+}
+
+function signPayload(privateKeyPem, payload) {
   const privateKey = crypto.createPrivateKey(privateKeyPem);
-  // v2 format: v2|deviceId|clientId|clientMode|role|scopes|signedAtMs|token|nonce
-  const scopesStr = scopes.join(',');
-  const payload = `v2|${deviceId}|${clientId}|${clientMode}|${role}|${scopesStr}|${signedAt}|${token}|${nonce}`;
   const signature = crypto.sign(null, Buffer.from(payload), privateKey);
   return signature.toString('base64url');
+}
+
+function formatProtocolMismatch(details) {
+  const expected = details?.expectedProtocol;
+  return (
+    `openclaw gateway rejected pair handshake: protocol mismatch ` +
+    `(pair script supports v${MIN_SUPPORTED_PROTOCOL}-v${MAX_SUPPORTED_PROTOCOL}, ` +
+    `daemon expected v${expected ?? '?'}). ` +
+    `Bump pair_device.mjs MAX_SUPPORTED_PROTOCOL to match the daemon, ` +
+    `or pin the openclaw manifest to a version this script supports.`
+  );
 }
 
 async function pairDevice() {
@@ -63,15 +127,12 @@ async function pairDevice() {
       });
     }
 
-    ws.on('open', () => {
-      // Wait for server challenge
-    });
+    ws.on('open', () => {});
 
     ws.on('message', async (data) => {
       try {
         const msg = JSON.parse(data.toString());
 
-        // Handle server challenge
         if (msg.type === 'event' && msg.event === 'connect.challenge') {
           challengeNonce = msg.payload?.nonce;
 
@@ -87,12 +148,25 @@ async function pairDevice() {
           const clientMode = 'cli';
           const role = 'operator';
           const scopes = ['operator.read', 'operator.write', 'operator.pairing'];
-          const signature = signChallenge(privateKeyPem, challengeNonce, deviceId, signedAt, bootstrapToken, clientId, clientMode, role, scopes);
+          const payloadVersion = DEFAULT_PAYLOAD_VERSION;
+          const payload = buildSignaturePayload(payloadVersion, {
+            deviceId,
+            clientId,
+            clientMode,
+            role,
+            scopes,
+            signedAtMs: signedAt,
+            token: bootstrapToken,
+            nonce: challengeNonce,
+            platform: process.platform,
+            deviceFamily: '',
+          });
+          const signature = signPayload(privateKeyPem, payload);
 
           try {
             const result = await sendRequest('connect', {
-              minProtocol: 3,
-              maxProtocol: 3,
+              minProtocol: MIN_SUPPORTED_PROTOCOL,
+              maxProtocol: MAX_SUPPORTED_PROTOCOL,
               client: {
                 id: clientId,
                 version: '1.0.0',
@@ -116,7 +190,6 @@ async function pairDevice() {
               }
             });
 
-            // Check if we got a device token back
             if (result.auth?.deviceToken) {
               const output = {
                 deviceId: deviceId,
@@ -130,20 +203,29 @@ async function pairDevice() {
               throw new Error('No deviceToken in connect response');
             }
           } catch (err) {
-            console.error(JSON.stringify({ error: err.message, details: err }));
+            console.error(JSON.stringify({ error: err.message, details: err.details ?? null }));
             ws.close();
             reject(err);
           }
           return;
         }
 
-        // Handle responses
         if (msg.type === 'res' && pendingRequests.has(msg.id)) {
           const { resolve, reject } = pendingRequests.get(msg.id);
           pendingRequests.delete(msg.id);
 
           if (msg.error || !msg.ok) {
-            reject(new Error(msg.error?.message || msg.error || 'Request failed'));
+            const errDetails = msg.error?.details ?? null;
+            const detailCode = errDetails?.code;
+            let message;
+            if (detailCode === 'protocol-mismatch' || detailCode === 'PROTOCOL_MISMATCH') {
+              message = formatProtocolMismatch(errDetails);
+            } else {
+              message = msg.error?.message || (typeof msg.error === 'string' ? msg.error : 'Request failed');
+            }
+            const err = new Error(message);
+            err.details = errDetails;
+            reject(err);
           } else {
             resolve(msg.payload || msg.result || {});
           }
@@ -164,15 +246,19 @@ async function pairDevice() {
       }
     });
 
-    // Timeout after 30 seconds
-    setTimeout(() => {
+    const timeoutHandle = setTimeout(() => {
       ws.close();
       reject(new Error('Pairing timeout'));
     }, 30000);
+
+    ws.on('close', () => clearTimeout(timeoutHandle));
   });
 }
 
-pairDevice().catch((err) => {
-  console.error(JSON.stringify({ error: 'Pairing failed', details: err.message }));
-  process.exit(1);
-});
+pairDevice().then(
+  () => process.exit(0),
+  (err) => {
+    console.error(JSON.stringify({ error: 'Pairing failed', details: err.message }));
+    process.exit(1);
+  }
+);
