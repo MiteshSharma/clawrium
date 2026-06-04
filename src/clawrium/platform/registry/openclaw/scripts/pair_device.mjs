@@ -43,16 +43,13 @@ function generateDeviceKeypair() {
   return { deviceId, publicKeyB64, privateKeyPem: privateKey };
 }
 
-function normalizeDeviceMetadata(value) {
-  if (typeof value !== 'string') return '';
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-  return trimmed.toLowerCase();
-}
-
-// Function table keyed by payload schema version. Server-side schemas live in
-// the openclaw gateway-client package (buildDeviceAuthPayload / V3 in
-// client.ts). Keep this in sync when adding v4+.
+// Function table keyed by payload schema version. The signature payload
+// schema is an axis independent of the connect-protocol version negotiated
+// with the daemon — selection here does NOT track the negotiated protocol.
+// v2026.5.28's daemon verifies a v3 payload first and falls back to v2,
+// while v2026.4.2 only understands v2. v2 is the only schema that works on
+// both, so it is the static default. When v2 is dropped upstream, add the
+// v3 builder back here and flip DEFAULT_PAYLOAD_VERSION.
 const PAYLOAD_BUILDERS = {
   v2(p) {
     return [
@@ -65,21 +62,6 @@ const PAYLOAD_BUILDERS = {
       String(p.signedAtMs),
       p.token ?? '',
       p.nonce,
-    ].join('|');
-  },
-  v3(p) {
-    return [
-      'v3',
-      p.deviceId,
-      p.clientId,
-      p.clientMode,
-      p.role,
-      p.scopes.join(','),
-      String(p.signedAtMs),
-      p.token ?? '',
-      p.nonce,
-      normalizeDeviceMetadata(p.platform),
-      normalizeDeviceMetadata(p.deviceFamily),
     ].join('|');
   },
 };
@@ -158,8 +140,6 @@ async function pairDevice() {
             signedAtMs: signedAt,
             token: bootstrapToken,
             nonce: challengeNonce,
-            platform: process.platform,
-            deviceFamily: '',
           });
           const signature = signPayload(privateKeyPem, payload);
 
@@ -190,20 +170,26 @@ async function pairDevice() {
               }
             });
 
-            if (result.auth?.deviceToken) {
-              const output = {
-                deviceId: deviceId,
-                deviceToken: result.auth.deviceToken,
-                privateKeyPem: privateKeyPem
-              };
-              console.log(JSON.stringify(output));
-              ws.close();
-              resolve(output);
-            } else {
+            const negotiated = result.negotiatedProtocol;
+            if (typeof negotiated === 'number' && Number.isInteger(negotiated)) {
+              if (negotiated < MIN_SUPPORTED_PROTOCOL || negotiated > MAX_SUPPORTED_PROTOCOL) {
+                throw new Error(formatProtocolMismatch({ expectedProtocol: negotiated }));
+              }
+            }
+
+            const deviceToken = result.auth?.deviceToken;
+            if (typeof deviceToken !== 'string' || deviceToken.length === 0) {
               throw new Error('No deviceToken in connect response');
             }
+            const output = {
+              deviceId: deviceId,
+              deviceToken: deviceToken,
+              privateKeyPem: privateKeyPem
+            };
+            console.log(JSON.stringify(output));
+            ws.close();
+            resolve(output);
           } catch (err) {
-            console.error(JSON.stringify({ error: err.message, details: err.details ?? null }));
             ws.close();
             reject(err);
           }
@@ -240,18 +226,17 @@ async function pairDevice() {
       reject(err);
     });
 
-    ws.on('close', (code, reason) => {
-      for (const [, { reject }] of pendingRequests) {
-        reject(new Error(`Connection closed: ${code} ${reason}`));
-      }
-    });
-
     const timeoutHandle = setTimeout(() => {
       ws.close();
       reject(new Error('Pairing timeout'));
     }, 30000);
 
-    ws.on('close', () => clearTimeout(timeoutHandle));
+    ws.on('close', (code, reason) => {
+      clearTimeout(timeoutHandle);
+      for (const [, { reject }] of pendingRequests) {
+        reject(new Error(`Connection closed: ${code} ${reason}`));
+      }
+    });
   });
 }
 

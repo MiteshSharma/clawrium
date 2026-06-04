@@ -4,14 +4,17 @@ Issue #608: pair_device.mjs pinned both minProtocol and maxProtocol to 3, which
 the v2026.5.28 daemon (expectedProtocol=4) rejected. These tests stand up a
 local Node WebSocket server mimicking the daemon's connect.challenge -> connect
 -> hello-ok handshake and assert the pair script:
-  - Succeeds against expectedProtocol=4 (current pinned daemon version).
-  - Succeeds against expectedProtocol=3 (backward compat for older deployments).
+  - Succeeds against expectedProtocol={3, 4}.
+  - Advertises the correct [3, 4] negotiation range on the wire.
   - Fails loudly with a protocol-mismatch message naming the supported range
     when the daemon advertises a protocol outside [3, 4].
+  - Validates `negotiatedProtocol` echoed by the daemon and rejects an
+    out-of-range value even when the daemon would otherwise return a token.
+  - Fails when the connect response omits or empties `auth.deviceToken`.
 
 The mock daemon and the pair script both rely on the `ws` npm package. A
-session-scoped fixture installs `ws` into a cache dir under the repo (skipped
-if `node` or `npm` are missing).
+session-scoped fixture installs `ws` into a tmp dir under pytest's basetemp
+(skipped if `node` or `npm` are missing).
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import socket
 import subprocess
 import time
 from pathlib import Path
@@ -38,73 +40,95 @@ PAIR_SCRIPT = (
     / "pair_device.mjs"
 )
 MOCK_DAEMON = Path(__file__).parent / "fixtures" / "mock_openclaw_daemon.mjs"
-WS_CACHE = REPO_ROOT / "tests" / "platform" / "fixtures" / ".ws_cache"
 
 
 def _have(cmd: str) -> bool:
     return shutil.which(cmd) is not None
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 @pytest.fixture(scope="session")
-def node_env() -> dict[str, Path]:
+def node_env(tmp_path_factory: pytest.TempPathFactory) -> dict:
     """Set up a working directory with `ws` installed and copies of both
     scripts. Node's ESM loader resolves bare imports from the script's
     location upward, so the scripts must live next to a node_modules with
     `ws` in it — NODE_PATH does not work for ESM bare specifiers.
+
+    Uses a pytest tmp dir so parallel xdist workers don't trample each other
+    or pollute the source tree.
     """
     if not _have("node"):
         pytest.skip("node required for behavioral pair test")
     if not _have("npm"):
         pytest.skip("npm required to install ws for behavioral pair test")
-    if not (WS_CACHE / "node_modules" / "ws" / "package.json").exists():
-        WS_CACHE.mkdir(parents=True, exist_ok=True)
-        # Minimal package.json so npm doesn't walk up looking for one.
-        (WS_CACHE / "package.json").write_text(
-            json.dumps({"name": "pair-device-test-cache", "private": True}) + "\n"
+
+    ws_cache = tmp_path_factory.mktemp("pair_device_ws_cache")
+    (ws_cache / "package.json").write_text(
+        json.dumps({"name": "pair-device-test-cache", "private": True}) + "\n"
+    )
+    result = subprocess.run(
+        ["npm", "install", "--no-audit", "--no-fund", "--silent", "ws@^8"],
+        cwd=ws_cache,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        pytest.skip(
+            f"failed to install ws for pair test: {result.stderr.strip() or result.stdout.strip()}"
         )
-        result = subprocess.run(
-            ["npm", "install", "--no-audit", "--no-fund", "--silent", "ws@^8"],
-            cwd=WS_CACHE,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if result.returncode != 0:
-            pytest.skip(
-                f"failed to install ws for pair test: {result.stderr.strip() or result.stdout.strip()}"
-            )
-    # Stage the scripts next to node_modules so ESM resolution finds `ws`.
-    pair_copy = WS_CACHE / "pair_device.mjs"
-    mock_copy = WS_CACHE / "mock_openclaw_daemon.mjs"
+
+    pair_copy = ws_cache / "pair_device.mjs"
+    mock_copy = ws_cache / "mock_openclaw_daemon.mjs"
     pair_copy.write_text(PAIR_SCRIPT.read_text())
     mock_copy.write_text(MOCK_DAEMON.read_text())
     return {"pair": pair_copy, "mock": mock_copy, "env": os.environ.copy()}
 
 
+class _MockDaemon:
+    def __init__(self, proc: subprocess.Popen, port: int):
+        self.proc = proc
+        self.port = port
+        self.connect_params: dict | None = None
+
+    def collect_stdout(self) -> list[dict]:
+        """Drain remaining stdout lines and return as parsed JSON events.
+        Safe to call after the test exercises the script."""
+        if not self.proc.stdout:
+            return []
+        events: list[dict] = []
+        try:
+            for line in self.proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        except ValueError:
+            pass
+        return events
+
+
 def _spawn_mock_daemon(
-    port: int, expected_protocol: int, ctx: dict
-) -> subprocess.Popen:
+    ctx: dict, expected_protocol: int, *extra_args: str
+) -> _MockDaemon:
     proc = subprocess.Popen(
         [
             "node",
             str(ctx["mock"]),
-            "--port",
-            str(port),
             "--expected-protocol",
             str(expected_protocol),
+            "--port",
+            "0",
+            *extra_args,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=ctx["env"],
         text=True,
+        bufsize=1,
     )
-    # Block until the daemon prints its "ready" line or dies.
     deadline = time.time() + 10.0
     while time.time() < deadline:
         if proc.poll() is not None:
@@ -112,14 +136,14 @@ def _spawn_mock_daemon(
             raise RuntimeError(f"mock daemon exited early: {err}")
         line = proc.stdout.readline() if proc.stdout else ""
         if not line:
-            time.sleep(0.05)
+            time.sleep(0.02)
             continue
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
         if payload.get("event") == "ready":
-            return proc
+            return _MockDaemon(proc, int(payload["port"]))
     proc.kill()
     raise TimeoutError("mock daemon never became ready")
 
@@ -139,54 +163,143 @@ def _run_pair_script(port: int, ctx: dict) -> subprocess.CompletedProcess:
     )
 
 
-def _pair_against(expected_protocol: int, ctx: dict):
-    port = _free_port()
-    daemon = _spawn_mock_daemon(port, expected_protocol, ctx)
+def _pair_against(
+    expected_protocol: int, ctx: dict, *extra_mock_args: str
+) -> tuple[subprocess.CompletedProcess, list[dict]]:
+    daemon = _spawn_mock_daemon(ctx, expected_protocol, *extra_mock_args)
     try:
-        return _run_pair_script(port, ctx)
+        result = _run_pair_script(daemon.port, ctx)
     finally:
-        daemon.terminate()
+        daemon.proc.terminate()
         try:
-            daemon.wait(timeout=2)
+            daemon.proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            daemon.kill()
+            daemon.proc.kill()
+    events = daemon.collect_stdout()
+    return result, events
 
 
-@pytest.mark.parametrize("expected_protocol", [3, 4])
+def _find_event(events: list[dict], event_name: str) -> dict | None:
+    for ev in events:
+        if ev.get("event") == event_name:
+            return ev
+    return None
+
+
+@pytest.mark.parametrize(
+    "expected_protocol",
+    [
+        pytest.param(4, id="v2026_5_28_daemon"),
+        pytest.param(3, id="v2026_4_2_daemon"),
+    ],
+)
 def test_pair_succeeds_against_supported_protocol(
     expected_protocol: int, node_env: dict
 ) -> None:
-    """Pair script must succeed against daemons in the supported range."""
-    result = _pair_against(expected_protocol, node_env)
+    """Pair script must succeed against daemons in the supported range AND
+    must advertise the full [3, 4] negotiation window on the wire (so a
+    silent regression back to maxProtocol=3 is caught even when the test
+    runs against expectedProtocol=3)."""
+    result, events = _pair_against(expected_protocol, node_env)
     assert result.returncode == 0, (
         f"pair script failed against expectedProtocol={expected_protocol}:\n"
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
     )
-    # Last stdout line is the JSON output with deviceId/deviceToken.
     output_lines = [ln for ln in result.stdout.strip().splitlines() if ln.strip()]
     assert output_lines, f"no stdout from pair script: {result.stdout!r}"
     payload = json.loads(output_lines[-1])
     assert payload["deviceId"]
+    assert isinstance(payload["deviceToken"], str)
     assert payload["deviceToken"].startswith("mock-device-token-")
     assert "PRIVATE KEY" in payload["privateKeyPem"]
 
+    connect_params = _find_event(events, "connect-params")
+    assert connect_params is not None, f"mock did not log connect-params: {events!r}"
+    assert connect_params["minProtocol"] == 3, (
+        f"pair script regressed minProtocol: {connect_params!r}"
+    )
+    assert connect_params["maxProtocol"] == 4, (
+        f"pair script regressed maxProtocol: {connect_params!r}"
+    )
 
-@pytest.mark.parametrize("expected_protocol", [2, 5])
+
+@pytest.mark.parametrize(
+    "expected_protocol",
+    [
+        pytest.param(5, id="future_v5_daemon"),
+        pytest.param(2, id="legacy_v2_daemon"),
+    ],
+)
 def test_pair_fails_loudly_on_unsupported_protocol(
     expected_protocol: int, node_env: dict
 ) -> None:
     """Pair script must exit non-zero with a clear protocol-mismatch message
     when the daemon's expected protocol falls outside [3, 4]."""
-    result = _pair_against(expected_protocol, node_env)
+    result, _events = _pair_against(expected_protocol, node_env)
     assert result.returncode != 0, (
         f"pair script unexpectedly succeeded against expectedProtocol={expected_protocol}"
     )
     combined = result.stdout + "\n" + result.stderr
-    # The error message must name the supported range AND the daemon's expected
-    # protocol so the operator knows what to bump.
     assert "v3-v4" in combined, (
         f"missing supported-range marker in error output: {combined!r}"
     )
     assert f"v{expected_protocol}" in combined, (
         f"missing daemon-expected protocol marker in error output: {combined!r}"
+    )
+
+
+def test_pair_rejects_out_of_range_negotiated_protocol(node_env: dict) -> None:
+    """A daemon that accepts the connect request but echoes a
+    `negotiatedProtocol` outside [3, 4] must be rejected — without this
+    guard, a future v5 daemon accepting the range for backward compat
+    reasons would return a token that the script wrongly trusts."""
+    # The mock's success path echoes negotiatedProtocol = expectedProtocol.
+    # Spawn the mock with expectedProtocol=4 first (so the connect gate
+    # passes), then force it to echo a v5 negotiation by patching at the
+    # source. Simpler: use a dedicated mock flag.
+    # Instead we use a separate test that reaches into the mock by spawning
+    # it with --expected-protocol=5 AND --port=0 — but that hits the gate.
+    # The cleanest direct test for this validation lives in the production
+    # script's behavior alone: assert that formatProtocolMismatch is called
+    # when `negotiatedProtocol` is out of range. We exercise via a custom
+    # mock invocation that bypasses the protocol gate by widening the
+    # acceptance window — that mode is built into the mock for this test.
+    daemon = _spawn_mock_daemon(node_env, 4, "--negotiated-protocol-override", "5")
+    try:
+        result = _run_pair_script(daemon.port, node_env)
+    finally:
+        daemon.proc.terminate()
+        try:
+            daemon.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            daemon.proc.kill()
+    assert result.returncode != 0, (
+        "pair script silently accepted a v5 negotiated protocol"
+    )
+    combined = result.stdout + "\n" + result.stderr
+    assert "v3-v4" in combined and "v5" in combined, (
+        f"protocol-mismatch error did not name the offending version: {combined!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "mock_flag,case_id",
+    [
+        ("--omit-device-token", "absent_field"),
+        ("--empty-device-token", "empty_string"),
+    ],
+)
+def test_pair_fails_when_device_token_missing_or_empty(
+    mock_flag: str, case_id: str, node_env: dict
+) -> None:
+    """If the connect response carries no usable deviceToken, the script
+    must exit non-zero rather than write a partial JSON output the
+    install playbook would happily parse."""
+    result, _events = _pair_against(4, node_env, mock_flag)
+    assert result.returncode != 0, (
+        f"pair script unexpectedly succeeded with mock {mock_flag} ({case_id})"
+    )
+    combined = result.stdout + "\n" + result.stderr
+    assert "No deviceToken" in combined or "deviceToken" in combined, (
+        f"missing device-token error marker: {combined!r}"
     )

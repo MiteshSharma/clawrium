@@ -7,7 +7,13 @@
 // daemon versions.
 //
 // Usage:
-//   node mock_openclaw_daemon.mjs --port <port> --expected-protocol <N>
+//   node mock_openclaw_daemon.mjs --expected-protocol <N> [--port <port>]
+//                                  [--omit-device-token] [--empty-device-token]
+//
+// If --port is 0 or omitted, the OS picks the port. The "ready" stdout line
+// echoes the bound port so the parent process can read it.
+// Optional flags turn the success response into specific failure shapes for
+// the connect-response negative tests.
 //
 // Behavior:
 //   - On client connect, immediately emit { type: 'event', event:
@@ -34,20 +40,29 @@ function parseArgs() {
   return out;
 }
 
-const { port, 'expected-protocol': expectedProtocolRaw } = parseArgs();
-const portNum = Number(port);
-const expectedProtocol = Number(expectedProtocolRaw);
+const args = parseArgs();
+const portNum = Number(args.port ?? 0);
+const expectedProtocol = Number(args['expected-protocol']);
+const omitDeviceToken = 'omit-device-token' in args;
+const emptyDeviceToken = 'empty-device-token' in args;
+const negotiatedProtocolOverrideRaw = args['negotiated-protocol-override'];
+const negotiatedProtocolOverride =
+  negotiatedProtocolOverrideRaw !== undefined
+    ? Number(negotiatedProtocolOverrideRaw)
+    : null;
 
-if (!Number.isInteger(portNum) || !Number.isInteger(expectedProtocol)) {
-  console.error('usage: mock_openclaw_daemon.mjs --port <port> --expected-protocol <N>');
+if (!Number.isInteger(expectedProtocol)) {
+  console.error('usage: mock_openclaw_daemon.mjs --expected-protocol <N> [--port <port>] [--omit-device-token] [--empty-device-token]');
   process.exit(2);
 }
 
 const wss = new WebSocketServer({ port: portNum, host: '127.0.0.1' });
 
 wss.on('listening', () => {
-  // Stdout signal so the parent process knows the server is ready.
-  console.log(JSON.stringify({ event: 'ready', port: portNum }));
+  const boundPort = wss.address().port;
+  // Stdout signal so the parent process knows the server is ready and which
+  // port it bound (when --port=0, the OS picks one).
+  console.log(JSON.stringify({ event: 'ready', port: boundPort }));
 });
 
 wss.on('connection', (ws) => {
@@ -70,6 +85,11 @@ wss.on('connection', (ws) => {
     if (msg.type !== 'req' || msg.method !== 'connect') return;
 
     const { minProtocol, maxProtocol } = msg.params || {};
+
+    // Echo the negotiation params on stdout so the test can assert the pair
+    // script actually advertised the expected range. Diagnostic-only.
+    console.log(JSON.stringify({ event: 'connect-params', minProtocol, maxProtocol }));
+
     const supportsCurrent =
       Number.isInteger(minProtocol) &&
       Number.isInteger(maxProtocol) &&
@@ -107,19 +127,27 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    const auth = {
+      role: 'operator',
+      scopes: msg.params.scopes || [],
+      issuedAtMs: Date.now(),
+    };
+    if (!omitDeviceToken) {
+      auth.deviceToken = emptyDeviceToken
+        ? ''
+        : `mock-device-token-${crypto.randomBytes(8).toString('hex')}`;
+    }
     ws.send(JSON.stringify({
       type: 'res',
       id: msg.id,
       ok: true,
       payload: {
-        auth: {
-          role: 'operator',
-          scopes: msg.params.scopes || [],
-          deviceToken: `mock-device-token-${crypto.randomBytes(8).toString('hex')}`,
-          issuedAtMs: Date.now(),
-        },
+        auth,
         policy: { maxPayload: 1048576 },
-        negotiatedProtocol: expectedProtocol,
+        negotiatedProtocol:
+          negotiatedProtocolOverride !== null
+            ? negotiatedProtocolOverride
+            : expectedProtocol,
       },
     }));
   });
