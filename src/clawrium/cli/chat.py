@@ -314,7 +314,7 @@ def chat(
                 else:
                     svc = "ethos" if agent_type == "ethos" else "hermes"
                     console.print(
-                        f"Check 'systemctl status {svc}-{rich_escape(str(canonical_name))}' on the agent host."
+                        f"Check 'systemctl --user status {svc}-{rich_escape(str(canonical_name))}' on the agent host."
                     )
                     # Legacy install hint: persisted bind still on loopback means the
                     # opportunistic 127.0.0.1 → 0.0.0.0 migration in lifecycle hasn't

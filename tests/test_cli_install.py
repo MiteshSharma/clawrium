@@ -441,8 +441,8 @@ def test_install_incompatible_exits_1(isolated_config: Path):
             "architecture": "aarch64",  # OpenClaw requires x86_64
             "processor_cores": 4,
             "memtotal_mb": 8192,
-            "distribution": "ubuntu",
-            "distribution_version": "22.04",
+            "os": "ubuntu",
+            "os_version": "22.04",
             "gpu": {"present": False},
         },
         "metadata": {
