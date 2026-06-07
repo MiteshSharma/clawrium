@@ -30,6 +30,7 @@ def test_add_from_template_materializes_local_skill_without_sync(fleet_dir) -> N
     text = skill_md.read_text()
     assert "name: tdd" in text
     assert "description:" in text
+    assert "x-clawrium-source: clawrium/tdd" in text
     assert "run `clawctl agent sync wise-hypatia`" in result.output
 
 
@@ -72,6 +73,35 @@ def test_list_renders_bare_local_names(fleet_dir) -> None:
     assert "clawrium/tdd" not in result.output
 
 
+def test_list_supports_name_output(fleet_dir) -> None:
+    runner.invoke(
+        app,
+        ["agent", "skill", "add", "wise-hypatia", "--from-template", "clawrium/tdd"],
+    )
+    result = runner.invoke(app, ["agent", "skill", "list", "wise-hypatia", "-o", "name"])
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "skill/tdd"
+
+
+def test_add_rejects_path_and_template_together(fleet_dir, tmp_path: Path) -> None:
+    source = tmp_path / "SKILL.md"
+    source.write_text("---\nname: custom-tdd\ndescription: Custom local skill\n---\n\n# Custom\n")
+    result = runner.invoke(
+        app,
+        [
+            "agent",
+            "skill",
+            "add",
+            "wise-hypatia",
+            str(source),
+            "--from-template",
+            "clawrium/tdd",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "either PATH or --from-template" in result.output
+
+
 def test_remove_deletes_state_and_local_dir(fleet_dir) -> None:
     runner.invoke(
         app,
@@ -91,6 +121,19 @@ def test_removed_attach_verb_points_to_add(fleet_dir) -> None:
     assert result.exit_code != 0
     assert "was removed" in result.output
     assert "skill add" in result.output
+
+
+def test_removed_detach_and_get_verbs_point_to_replacements(fleet_dir) -> None:
+    detach = runner.invoke(
+        app,
+        ["agent", "skill", "detach", "clawrium/tdd", "--agent", "wise-hypatia"],
+    )
+    assert detach.exit_code != 0
+    assert "skill remove" in detach.output
+
+    get = runner.invoke(app, ["agent", "skill", "get", "--agent", "wise-hypatia"])
+    assert get.exit_code != 0
+    assert "skill list" in get.output
 
 
 def test_edit_restores_invalid_changes(fleet_dir, monkeypatch) -> None:

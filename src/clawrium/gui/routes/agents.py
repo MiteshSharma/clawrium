@@ -16,7 +16,6 @@ import shlex
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import yaml
 
 from clawrium.core.keys import get_host_private_key
 from clawrium.gui.routes._common import resolve_agent as _resolve_agent
@@ -44,15 +43,19 @@ from clawrium.core.skills import (
     IncompatibleSkillRegistry,
     InvalidSkillRef,
     MissingRegistryPrefix,
+    SOURCE_REF_FIELD,
     SchemaValidationError,
+    Skill,
     SkillError,
     SkillNotFound,
+    SkillRef,
     check_agent_compatibility,
     load_agent_skill,
     list_skills,
     load_skill,
     materialize_skill_for_agent,
     parse_skill_ref,
+    render_skill_md,
 )
 from clawrium.core.skills_apply import (
     AgentNotFoundError,
@@ -403,22 +406,40 @@ def _list_available_for_agent_type(agent_type: str) -> list[dict[str, object]]:
     return available
 
 
-def _render_skill_md(skill) -> str:
-    frontmatter = yaml.safe_dump(
-        skill.skill_md_frontmatter,
-        sort_keys=False,
-        allow_unicode=False,
-    ).strip()
-    body = skill.body.rstrip()
-    return f"---\n{frontmatter}\n---\n\n{body}\n"
+def _skill_with_source_ref(skill: Skill, source_ref: str) -> Skill:
+    frontmatter = dict(skill.skill_md_frontmatter)
+    metadata = dict(skill.metadata)
+    frontmatter[SOURCE_REF_FIELD] = source_ref
+    metadata[SOURCE_REF_FIELD] = source_ref
+    sourced = Skill(
+        ref=SkillRef(skill.ref.registry, skill.ref.name),
+        path=skill.path,
+        metadata=metadata,
+        body=skill.body,
+        skill_md_frontmatter=frontmatter,
+    )
+    return sourced
 
 
-def _write_agent_local_skill(agent_name: str, skill_name: str, skill) -> bool:
+def _source_ref_for_local_skill(local_skill: Skill, name: str) -> SkillRef:
+    raw_source = local_skill.skill_md_frontmatter.get(SOURCE_REF_FIELD)
+    if isinstance(raw_source, str):
+        try:
+            source_ref = parse_skill_ref(raw_source)
+        except SkillError:
+            source_ref = None
+        else:
+            if source_ref.name == name:
+                return source_ref
+    return SkillRef(local_skill.ref.registry, name)
+
+
+def _write_agent_local_skill(agent_name: str, skill_name: str, skill: Skill) -> None:
     target = agent_skills_dir(agent_name) / skill_name
-    existed = target.exists()
-    target.mkdir(parents=True, exist_ok=True)
-    (target / "SKILL.md").write_text(_render_skill_md(skill), encoding="utf-8")
-    return not existed
+    if target.exists():
+        raise FileExistsError(target)
+    target.mkdir(parents=True, exist_ok=False)
+    (target / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
 
 
 @router.get("/{agent_key}/skills")
@@ -436,10 +457,10 @@ async def list_agent_skills(agent_key: str):
     }
     ```
 
-    ``installed`` is the local desired-state file's view — the same view
-    ``clawctl agent skill get`` shows. The agent-detail Skills tab merges
-    these in the UI, so the response keeps them separate to keep the
-    payload close to the underlying data.
+    ``installed`` is the local desired-state file's view. When a local
+    skill was copied from a catalog template, ``ref`` is that source ref so
+    the existing frontend can dedupe against ``available`` and issue the
+    matching registry/name DELETE request.
     """
     resolved = await asyncio.to_thread(_resolve_agent, agent_key)
     if not resolved:
@@ -469,10 +490,16 @@ async def list_agent_skills(agent_key: str):
                 raw_ver = local_skill.skill_md_frontmatter.get("version")
                 if raw_ver is not None:
                     version = str(raw_ver)
+                installed_ref = _source_ref_for_local_skill(local_skill, name)
+                registry = installed_ref.registry
+                ref_text = str(installed_ref)
+            if local_skill is None:
+                registry = "local"
+                ref_text = name
             installed.append(
                 {
-                    "ref": name,
-                    "registry": "local",
+                    "ref": ref_text,
+                    "registry": registry,
                     "name": name,
                     "description": description,
                     "version": version,
@@ -499,7 +526,8 @@ def _install_or_remove(
     """Shared body for POST/DELETE; runs synchronously inside a thread.
 
     Resolves the agent, mutates desired state, then unconditionally calls
-    ``apply_state`` — same drift-recovery contract the CLI uses. Returns
+    ``apply_state``. These legacy compatibility endpoints still reconcile
+    immediately; the new CLI local lifecycle is sync-driven. Returns
     a payload with the post-apply installed skills so the frontend can
     update its cache without an extra round-trip.
     """
@@ -513,11 +541,37 @@ def _install_or_remove(
     try:
         ref = parse_skill_ref(raw_ref)
         if action == "install":
+            target = agent_skills_dir(agent_name) / ref.name
+            if target.exists() or ref.name in read_state(agent_name):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Local skill '{ref.name}' already exists for agent "
+                        f"'{agent_name}'. Remove or rename it before adding a replacement."
+                    ),
+                )
             template = load_skill(ref)
             local_skill = materialize_skill_for_agent(template, agent_type)
-            wrote = _write_agent_local_skill(agent_name, ref.name, local_skill)
+            local_skill = _skill_with_source_ref(local_skill, str(ref))
             _new_state, changed = add_skill(agent_name, ref.name)
-            changed = changed or wrote
+            try:
+                _write_agent_local_skill(agent_name, ref.name, local_skill)
+            except FileExistsError as error:
+                remove_skill(agent_name, ref.name)
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Local skill '{ref.name}' already exists for agent "
+                        f"'{agent_name}'. Remove or rename it before adding a replacement."
+                    ),
+                ) from error
+            except OSError as error:
+                remove_skill(agent_name, ref.name)
+                shutil.rmtree(target, ignore_errors=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to persist local skill '{ref.name}'.",
+                ) from error
         else:
             _new_state, changed = remove_skill(agent_name, ref.name)
             shutil.rmtree(agent_skills_dir(agent_name) / ref.name, ignore_errors=True)
@@ -531,7 +585,7 @@ def _install_or_remove(
     return {
         "success": True,
         "agent_name": agent_name,
-        "ref": ref.name,
+        "ref": str(ref),
         "changed": changed,
         "installed": list(result.applied_skills),
     }
@@ -541,9 +595,8 @@ def _install_or_remove(
 async def install_agent_skill(agent_key: str, registry: str, skill: str):
     """Install ``<registry>/<skill>`` on ``agent_key``.
 
-    Idempotent: re-installing an already-installed skill is a no-op
-    state mutation, but the apply playbook still runs to reconcile any
-    on-host drift (matches the CLI semantics).
+    Compatibility route for adding a catalog template from the current GUI.
+    Duplicate local names return 409; drift recovery is handled by sync.
     """
     return await asyncio.to_thread(
         _install_or_remove, agent_key, registry, skill, action="install"

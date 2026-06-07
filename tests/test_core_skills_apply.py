@@ -22,6 +22,7 @@ from clawrium.core.skills import (
     IncompatibleSkillRegistry,
     InvalidSkillRef,
     NATIVE_REGISTRIES,
+    SkillNotFound,
     materialize_for_claw,
 )
 from clawrium.core.skills_apply import (
@@ -173,6 +174,16 @@ def test_apply_state_agent_not_found(monkeypatch):
     monkeypatch.setattr(skills_apply, "get_agent_by_name", lambda _name: None)
     with pytest.raises(AgentNotFoundError, match="not found"):
         apply_state("tdd-hermes")
+
+
+def test_apply_state_missing_local_skill_aborts_before_runner(monkeypatch):
+    write_state("tdd-hermes", ["tdd"])
+    runner = _patch_runtime(monkeypatch)
+
+    with pytest.raises(SkillNotFound, match="Local skill 'tdd'"):
+        apply_state("tdd-hermes")
+
+    runner.run.assert_not_called()
 
 
 def test_apply_state_ambiguous_agent_name(monkeypatch):

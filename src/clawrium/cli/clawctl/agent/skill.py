@@ -10,13 +10,13 @@ later copies those local bytes to the host without transforming them.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
 
 import typer
-import yaml
 
 from clawrium.cli.clawctl._common import OutputFormat
 from clawrium.cli.clawctl.agent._shared import safe_resolve_agent
@@ -31,6 +31,7 @@ from clawrium.core.skills import (
     IncompatibleSkillRegistry,
     InvalidSkillRef,
     MissingRegistryPrefix,
+    SOURCE_REF_FIELD,
     SchemaValidationError,
     Skill,
     SkillError,
@@ -43,6 +44,7 @@ from clawrium.core.skills import (
     load_skill,
     materialize_skill_for_agent,
     parse_skill_ref,
+    render_skill_md,
     validate_skill,
 )
 from clawrium.core.skills_state import (
@@ -85,14 +87,6 @@ def _validate_local_name(name: str) -> str:
     return name
 
 
-def _render_skill_md(skill: Skill) -> str:
-    frontmatter = yaml.safe_dump(
-        dict(skill.skill_md_frontmatter), sort_keys=False, allow_unicode=False
-    ).strip()
-    body = skill.body or ""
-    return f"---\n{frontmatter}\n---\n{body}"
-
-
 def _persist_local_skill(agent: str, name: str, skill: Skill) -> None:
     target_dir = agent_skills_dir(agent) / name
     if target_dir.exists():
@@ -106,10 +100,15 @@ def _persist_local_skill(agent: str, name: str, skill: Skill) -> None:
             "Remove or rename the existing skill first."
         )
 
-    target_dir.mkdir(parents=True, exist_ok=False)
     try:
-        (target_dir / "SKILL.md").write_text(_render_skill_md(skill))
+        target_dir.mkdir(parents=True, exist_ok=False)
+        (target_dir / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
         add_skill(agent, name)
+    except FileExistsError as error:
+        raise InvalidSkillRef(
+            f"Local skill {name!r} already exists for agent {agent!r}. "
+            "Remove or rename the existing skill first."
+        ) from error
     except Exception:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise
@@ -131,6 +130,22 @@ def _with_name(skill: Skill, name: str) -> Skill:
     )
     validate_skill(renamed)
     return renamed
+
+
+def _with_source_ref(skill: Skill, source_ref: str) -> Skill:
+    frontmatter = dict(skill.skill_md_frontmatter)
+    metadata = dict(skill.metadata)
+    frontmatter[SOURCE_REF_FIELD] = source_ref
+    metadata[SOURCE_REF_FIELD] = source_ref
+    sourced = Skill(
+        ref=skill.ref,
+        path=skill.path,
+        metadata=metadata,
+        body=skill.body,
+        skill_md_frontmatter=frontmatter,
+    )
+    validate_skill(sourced)
+    return sourced
 
 
 def _name_from_skill(skill: Skill, explicit_name: Optional[str]) -> str:
@@ -183,8 +198,10 @@ def _resolve_add_input(
     if path is not None and from_template is not None:
         raise InvalidSkillRef("Pass either PATH or --from-template, not both.")
     if from_template is not None:
-        source = load_skill(parse_skill_ref(from_template))
+        source_ref = parse_skill_ref(from_template)
+        source = load_skill(source_ref)
         skill = materialize_skill_for_agent(source, agent_type)
+        skill = _with_source_ref(skill, str(source_ref))
     elif path is not None:
         skill = _materialize_path_for_agent(path, agent_type)
     else:
@@ -198,7 +215,7 @@ def _resolve_add_input(
 
 def _editor_command(explicit: Optional[str]) -> list[str]:
     raw = explicit or os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
-    return raw.split()
+    return shlex.split(raw)
 
 
 def _run_editor(path: Path, editor: Optional[str]) -> int:

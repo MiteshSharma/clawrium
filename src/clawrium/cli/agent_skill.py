@@ -30,7 +30,6 @@ import logging
 import shutil
 
 import typer
-import yaml
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
@@ -43,12 +42,16 @@ from clawrium.core.skills import (
     InvalidSkillRef,
     MissingRegistryPrefix,
     SchemaValidationError,
+    SOURCE_REF_FIELD,
+    Skill,
     SkillError,
     SkillNotFound,
+    SkillRef,
     check_agent_compatibility,
     load_skill,
     materialize_skill_for_agent,
     parse_skill_ref,
+    render_skill_md,
     validate_skill,
 )
 from clawrium.core.skills_apply import (
@@ -128,23 +131,29 @@ def _resolve_agent_type(agent_name: str) -> str:
     return agent_type
 
 
-def _render_skill_md(skill) -> str:
-    frontmatter = yaml.safe_dump(
-        skill.skill_md_frontmatter,
-        sort_keys=False,
-        allow_unicode=False,
-    ).strip()
-    body = skill.body.rstrip()
-    return f"---\n{frontmatter}\n---\n\n{body}\n"
+def _with_source_ref(skill: Skill, source_ref: str) -> Skill:
+    frontmatter = dict(skill.skill_md_frontmatter)
+    metadata = dict(skill.metadata)
+    frontmatter[SOURCE_REF_FIELD] = source_ref
+    metadata[SOURCE_REF_FIELD] = source_ref
+    sourced = Skill(
+        ref=SkillRef(skill.ref.registry, skill.ref.name),
+        path=skill.path,
+        metadata=metadata,
+        body=skill.body,
+        skill_md_frontmatter=frontmatter,
+    )
+    validate_skill(sourced)
+    return sourced
 
 
-def _write_local_skill(agent_name: str, skill_name: str, skill) -> tuple[bool, object]:
+def _write_local_skill(agent_name: str, skill_name: str, skill: Skill) -> tuple[bool, object]:
     target = agent_skills_dir(agent_name) / skill_name
     existed = target.exists()
     target.mkdir(parents=True, exist_ok=True)
     skill_file = target / "SKILL.md"
     prior_bytes = skill_file.read_bytes() if skill_file.exists() else None
-    skill_file.write_text(_render_skill_md(skill), encoding="utf-8")
+    skill_file.write_text(render_skill_md(skill), encoding="utf-8")
     return existed, prior_bytes
 
 
@@ -225,6 +234,7 @@ def install(
         validate_skill(skill)
         check_agent_compatibility(skill, agent_type)
         local_skill = materialize_skill_for_agent(skill, agent_type)
+        local_skill = _with_source_ref(local_skill, str(ref))
     except _USER_FACING_ERRORS as error:
         _exit_with_error(error)
         return

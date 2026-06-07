@@ -41,6 +41,7 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 """Slug pattern for `<name>` in `<registry>/<name>` and for directory names."""
 
 _CATALOG_OVERLAY_COLLISIONS_WARNED: set[str] = set()
+SOURCE_REF_FIELD = "x-clawrium-source"
 
 _EXTERNAL_PREFIXES = (
     "http://",
@@ -627,6 +628,23 @@ def materialize_skill_for_agent(skill: Skill, agent_type: str) -> Skill:
     return native_skill
 
 
+def render_skill_md(skill: Skill) -> str:
+    """Render a native ``Skill`` as canonical ``SKILL.md`` bytes.
+
+    Callers use this when persisting add-time materialized skills. Sync does
+    not call this helper; sync copies existing local files byte-for-byte.
+    """
+    frontmatter = yaml.safe_dump(
+        dict(skill.skill_md_frontmatter),
+        sort_keys=False,
+        allow_unicode=True,
+    ).strip()
+    body = (skill.body or "").lstrip("\n").rstrip("\n")
+    if body:
+        return f"---\n{frontmatter}\n---\n\n{body}\n"
+    return f"---\n{frontmatter}\n---\n"
+
+
 def _split_frontmatter(text: str) -> tuple[str, dict[str, Any]]:
     """Split a SKILL.md into (body, frontmatter dict).
 
@@ -755,6 +773,8 @@ __all__ = [
     "clear_schema_cache",
     "materialize_for_claw",
     "materialize_skill_for_agent",
+    "render_skill_md",
+    "SOURCE_REF_FIELD",
 ]
 # Note: `scripts/validate_skills.py` imports a handful of underscored
 # helpers from this module by explicit name (`_NAME_RE`, `_load_schema`,

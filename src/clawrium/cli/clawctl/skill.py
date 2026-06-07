@@ -33,6 +33,7 @@ from clawrium.core.skills import (
     list_skills,
     load_skill,
     parse_skill_ref,
+    render_skill_md,
     validate_skill,
 )
 
@@ -77,13 +78,6 @@ def _validate_name(name: str) -> str:
             f"Invalid skill name {name!r}. Names must match ^[a-z0-9][a-z0-9_-]*$."
         )
     return name
-
-
-def _render_skill_md(skill: Skill) -> str:
-    frontmatter = yaml.safe_dump(
-        dict(skill.skill_md_frontmatter), sort_keys=False, allow_unicode=False
-    ).strip()
-    return f"---\n{frontmatter}\n---\n{skill.body or ''}"
 
 
 def _load_native_path(path: Path, registry: str) -> Skill:
@@ -155,10 +149,11 @@ def _write_overlay_skill(registry: str, name: str, skill: Skill) -> None:
         )
     target_dir.mkdir(parents=True, exist_ok=False)
     try:
-        (target_dir / "SKILL.md").write_text(_render_skill_md(skill))
+        (target_dir / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
         if registry == "clawrium":
             (target_dir / "_meta.yaml").write_text(
-                yaml.safe_dump(dict(skill.metadata), sort_keys=False, allow_unicode=False)
+                yaml.safe_dump(dict(skill.metadata), sort_keys=False, allow_unicode=True),
+                encoding="utf-8",
             )
     except Exception:
         shutil.rmtree(target_dir, ignore_errors=True)
@@ -180,7 +175,7 @@ def add(
     if interactive:
         emit_error("interactive skill authoring is not implemented yet")
     if path is None:
-        emit_error("PATH is required unless --interactive is implemented")
+        emit_error("PATH is required; --interactive skill authoring is not implemented yet")
     try:
         local_name, skill = _load_overlay_input(path, registry, name)
         _write_overlay_skill(registry, local_name, skill)

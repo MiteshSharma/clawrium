@@ -98,7 +98,8 @@ def _write_local_skill(agent_name: str = "tdd-hermes", name: str = "tdd") -> Non
     skill_dir = agent_skills_dir(agent_name) / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: Test skill\nversion: '1.0'\n---\n\nBody\n",
+        f"---\nname: {name}\ndescription: Test skill\nversion: '1.0'\n"
+        f"x-clawrium-source: clawrium/{name}\n---\n\nBody\n",
         encoding="utf-8",
     )
     write_state(agent_name, [name])
@@ -124,11 +125,11 @@ def test_list_includes_installed_and_available_for_hermes(monkeypatch):
     assert result["agent_type"] == "hermes"
 
     installed_refs = [row["ref"] for row in result["installed"]]
-    assert installed_refs == ["tdd"]
+    assert installed_refs == ["clawrium/tdd"]
     # Installed row carries summary metadata so the UI can render the
     # description without a second round-trip.
     tdd_row = result["installed"][0]
-    assert tdd_row["registry"] == "local"
+    assert tdd_row["registry"] == "clawrium"
     assert tdd_row["name"] == "tdd"
     assert tdd_row["description"]
     assert tdd_row["version"]
@@ -176,25 +177,26 @@ def test_install_writes_state_and_calls_apply(monkeypatch):
     result = _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
 
     assert result["success"] is True
-    assert result["ref"] == "tdd"
+    assert result["ref"] == "clawrium/tdd"
     assert result["changed"] is True
     assert result["installed"] == ["tdd"]
     assert calls == ["tdd-hermes"]
     assert read_state("tdd-hermes") == ["tdd"]
-    assert (agent_skills_dir("tdd-hermes") / "tdd" / "SKILL.md").exists()
+    local_skill = agent_skills_dir("tdd-hermes") / "tdd" / "SKILL.md"
+    assert local_skill.exists()
+    assert "x-clawrium-source: clawrium/tdd" in local_skill.read_text()
 
 
-def test_install_is_idempotent_but_still_applies(monkeypatch):
-    """Re-installing an already-installed skill is the documented drift
-    recovery path — state is unchanged but the playbook still runs."""
+def test_install_rejects_duplicate_local_skill_without_apply(monkeypatch):
     _stub_resolved(monkeypatch)
     _write_local_skill("tdd-hermes", "tdd")
-    calls = _stub_apply(monkeypatch, applied=["tdd"])
 
-    result = _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
+    monkeypatch.setattr(agents_route, "apply_state", _raises_if_called("apply_state"))
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
 
-    assert result["changed"] is False
-    assert calls == ["tdd-hermes"], "apply_state must run on re-install"
+    assert exc.value.status_code == 409
+    assert read_state("tdd-hermes") == ["tdd"]
 
 
 def test_install_404_when_agent_missing(monkeypatch):
@@ -366,6 +368,7 @@ def test_remove_drops_state_and_calls_apply(monkeypatch):
     result = _run(agents_route.remove_agent_skill("tdd-hermes", "clawrium", "tdd"))
 
     assert result["success"] is True
+    assert result["ref"] == "clawrium/tdd"
     assert result["changed"] is True
     assert result["installed"] == []
     assert calls == ["tdd-hermes"]
