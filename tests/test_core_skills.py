@@ -167,6 +167,29 @@ def test_list_skills_empty_native_registries():
         assert refs == [], f"{native} should be empty, got {refs}"
 
 
+def test_public_list_skills_ignores_overlay_until_wired(monkeypatch, tmp_path):
+    bundled = tmp_path / "bundled"
+    overlay = tmp_path / "xdg" / "clawrium" / "skills"
+    bundled.mkdir()
+    _copy_schemas(bundled)
+    _build_fake_native_skill(overlay, registry="hermes", name="overlay-only")
+    monkeypatch.setattr(skills, "_catalog_root", lambda: bundled)
+
+    assert SkillRef("hermes", "overlay-only") not in list_skills(registry="hermes")
+
+
+def test_public_load_skill_ignores_overlay_until_wired(monkeypatch, tmp_path):
+    bundled = tmp_path / "bundled"
+    overlay = tmp_path / "xdg" / "clawrium" / "skills"
+    bundled.mkdir()
+    _copy_schemas(bundled)
+    _build_fake_native_skill(overlay, registry="hermes", name="overlay-only")
+    monkeypatch.setattr(skills, "_catalog_root", lambda: bundled)
+
+    with pytest.raises(SkillNotFound):
+        load_skill("hermes/overlay-only")
+
+
 def test_list_skills_includes_overlay_only(monkeypatch, tmp_path):
     overlay = tmp_path / "xdg" / "clawrium" / "skills"
     _build_fake_native_skill(overlay, registry="hermes", name="overlay-skill")
@@ -223,6 +246,22 @@ def test_overlay_shadows_bundled_skill_once(monkeypatch, tmp_path, caplog):
     )
 
 
+def test_find_catalog_skill_dir_returns_bundled_when_no_overlay(monkeypatch, tmp_path):
+    _build_fake_native_skill(tmp_path, registry="hermes", name="sample")
+    monkeypatch.setattr(skills, "_catalog_root", lambda: tmp_path)
+
+    assert skills._find_catalog_skill_dir(SkillRef("hermes", "sample")) == (
+        tmp_path / "hermes" / "sample"
+    )
+
+
+def test_find_catalog_skill_dir_returns_none_for_missing(monkeypatch, tmp_path):
+    _copy_schemas(tmp_path)
+    monkeypatch.setattr(skills, "_catalog_root", lambda: tmp_path)
+
+    assert skills._find_catalog_skill_dir(SkillRef("hermes", "missing")) is None
+
+
 # ------------------------------ load_skill ----------------------------------
 
 
@@ -271,6 +310,14 @@ def test_load_agent_skill_validates_native_shape(tmp_path, agent_type):
     assert skill.metadata["name"] == "local"
 
 
+@pytest.mark.parametrize(
+    "name", ["bad name!", "clawrium/tdd", "", "../escape", "UPPER"]
+)
+def test_load_agent_skill_rejects_invalid_name(name):
+    with pytest.raises(InvalidSkillRef):
+        load_agent_skill("hermes-tdd", name, "hermes")
+
+
 def test_load_agent_skill_missing_dir_raises_not_found():
     with pytest.raises(SkillNotFound, match="not found"):
         load_agent_skill("hermes-tdd", "local", "hermes")
@@ -284,6 +331,17 @@ def test_load_agent_skill_rejects_malformed_frontmatter(tmp_path):
 
     with pytest.raises(SchemaValidationError, match="frontmatter"):
         load_agent_skill("hermes-tdd", "local", "hermes")
+
+
+@pytest.mark.parametrize("agent_type", sorted(NATIVE_REGISTRIES))
+def test_load_agent_skill_rejects_schema_invalid_frontmatter(tmp_path, agent_type):
+    root = tmp_path / "xdg" / "clawrium" / "agents" / f"{agent_type}-tdd" / "skills"
+    skill_dir = root / "local"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: local\n---\nbody\n")
+
+    with pytest.raises(SchemaValidationError, match="required"):
+        load_agent_skill(f"{agent_type}-tdd", "local", agent_type)
 
 
 def test_load_agent_skill_rejects_unknown_agent_type():

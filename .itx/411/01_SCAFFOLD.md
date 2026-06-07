@@ -32,10 +32,13 @@ desired-state semantics or any CLI/GUI surface.
     by `_load_schema` and `_bare_name_hint`. **Do not change its
     signature** — that would fan out to schema resolution and the
     bare-name hint path with no benefit.
-  - Rewrite `list_skills` to iterate `_catalog_roots()` and dedupe
-    on `<registry>/<name>`. Overlay wins on collision; emit a
-    `logger.warning` (once per `(registry, name)` per process).
-  - Rewrite `load_skill` to try overlay first, fall back to bundled.
+  - Add private overlay-aware helpers (for example,
+    `_list_skills_from_roots()` and `_find_catalog_skill_dir()`) that
+    iterate `_catalog_roots()` and dedupe on `<registry>/<name>`.
+    Overlay wins on collision; emit a `logger.warning` (once per
+    `(registry, name)` per process). Public `list_skills` and
+    `load_skill` stay bundled-only until B wires overlays alongside the
+    user-facing semantic switch.
   - Add `load_agent_skill(agent: str, name: str, agent_type: str) -> Skill`.
     Per-agent skills are already materialized for their target agent,
     so the returned `Skill.ref.registry` is the concrete agent type
@@ -67,8 +70,9 @@ desired-state semantics or any CLI/GUI surface.
   - Add-time materialization helper converts `clawrium/tdd` into valid
     native frontmatter for each supported agent type.
   - `load_agent_skill` failure paths: missing local skill raises
-    `SkillNotFound`; malformed `SKILL.md` frontmatter raises
-    `SchemaValidationError`.
+    `SkillNotFound`; malformed or schema-invalid `SKILL.md`
+    frontmatter raises `SchemaValidationError`; invalid local names
+    raise `InvalidSkillRef`.
 
 **Exit criteria**
 - `make test` and `make lint` green.

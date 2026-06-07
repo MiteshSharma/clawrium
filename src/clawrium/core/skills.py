@@ -389,7 +389,8 @@ def load_skill(ref: SkillRef | str) -> Skill:
     skill_dir = root / ref.registry / ref.name
     if not skill_dir.is_dir():
         raise SkillNotFound(
-            f"Skill {ref} not found. Run `clm skill list` to see available skills."
+            f"Skill {ref} not found. Run `clawctl skill registry get` to see "
+            "available skills."
         )
 
     return _load_skill_from_dir(ref, skill_dir)
@@ -540,8 +541,10 @@ def check_agent_compatibility(skill: Skill, agent_type: str) -> None:
                 f"got {type(compat).__name__}."
             )
         # Default-true if the claw key is absent (a normalized skill is
-        # meant to run anywhere unless it opts out). Only an explicit
-        # `false` value fails closed.
+        # meant to run anywhere unless it opts out). `validate_skill` enforces
+        # the shipped schema's required compatibility keys before add-time
+        # materialization; this branch remains lenient for legacy direct callers.
+        # Only an explicit `false` value fails closed.
         flag = compat.get(agent_type, True)
         if not flag:
             raise IncompatibleSkillRegistry(
