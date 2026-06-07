@@ -82,9 +82,10 @@ desired-state semantics or any CLI/GUI surface.
   `list_skills` / `load_skill` remain bundled-only until B.
 - Materialization helper covered for `hermes`, `openclaw`, and
   `zeroclaw`; each result validates against that agent's native schema.
-- Byte-preservation boundary is documented for B: sync/apply must stage
-  already-native local `SKILL.md` bytes unchanged when B switches the
-  desired-state source to per-agent local skills.
+- Byte-preservation boundary is documented for B in this scaffold and
+  `.itx/411/00_PLAN.md`: sync/apply must stage already-native local
+  `SKILL.md` bytes unchanged when B switches the desired-state source
+  to per-agent local skills.
 - **No public CLI or GUI behavior change yet** — existing
   `clawctl agent skill attach/detach/get` flows continue to work.
 
@@ -94,6 +95,8 @@ desired-state semantics or any CLI/GUI surface.
 - Any CLI verb changes.
 - Any GUI route or frontend changes.
 - Docs (covered by B).
+- Wiring overlay helpers into `_bare_name_hint`; keep bare-name hints
+  bundled-only until B wires public overlay behavior.
 
 ---
 
@@ -167,8 +170,8 @@ add top-level `clawctl skill add`, and update docs.
     remove or rename the existing skill first.
   - `add` rollback: if `add_skill` fails after the local dir is
     written, delete the dir before returning the error. Symmetric
-    to the existing preflight → mutate → apply pattern at lines
-    97–121 of the pre-change file.
+    to the existing preflight → mutate → apply pattern in the
+    pre-change file.
   - `add` does **not** call `apply_state`. CLI exits after the
     state file is mutated. Use `clawctl agent sync <agent>` to
     flush.

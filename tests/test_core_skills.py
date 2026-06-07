@@ -167,15 +167,56 @@ def test_list_skills_empty_native_registries():
         assert refs == [], f"{native} should be empty, got {refs}"
 
 
+def test_catalog_roots_returns_bundled_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(skills, "_catalog_root", lambda: tmp_path)
+
+    assert skills._catalog_roots() == [("bundled", tmp_path)]
+
+
+def test_catalog_roots_returns_bundled_then_overlay(monkeypatch, tmp_path):
+    bundled = tmp_path / "bundled"
+    overlay = tmp_path / "xdg" / "clawrium" / "skills"
+    bundled.mkdir()
+    overlay.mkdir(parents=True)
+    monkeypatch.setattr(skills, "_catalog_root", lambda: bundled)
+
+    assert skills._catalog_roots() == [("bundled", bundled), ("overlay", overlay)]
+
+
+def test_catalog_roots_returns_overlay_only(monkeypatch, tmp_path):
+    overlay = tmp_path / "xdg" / "clawrium" / "skills"
+    overlay.mkdir(parents=True)
+
+    def missing_catalog():
+        raise SkillNotFound("missing bundled catalog")
+
+    monkeypatch.setattr(skills, "_catalog_root", missing_catalog)
+
+    assert skills._catalog_roots() == [("overlay", overlay)]
+
+
+def test_catalog_roots_raises_when_neither_root_exists(monkeypatch):
+    def missing_catalog():
+        raise SkillNotFound("missing bundled catalog")
+
+    monkeypatch.setattr(skills, "_catalog_root", missing_catalog)
+
+    with pytest.raises(SkillNotFound, match="missing bundled catalog"):
+        skills._catalog_roots()
+
+
 def test_public_list_skills_ignores_overlay_until_wired(monkeypatch, tmp_path):
     bundled = tmp_path / "bundled"
     overlay = tmp_path / "xdg" / "clawrium" / "skills"
     bundled.mkdir()
     _copy_schemas(bundled)
+    _build_fake_native_skill(bundled, registry="hermes", name="bundled-skill")
     _build_fake_native_skill(overlay, registry="hermes", name="overlay-only")
     monkeypatch.setattr(skills, "_catalog_root", lambda: bundled)
 
-    assert SkillRef("hermes", "overlay-only") not in list_skills(registry="hermes")
+    refs = list_skills(registry="hermes")
+    assert SkillRef("hermes", "bundled-skill") in refs
+    assert SkillRef("hermes", "overlay-only") not in refs
 
 
 def test_public_load_skill_ignores_overlay_until_wired(monkeypatch, tmp_path):
@@ -183,9 +224,13 @@ def test_public_load_skill_ignores_overlay_until_wired(monkeypatch, tmp_path):
     overlay = tmp_path / "xdg" / "clawrium" / "skills"
     bundled.mkdir()
     _copy_schemas(bundled)
+    _build_fake_native_skill(bundled, registry="hermes", name="bundled-skill")
     _build_fake_native_skill(overlay, registry="hermes", name="overlay-only")
     monkeypatch.setattr(skills, "_catalog_root", lambda: bundled)
 
+    assert load_skill("hermes/bundled-skill").ref == SkillRef(
+        "hermes", "bundled-skill"
+    )
     with pytest.raises(SkillNotFound):
         load_skill("hermes/overlay-only")
 
@@ -256,10 +301,46 @@ def test_find_catalog_skill_dir_returns_bundled_when_no_overlay(monkeypatch, tmp
 
 
 def test_find_catalog_skill_dir_returns_none_for_missing(monkeypatch, tmp_path):
-    _copy_schemas(tmp_path)
     monkeypatch.setattr(skills, "_catalog_root", lambda: tmp_path)
 
     assert skills._find_catalog_skill_dir(SkillRef("hermes", "missing")) is None
+
+
+def test_find_catalog_skill_dir_returns_overlay_when_bundled_absent(
+    monkeypatch, tmp_path
+):
+    overlay = tmp_path / "xdg" / "clawrium" / "skills"
+    _build_fake_native_skill(overlay, registry="hermes", name="sample")
+
+    def missing_catalog():
+        raise SkillNotFound("missing bundled catalog")
+
+    monkeypatch.setattr(skills, "_catalog_root", missing_catalog)
+
+    assert skills._find_catalog_skill_dir(SkillRef("hermes", "sample")) == (
+        overlay / "hermes" / "sample"
+    )
+
+
+def test_find_catalog_skill_dir_ignores_stub_overlay(monkeypatch, tmp_path):
+    bundled = tmp_path / "bundled"
+    overlay = tmp_path / "xdg" / "clawrium" / "skills"
+    _build_fake_native_skill(bundled, registry="hermes", name="sample")
+    (overlay / "hermes" / "sample").mkdir(parents=True)
+    monkeypatch.setattr(skills, "_catalog_root", lambda: bundled)
+
+    assert skills._find_catalog_skill_dir(SkillRef("hermes", "sample")) == (
+        bundled / "hermes" / "sample"
+    )
+
+
+def test_find_catalog_skill_dir_returns_none_when_no_roots(monkeypatch):
+    def missing_catalog():
+        raise SkillNotFound("missing bundled catalog")
+
+    monkeypatch.setattr(skills, "_catalog_root", missing_catalog)
+
+    assert skills._find_catalog_skill_dir(SkillRef("hermes", "sample")) is None
 
 
 # ------------------------------ load_skill ----------------------------------
@@ -345,7 +426,7 @@ def test_load_agent_skill_rejects_schema_invalid_frontmatter(tmp_path, agent_typ
 
 
 def test_load_agent_skill_rejects_unknown_agent_type():
-    with pytest.raises(IncompatibleSkillRegistry, match="Unknown agent type"):
+    with pytest.raises(InvalidSkillRef, match="Unknown agent type"):
         load_agent_skill("hermes-tdd", "local", "not-a-claw")
 
 
@@ -364,6 +445,8 @@ def test_materialize_skill_for_agent_returns_valid_native_skill(agent_type):
     native_skill = materialize_skill_for_agent(skill, agent_type)
 
     assert native_skill.ref == SkillRef(agent_type, "tdd")
+    assert native_skill.path == Path("__materialized__")
+    assert native_skill.path != skill.path
     assert native_skill.metadata["name"] == "tdd"
     assert native_skill.body.strip().startswith("# TDD")
     validate_skill(native_skill)

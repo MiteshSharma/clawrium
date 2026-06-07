@@ -233,7 +233,7 @@ introduced) unions bundled + overlay and tags origin.
   - `add` rollback: if `skills_state.add_skill` fails after the
     local dir is written, delete the dir before returning the
     error. Symmetric to the existing preflight → mutate → apply
-    pattern in `attach` (line 86–130 of the current file).
+    pattern in the current `attach` implementation.
   - `add` does NOT call `apply_state`. The CLI exits after the
     state file is mutated. Use `clawctl agent sync <agent>` to
     flush. (Same model as `clawctl agent configure`/`sync`.)
@@ -350,7 +350,8 @@ introduced) unions bundled + overlay and tags origin.
   - `load_agent_skill(agent, name, agent_type)` returns a native
     `Skill` for `hermes`, `openclaw`, and `zeroclaw`; raises
     `SkillNotFound` for missing; raises `SchemaValidationError` for
-    malformed native `SKILL.md` frontmatter.
+    malformed or schema-invalid native `SKILL.md` frontmatter; raises
+    `InvalidSkillRef` for invalid local names.
   - `list_agent_skills` returns sorted bare names; empty list if
     dir absent.
   - `skills_state` rejects any desired-state entry containing `/` and

@@ -398,10 +398,13 @@ def load_skill(ref: SkillRef | str) -> Skill:
 
 def _find_catalog_skill_dir(ref: SkillRef) -> Path | None:
     """Return overlay-first directory for a catalog ref, if present."""
-    roots = list(reversed(_catalog_roots()))
+    try:
+        roots = list(reversed(_catalog_roots()))
+    except SkillNotFound:
+        return None
     for _source, root in roots:
         skill_dir = root / ref.registry / ref.name
-        if skill_dir.is_dir():
+        if skill_dir.is_dir() and _has_skill_files(skill_dir, ref.registry):
             return skill_dir
     return None
 
@@ -466,7 +469,7 @@ def load_agent_skill(agent: str, name: str, agent_type: str) -> Skill:
     synthetic `local` registry.
     """
     if agent_type not in NATIVE_REGISTRIES:
-        raise IncompatibleSkillRegistry(
+        raise InvalidSkillRef(
             f"Unknown agent type {agent_type!r}. "
             f"Supported: {', '.join(sorted(NATIVE_REGISTRIES))}."
         )
@@ -633,7 +636,9 @@ def materialize_skill_for_agent(skill: Skill, agent_type: str) -> Skill:
     frontmatter, body = materialize_for_claw(skill, agent_type)
     native_skill = Skill(
         ref=SkillRef(agent_type, skill.ref.name),
-        path=skill.path,
+        # Materialized skills are not on disk yet. Phase B add/edit callers
+        # must choose the per-agent target dir before persisting bytes.
+        path=Path("__materialized__"),
         metadata=dict(frontmatter),
         body=body,
         skill_md_frontmatter=dict(frontmatter),
