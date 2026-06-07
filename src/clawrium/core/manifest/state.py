@@ -11,6 +11,7 @@ class ActualAgent:
     type: str
     host: str  # primary hostname / IP
     status: str
+    version: Optional[str] = None
     providers: list[str] = field(default_factory=list)
     channels: list[str] = field(default_factory=list)
     integrations: list[str] = field(default_factory=list)
@@ -59,6 +60,7 @@ class ActualState:
                     type=agent_data.get("type", ""),
                     host=hostname,
                     status=status,
+                    version=agent_data.get("version"),
                     providers=_as_list(agent_data.get("providers")),
                     channels=_as_list(agent_data.get("channels")),
                     integrations=_as_list(agent_data.get("integrations")),

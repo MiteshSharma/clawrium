@@ -60,7 +60,7 @@ def execute_apply(
         if err:
             errors.append(f"provider/{op.name}: {err}")
 
-    # 3. Install agents
+    # 3. Install new agents
     for op in cs.creates:
         if op.kind != "agent":
             continue
@@ -72,6 +72,18 @@ def execute_apply(
         if err:
             errors.append(f"agent/{op.name}: {err}")
 
+    # 3b. Upgrade existing agents (version change)
+    for op in cs.updates:
+        if op.kind != "agent":
+            continue
+        agent_res = agent_by_name.get(op.name)
+        if not agent_res:
+            continue
+        emit("upgrade", f"agent/{op.name}  ({op.details})")
+        err = _upgrade_agent(agent_res, emit=emit)
+        if err:
+            errors.append(f"agent/{op.name}: {err}")
+
     # 4. Configure provider attachments (new and updated agents)
     provider_attaches = [a for a in cs.attaches if a.resource_kind == "provider"]
     for aop in provider_attaches:
@@ -80,10 +92,17 @@ def execute_apply(
         if err:
             errors.append(f"agent/{aop.agent}: {err}")
 
-    # 5. Start agents
+    # 5. Start new agents
     for name in cs.starts:
         emit("start", f"agent/{name}")
         err = _start_agent(name)
+        if err:
+            errors.append(f"agent/{name}: {err}")
+
+    # 6. Restart agents after upgrade
+    for name in cs.restarts:
+        emit("restart", f"agent/{name}")
+        err = _restart_agent(name)
         if err:
             errors.append(f"agent/{name}: {err}")
 
@@ -219,6 +238,39 @@ def _install_agent(agent_res, emit: Emit) -> str | None:
             version_override=agent_res.spec.version,
         )
     except InstallationError as exc:
+        return str(exc)
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def _upgrade_agent(agent_res, emit: Emit) -> str | None:
+    from clawrium.core.install import InstallationError, run_installation
+
+    if not agent_res.spec.host:
+        return "agent has no host specified"
+    try:
+        run_installation(
+            claw_name=agent_res.spec.type,
+            hostname=agent_res.spec.host,
+            name=agent_res.metadata.name,
+            on_event=lambda stage, msg: emit(stage, f"agent/{agent_res.metadata.name}: {msg}"),
+            version_override=agent_res.spec.version,
+            force=True,
+        )
+    except InstallationError as exc:
+        return str(exc)
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def _restart_agent(name: str) -> str | None:
+    from clawrium.core.lifecycle import LifecycleError, restart_agent
+
+    try:
+        restart_agent(name)
+    except LifecycleError as exc:
         return str(exc)
     except Exception as exc:
         return str(exc)

@@ -124,7 +124,21 @@ def _compute_agents(
                 cs.starts.append(name)
         else:
             actual_agent = actual.agents[name]
-            cs.noops.append(Op(kind="agent", name=name, action="noop"))
+
+            # Version change → upgrade op + restart after
+            desired_version = agent.spec.version
+            if desired_version and desired_version != actual_agent.version:
+                cs.updates.append(
+                    Op(
+                        kind="agent",
+                        name=name,
+                        action="update",
+                        details=f"{actual_agent.version} → {desired_version}",
+                    )
+                )
+                cs.restarts.append(name)
+            else:
+                cs.noops.append(Op(kind="agent", name=name, action="noop"))
 
             desired_providers = [agent.spec.provider] if agent.spec.provider else []
             for p in desired_providers:
