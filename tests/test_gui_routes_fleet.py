@@ -255,39 +255,42 @@ def test_reaper_closes_idle_tunnels():
 
 
 def test_reaper_skips_close_for_restamped_key():
-    """Key re-stamped between snapshot-pop and re-check must not be closed (TOCTOU guard)."""
+    """Key re-stamped during a concurrent /web-ui call skips close() (TOCTOU guard).
+
+    Two stale entries are in the snapshot. close("first") side-effects a re-stamp
+    of "second" — simulating a /web-ui handler running between the snapshot pop and
+    the per-key re-check. The reaper must close "first" (count==1) but skip "second".
+    """
     import time as time_module
 
-    fleet_mod.WEB_UI_LAST_ACCESS["restamped"] = time_module.time() - 3600
+    fleet_mod.WEB_UI_LAST_ACCESS["first"] = time_module.time() - 3600
+    fleet_mod.WEB_UI_LAST_ACCESS["second"] = time_module.time() - 3600
 
-    # Simulate concurrent /web-ui re-stamping the key after the reaper pops it:
-    # intercept the second _LAST_ACCESS_LOCK acquire (the per-key re-check)
-    # and re-insert the key so the guard fires.
-    original_lock = fleet_mod._LAST_ACCESS_LOCK
-    acquire_count = [0]
-    real_aenter = original_lock.__class__.__aenter__
+    def _close_first_restamp_second(key: str) -> None:
+        if key == "first":
+            fleet_mod.WEB_UI_LAST_ACCESS["second"] = time_module.time()
 
-    async def _injecting_aenter(self):
-        result = await real_aenter(self)
-        if self is original_lock:
-            acquire_count[0] += 1
-            if acquire_count[0] == 2:
-                fleet_mod.WEB_UI_LAST_ACCESS["restamped"] = time_module.time()
-        return result
-
-    with (
-        patch.object(original_lock.__class__, "__aenter__", _injecting_aenter),
-        patch("clawrium.core.web_ui_tunnel.close") as mock_close,
-    ):
+    with patch(
+        "clawrium.core.web_ui_tunnel.close", side_effect=_close_first_restamp_second
+    ) as mock_close:
         count = asyncio.run(fleet_mod.reap_idle_tunnels(threshold_seconds=1800.0))
 
-    assert count == 0
-    mock_close.assert_not_called()
-    assert "restamped" in fleet_mod.WEB_UI_LAST_ACCESS
+    assert count == 1
+    mock_close.assert_called_once_with("first")
+    assert "second" in fleet_mod.WEB_UI_LAST_ACCESS
 
 
 def test_reaper_continues_after_close_failure():
-    """close() raising must not increment count; subsequent stale keys are still processed."""
+    """close() raising must not increment count; subsequent stale keys are still processed.
+
+    Pop-before-close trade-off: keys are removed from WEB_UI_LAST_ACCESS in the
+    initial snapshot (before close() is called) to avoid holding _LAST_ACCESS_LOCK
+    across the blocking SSH teardown. This means a close() failure permanently
+    removes tracking — the SSH process may still be alive but becomes un-reapable
+    in future cycles. This is intentional: the alternative (re-inserting on failure)
+    would require another lock acquire and make the reaper retry broken tunnels
+    indefinitely.
+    """
     import time as time_module
 
     fleet_mod.WEB_UI_LAST_ACCESS["bad"] = time_module.time() - 3600
@@ -432,6 +435,7 @@ def test_pairing_code_502_on_tunnel_failure(isolated_config: Path):
             resp = client.post("/api/fleet/agents/demo/pairing-code")
     assert resp.status_code == 502
     assert "ssh refused" in resp.json()["detail"]
+    assert "zc_test_bearer" not in resp.text
 
 
 def test_pairing_code_success(isolated_config: Path):
@@ -509,6 +513,7 @@ def test_pairing_code_409_on_daemon_401(isolated_config: Path):
 
     assert resp.status_code == 409
     assert "clawctl agent configure" in resp.json()["detail"]
+    assert "zc_test_bearer" not in resp.text
 
 
 def test_pairing_code_503_on_daemon_503(isolated_config: Path):
@@ -543,6 +548,7 @@ def test_pairing_code_503_on_daemon_503(isolated_config: Path):
 
     assert resp.status_code == 503
     assert "clawctl agent restart" in resp.json()["detail"]
+    assert "zc_test_bearer" not in resp.text
 
 
 def test_pairing_code_502_on_unexpected_daemon_status(isolated_config: Path):
@@ -577,6 +583,7 @@ def test_pairing_code_502_on_unexpected_daemon_status(isolated_config: Path):
 
     assert resp.status_code == 502
     assert "418" in resp.json()["detail"]
+    assert "zc_test_bearer" not in resp.text
 
 
 def test_pairing_code_502_on_empty_code(isolated_config: Path):
@@ -612,6 +619,7 @@ def test_pairing_code_502_on_empty_code(isolated_config: Path):
 
     assert resp.status_code == 502
     assert "empty pairing code" in resp.json()["detail"].lower()
+    assert "zc_test_bearer" not in resp.text
 
 
 def test_pairing_code_502_on_http_error(isolated_config: Path):
@@ -643,6 +651,7 @@ def test_pairing_code_502_on_http_error(isolated_config: Path):
 
     assert resp.status_code == 502
     assert "Could not reach the agent daemon" in resp.json()["detail"]
+    assert "zc_bearer" not in resp.text
 
 
 def test_pairing_code_502_on_non_json_response(isolated_config: Path):
@@ -678,6 +687,7 @@ def test_pairing_code_502_on_non_json_response(isolated_config: Path):
 
     assert resp.status_code == 502
     assert "non-JSON" in resp.json()["detail"]
+    assert "zc_bearer" not in resp.text
 
 
 def test_pairing_code_500_on_unexpected_tunnel_exception(isolated_config: Path):
@@ -695,6 +705,7 @@ def test_pairing_code_500_on_unexpected_tunnel_exception(isolated_config: Path):
     assert resp.status_code == 500
     assert "Internal error" in resp.json()["detail"]
     assert "unexpected internal failure" not in resp.json()["detail"]
+    assert "zc_bearer" not in resp.text
 
 
 def test_pairing_code_504_on_upstream_timeout(isolated_config: Path):
@@ -724,6 +735,7 @@ def test_pairing_code_504_on_upstream_timeout(isolated_config: Path):
             resp = client.post("/api/fleet/agents/demo/pairing-code")
 
     assert resp.status_code == 504
+    assert "zc_bearer" not in resp.text
 
 
 def test_pairing_code_local_host_skips_tunnel(isolated_config: Path):
@@ -1095,8 +1107,12 @@ def test_fleet_health_returns_200_under_concurrent_clients(isolated_config: Path
         "clawrium.gui.routes.fleet.get_fleet_data",
         return_value=([vm], _fleet_summary()),
     ):
-        with _TPE(max_workers=3) as executor:
-            results = [f.result(timeout=15) for f in [executor.submit(_probe) for _ in range(3)]]
+        executor = _TPE(max_workers=3)
+        try:
+            futures = [executor.submit(_probe) for _ in range(3)]
+            results = [f.result(timeout=15) for f in futures]
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     assert len(results) == 3, f"only {len(results)} threads completed"
     assert all(s == 200 for s in results), results
@@ -1229,7 +1245,7 @@ def test_start_agent_success(isolated_config: Path):
     _seed_hosts(isolated_config, "hermes")
     with patch(
         "clawrium.gui.routes.fleet.start_agent", return_value={"success": True}
-    ):
+    ) as mock_start:
         with TestClient(app) as client:
             resp = client.post("/api/agents/demo/start")
     assert resp.status_code == 200
@@ -1237,6 +1253,7 @@ def test_start_agent_success(isolated_config: Path):
     assert data["success"] is True
     assert data["operation"] == "start"
     assert data["agent"] == "demo"
+    mock_start.assert_called_once_with("192.168.1.100", "hermes", agent_name="demo")
 
 
 def test_start_agent_lifecycle_error_sanitized(isolated_config: Path):
@@ -1281,13 +1298,14 @@ def test_stop_agent_success(isolated_config: Path):
     _seed_hosts(isolated_config, "hermes")
     with patch(
         "clawrium.gui.routes.fleet.stop_agent", return_value={"success": True}
-    ):
+    ) as mock_stop:
         with TestClient(app) as client:
             resp = client.post("/api/agents/demo/stop")
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
     assert data["operation"] == "stop"
+    mock_stop.assert_called_once_with("192.168.1.100", "hermes", agent_name="demo")
 
 
 def test_stop_agent_lifecycle_error_sanitized(isolated_config: Path):
@@ -1331,13 +1349,14 @@ def test_restart_agent_success(isolated_config: Path):
     _seed_hosts(isolated_config, "hermes")
     with patch(
         "clawrium.gui.routes.fleet.restart_agent", return_value={"success": True}
-    ):
+    ) as mock_restart:
         with TestClient(app) as client:
             resp = client.post("/api/agents/demo/restart")
     assert resp.status_code == 200
     data = resp.json()
     assert data["success"] is True
     assert data["operation"] == "restart"
+    mock_restart.assert_called_once_with("192.168.1.100", "hermes", agent_name="demo")
 
 
 def test_restart_agent_lifecycle_error_sanitized(isolated_config: Path):
