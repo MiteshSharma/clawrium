@@ -537,3 +537,31 @@ def test_add_overlay_skill_422_schema_invalid(_isolate_overlay):
     with pytest.raises(HTTPException) as exc:
         _run(skills_route.add_overlay_skill(body))
     assert exc.value.status_code == 422
+
+
+def test_add_overlay_skill_422_on_path_traversal(_isolate_overlay):
+    body = skills_route.AddOverlaySkillBody(
+        registry="hermes",
+        name="../evil",
+        content="---\nname: evil\ndescription: traversal\n---\n\n",
+    )
+    with pytest.raises(HTTPException) as exc:
+        _run(skills_route.add_overlay_skill(body))
+    assert exc.value.status_code == 422
+
+
+def test_add_overlay_skill_409_on_rename_race(_isolate_overlay, monkeypatch):
+    """FileExistsError during rename (TOCTOU between pre-check and write) → 409."""
+    body = skills_route.AddOverlaySkillBody(
+        registry="hermes",
+        name="race-skill",
+        content="---\nname: race-skill\ndescription: Race test\n---\n\n",
+    )
+
+    def _raise_exists(self, target):
+        raise FileExistsError(f"[Errno 17] File exists: '{target}'")
+
+    monkeypatch.setattr(Path, "rename", _raise_exists)
+    with pytest.raises(HTTPException) as exc:
+        _run(skills_route.add_overlay_skill(body))
+    assert exc.value.status_code == 409

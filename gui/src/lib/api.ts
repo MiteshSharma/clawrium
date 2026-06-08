@@ -258,6 +258,10 @@ export const api = {
     ),
 
   // Phase C: per-agent local skill lifecycle
+  getLocalAgentSkill: (key: string, name: string) =>
+    request<{ agent_name: string; skill_name: string; content: string }>(
+      `/agents/${encodeURIComponent(key)}/skills/local/${encodeURIComponent(name)}`,
+    ),
   addAgentSkill: (
     key: string,
     payload: {

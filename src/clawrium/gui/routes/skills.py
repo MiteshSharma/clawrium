@@ -24,6 +24,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Path as FastAPIPath
 from pydantic import BaseModel
 
+import yaml
+
 from clawrium.core.skills import (
     NATIVE_REGISTRIES,
     REGISTRIES,
@@ -35,6 +37,7 @@ from clawrium.core.skills import (
     SkillError,
     SkillNotFound,
     SkillRef,
+    _NAME_RE,
     _overlay_root,
     _split_frontmatter,
     list_skills,
@@ -337,7 +340,25 @@ async def add_overlay_skill(payload: AddOverlaySkillBody) -> dict[str, Any]:
                 detail=f"Unknown registry {payload.registry!r}. Must be one of {sorted(REGISTRIES)}.",
             )
 
-        target_dir = _overlay_root() / payload.registry / payload.name
+        # B1: validate name before constructing any path.
+        if not _NAME_RE.fullmatch(payload.name):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid skill name {payload.name!r}. Must match ^[a-z0-9][a-z0-9_-]*$.",
+            )
+
+        overlay_root = _overlay_root()
+        target_dir = overlay_root / payload.registry / payload.name
+        # Assert resolved path stays within overlay root (guards symlink and
+        # traversal edge cases that pass the regex on some filesystems).
+        try:
+            target_dir.resolve().relative_to(overlay_root.resolve())
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Skill name {payload.name!r} escapes the overlay root.",
+            ) from error
+
         if target_dir.exists():
             raise HTTPException(
                 status_code=409,
@@ -349,7 +370,7 @@ async def add_overlay_skill(payload: AddOverlaySkillBody) -> dict[str, Any]:
 
         try:
             body_text, fm = _split_frontmatter(payload.content)
-        except Exception as error:
+        except (ValueError, yaml.YAMLError) as error:
             raise HTTPException(
                 status_code=422, detail=f"Failed to parse SKILL.md: {error}"
             ) from error
@@ -376,14 +397,18 @@ async def add_overlay_skill(payload: AddOverlaySkillBody) -> dict[str, Any]:
             tmp_dir.mkdir(parents=True, exist_ok=False)
             (tmp_dir / "SKILL.md").write_text(render_skill_md(skill), encoding="utf-8")
             tmp_dir.rename(target_dir)
-        except FileExistsError as error:
+        except (FileExistsError, OSError) as error:
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            raise HTTPException(
-                status_code=409,
-                detail=f"Skill {payload.registry}/{payload.name} already exists in the user overlay.",
-            ) from error
-        except OSError as error:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            # ENOTEMPTY / EISDIR / EEXIST on rename means a concurrent writer
+            # created the directory between our pre-check and the rename — 409.
+            # Other OS errors (permission denied, no space) surface as 500.
+            collision_errnos = {17, 39, 21}  # EEXIST, ENOTEMPTY, EISDIR
+            errno_val = getattr(error, "errno", None)
+            if isinstance(error, FileExistsError) or errno_val in collision_errnos:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Skill {payload.registry}/{payload.name} already exists in the user overlay.",
+                ) from error
             raise HTTPException(
                 status_code=500, detail="Failed to write skill to overlay."
             ) from error

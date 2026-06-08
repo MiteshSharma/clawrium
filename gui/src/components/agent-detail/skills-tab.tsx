@@ -12,6 +12,7 @@ import {
   useEditAgentSkill,
   useRemoveLocalAgentSkill,
 } from "@/hooks";
+import { api } from "@/lib/api";
 import type { AgentSkillRow, SkillOrigin } from "@/lib/types";
 
 interface SkillsTabProps {
@@ -311,27 +312,35 @@ function AddSkillModal({
 function EditSkillModal({
   open,
   skillName,
-  initialContent,
   agentKey,
   onClose,
   editMutation,
 }: {
   open: boolean;
   skillName: string;
-  initialContent: string;
   agentKey: string;
   onClose: () => void;
   editMutation: ReturnType<typeof useEditAgentSkill>;
 }) {
-  const [content, setContent] = useState(initialContent);
+  const [content, setContent] = useState("");
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [fetchLoading, setFetchLoading] = useState(false);
 
   useEffect(() => {
-    if (open) {
-      setContent(initialContent);
-      setLocalError(null);
-    }
-  }, [open, initialContent]);
+    if (!open || !skillName) return;
+    setContent("");
+    setFetchError(null);
+    setLocalError(null);
+    setFetchLoading(true);
+    api
+      .getLocalAgentSkill(agentKey, skillName)
+      .then((res) => setContent(res.content))
+      .catch((err) =>
+        setFetchError(err instanceof Error ? err.message : "Failed to load skill"),
+      )
+      .finally(() => setFetchLoading(false));
+  }, [open, agentKey, skillName]);
 
   const handleSave = async () => {
     setLocalError(null);
@@ -354,7 +363,7 @@ function EditSkillModal({
             variant="primary"
             size="sm"
             onClick={handleSave}
-            disabled={editMutation.isPending}
+            disabled={editMutation.isPending || fetchLoading || !!fetchError}
           >
             {editMutation.isPending ? "Saving…" : "Save"}
           </Button>
@@ -365,6 +374,14 @@ function EditSkillModal({
       }
     >
       <div className="space-y-3">
+        {fetchError ? (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+          >
+            Failed to load skill: {fetchError}
+          </div>
+        ) : null}
         {localError ? (
           <div
             role="alert"
@@ -381,12 +398,17 @@ function EditSkillModal({
           </code>{" "}
           to apply changes on the host.
         </p>
-        <textarea
-          className="w-full h-64 rounded-lg border border-default bg-surface p-3 text-sm font-mono text-primary-text resize-y focus:outline-none focus:ring-2 focus:ring-accent"
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          aria-label="SKILL.md content"
-        />
+        {fetchLoading ? (
+          <div className="h-64 rounded-lg border border-default bg-surface animate-pulse" />
+        ) : (
+          <textarea
+            className="w-full h-64 rounded-lg border border-default bg-surface p-3 text-sm font-mono text-primary-text resize-y focus:outline-none focus:ring-2 focus:ring-accent"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            aria-label="SKILL.md content"
+            disabled={!!fetchError}
+          />
+        )}
       </div>
     </Modal>
   );
@@ -575,7 +597,6 @@ export function SkillsTab({ agentKey }: SkillsTabProps) {
         <EditSkillModal
           open={!!editingSkill}
           skillName={editingSkill.name}
-          initialContent={`---\nname: ${editingSkill.name}\ndescription: ${editingSkill.description ?? ""}\n---\n\n`}
           agentKey={agentKey}
           onClose={() => setEditingSkill(null)}
           editMutation={editMutation}

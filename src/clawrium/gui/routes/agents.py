@@ -15,6 +15,8 @@ import shlex
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from typing import Literal
+
 from pydantic import BaseModel
 
 from clawrium.core.keys import get_host_private_key
@@ -68,6 +70,7 @@ from clawrium.core.skills_apply import (
     apply_state,
 )
 from clawrium.core.skills_state import (
+    _validate_skill_name,
     add_skill,
     agent_skills_dir,
     read_state,
@@ -647,7 +650,7 @@ async def remove_agent_skill(agent_key: str, registry: str, skill: str):
 
 
 class AddSkillBody(BaseModel):
-    input_mode: str  # "template" | "file" | "inline"
+    input_mode: Literal["template", "file", "inline"]
     # template mode
     registry: str | None = None
     name: str | None = None
@@ -744,16 +747,15 @@ async def add_agent_skill(agent_key: str, payload: AddSkillBody):
 
             validate_skill(skill)
 
-            if agent_skills_dir(agent_name) / skill_name:
-                target = agent_skills_dir(agent_name) / skill_name
-                if target.exists() or skill_name in read_state(agent_name):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            f"Local skill '{skill_name}' already exists for agent '{agent_name}'. "
-                            "Remove or rename it first."
-                        ),
-                    )
+            target = agent_skills_dir(agent_name) / skill_name
+            if target.exists() or skill_name in read_state(agent_name):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Local skill '{skill_name}' already exists for agent '{agent_name}'. "
+                        "Remove or rename it first."
+                    ),
+                )
 
             add_skill(agent_name, skill_name)
             try:
@@ -782,6 +784,43 @@ async def add_agent_skill(agent_key: str, payload: AddSkillBody):
     return await asyncio.to_thread(_add)
 
 
+@router.get("/{agent_key}/skills/local/{name}")
+async def get_local_agent_skill(agent_key: str, name: str):
+    """Return the raw SKILL.md text for a per-agent local skill.
+
+    Used by the GUI Edit modal to seed the textarea with the current
+    on-disk content before the user makes changes.
+    """
+
+    def _get() -> dict[str, object]:
+        try:
+            _validate_skill_name(name)
+        except InvalidSkillRef as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+        resolved = _resolve_agent(agent_key)
+        if not resolved:
+            raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
+        _host_record, _agent_type, agent_record = resolved
+        agent_name = agent_record.get("agent_name") or agent_key
+
+        target = agent_skills_dir(agent_name) / name / "SKILL.md"
+        if not target.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Local skill '{name}' not found for agent '{agent_name}'.",
+            )
+        try:
+            content = target.read_text(encoding="utf-8")
+        except OSError as error:
+            raise HTTPException(
+                status_code=500, detail=f"Failed to read local skill '{name}'."
+            ) from error
+        return {"agent_name": agent_name, "skill_name": name, "content": content}
+
+    return await asyncio.to_thread(_get)
+
+
 @router.put("/{agent_key}/skills/local/{name}")
 async def edit_agent_skill(agent_key: str, name: str, payload: EditSkillBody):
     """Replace the body of a per-agent local skill.
@@ -791,6 +830,11 @@ async def edit_agent_skill(agent_key: str, name: str, payload: EditSkillBody):
     """
 
     def _edit() -> dict[str, object]:
+        try:
+            _validate_skill_name(name)
+        except InvalidSkillRef as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
         resolved = _resolve_agent(agent_key)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")
@@ -846,6 +890,11 @@ async def delete_local_agent_skill(agent_key: str, name: str):
     """
 
     def _delete() -> dict[str, object]:
+        try:
+            _validate_skill_name(name)
+        except InvalidSkillRef as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
         resolved = _resolve_agent(agent_key)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")

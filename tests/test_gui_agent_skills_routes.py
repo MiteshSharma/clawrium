@@ -658,29 +658,43 @@ def test_add_skill_404_when_agent_not_found(monkeypatch):
     assert exc.value.status_code == 404
 
 
-def test_add_skill_unknown_mode_422(monkeypatch):
-    _stub_resolved(monkeypatch, agent_type="hermes")
+def test_add_skill_unknown_mode_rejected_by_pydantic():
+    """Pydantic's Literal enforcement rejects unknown input_mode before the
+    route handler runs — FastAPI converts this to a 422 Unprocessable Entity."""
+    from pydantic import ValidationError
 
-    body = agents_route.AddSkillBody(input_mode="magic")
-    with pytest.raises(HTTPException) as exc:
-        _run(agents_route.add_agent_skill("tdd-hermes", body))
-    assert exc.value.status_code == 422
+    with pytest.raises(ValidationError):
+        agents_route.AddSkillBody(input_mode="magic")  # type: ignore[arg-type]
 
 
 def test_add_skill_local_prefix_never_dispatches_to_registry_route(monkeypatch):
-    """registry=='local' must route to add_agent_skill, not install_agent_skill."""
+    """POST /{key}/skills (no registry segment) routes to add_agent_skill,
+    not the compat install_agent_skill — confirmed by asserting apply_state
+    is NEVER called (install_agent_skill calls apply_state; add_agent_skill
+    does not)."""
     _stub_resolved(monkeypatch, agent_type="hermes")
-    install_called = []
-    monkeypatch.setattr(agents_route, "apply_state", _raises_if_called("apply_state"))
+    apply_called = []
 
-    # Calling install with registry="local" uses the compat route and would
-    # fail because "local" is not a valid SkillRef prefix. The new local
-    # DELETE route's name argument must always be a bare name.
+    def _record_apply(agent_name: str, **_kwargs):
+        apply_called.append(agent_name)
+        # Return a fake ApplyResult so the compat route doesn't blow up
+        from clawrium.core.skills_apply import ApplyResult
+        return ApplyResult(
+            agent_name=agent_name,
+            agent_type="hermes",
+            hostname="wolf-i",
+            applied_skills=[],
+            log_dir=Path("/tmp/fake"),
+        )
+
+    monkeypatch.setattr(agents_route, "apply_state", _record_apply)
+
     content = "---\nname: bare\ndescription: test\n---\n\nBody\n"
     body = agents_route.AddSkillBody(input_mode="file", content=content)
     result = _run(agents_route.add_agent_skill("tdd-hermes", body))
     assert result["skill_name"] == "bare"
-    assert not install_called
+    # add_agent_skill must NOT have called apply_state
+    assert not apply_called, "apply_state was called — routed to compat install endpoint"
 
 
 # ---------- Phase C: PUT /{agent_key}/skills/local/{name} -------------------
@@ -747,3 +761,68 @@ def test_delete_local_skill_404_when_agent_not_found(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _run(agents_route.delete_local_agent_skill("ghost", "tdd"))
     assert exc.value.status_code == 404
+
+
+def test_delete_local_skill_422_on_invalid_name(monkeypatch):
+    _stub_resolved(monkeypatch, agent_type="hermes")
+
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.delete_local_agent_skill("tdd-hermes", "../evil"))
+    assert exc.value.status_code == 422
+
+
+def test_edit_local_skill_422_on_invalid_name(monkeypatch):
+    _stub_resolved(monkeypatch, agent_type="hermes")
+
+    body = agents_route.EditSkillBody(content="---\nname: ok\ndescription: ok\n---\n\n")
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.edit_agent_skill("tdd-hermes", "../evil", body))
+    assert exc.value.status_code == 422
+
+
+def test_edit_local_skill_500_on_oserror(monkeypatch, tmp_path):
+    _stub_resolved(monkeypatch, agent_type="hermes")
+    _write_local_skill("tdd-hermes", "tdd")
+
+    original_write = Path.write_text
+
+    def _fail_write(self, *args, **kwargs):
+        if "SKILL.md.tmp" in str(self):
+            raise OSError("disk full")
+        return original_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _fail_write)
+    body = agents_route.EditSkillBody(
+        content="---\nname: tdd\ndescription: edited\n---\n\n"
+    )
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.edit_agent_skill("tdd-hermes", "tdd", body))
+    assert exc.value.status_code == 500
+
+
+# ---------- Phase C: GET /{agent_key}/skills/local/{name} -------------------
+
+
+def test_get_local_skill_returns_content(monkeypatch):
+    _stub_resolved(monkeypatch, agent_type="hermes")
+    _write_local_skill("tdd-hermes", "tdd")
+
+    result = _run(agents_route.get_local_agent_skill("tdd-hermes", "tdd"))
+    assert result["skill_name"] == "tdd"
+    assert "SKILL.md" in result["content"] or "name: tdd" in result["content"]
+
+
+def test_get_local_skill_404_when_not_on_disk(monkeypatch):
+    _stub_resolved(monkeypatch, agent_type="hermes")
+
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.get_local_agent_skill("tdd-hermes", "missing"))
+    assert exc.value.status_code == 404
+
+
+def test_get_local_skill_422_on_invalid_name(monkeypatch):
+    _stub_resolved(monkeypatch, agent_type="hermes")
+
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.get_local_agent_skill("tdd-hermes", "../escape"))
+    assert exc.value.status_code == 422
