@@ -47,7 +47,7 @@ function RegistryBadge({ registry }: { registry: string | null }) {
 }
 
 function OriginChip({ origin }: { origin?: SkillOrigin }) {
-  const chip = origin ? ORIGIN_CHIPS[origin] : ORIGIN_CHIPS.local;
+  const chip = (origin && ORIGIN_CHIPS[origin]) ?? ORIGIN_CHIPS.local;
   return (
     <span
       className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wide ${chip.color}`}

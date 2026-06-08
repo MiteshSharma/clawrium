@@ -552,8 +552,8 @@ def test_list_installed_skill_has_origin_tag(monkeypatch):
     result = _run(agents_route.list_agent_skills("tdd-hermes"))
 
     tdd_row = result["installed"][0]
-    # x-clawrium-source points at clawrium/tdd in the bundled catalog
-    assert tdd_row["origin"] in {"local", "bundled", "overlay"}
+    # x-clawrium-source is "clawrium/tdd" → overlay dir absent → "bundled"
+    assert tdd_row["origin"] == "bundled"
 
 
 def test_list_local_skill_without_source_tag_has_origin_local(monkeypatch):
@@ -611,6 +611,8 @@ def test_add_skill_file_mode_happy_path(monkeypatch):
 
     assert result["success"] is True
     assert result["skill_name"] == "file-skill"
+    assert (agent_skills_dir("tdd-hermes") / "file-skill" / "SKILL.md").exists()
+    assert "file-skill" in read_state("tdd-hermes")
 
 
 def test_add_skill_file_mode_422_when_content_missing(monkeypatch):
@@ -636,6 +638,7 @@ def test_add_skill_inline_mode_happy_path(monkeypatch):
     assert result["success"] is True
     assert result["skill_name"] == "my-inline"
     assert (agent_skills_dir("tdd-hermes") / "my-inline" / "SKILL.md").exists()
+    assert "my-inline" in read_state("tdd-hermes")
 
 
 def test_add_skill_inline_mode_422_without_name(monkeypatch):
@@ -645,6 +648,24 @@ def test_add_skill_inline_mode_422_without_name(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _run(agents_route.add_agent_skill("tdd-hermes", body))
     assert exc.value.status_code == 422
+
+
+def test_add_skill_409_on_write_agent_local_skill_file_exists_race(monkeypatch):
+    """FileExistsError from _write_agent_local_skill (TOCTOU race after pre-check)
+    is caught and mapped to 409; desired state is rolled back."""
+    _stub_resolved(monkeypatch, agent_type="hermes")
+
+    def _raise_exists(agent_name: str, skill_name: str, skill) -> None:
+        raise FileExistsError(f"race: {skill_name} exists")
+
+    monkeypatch.setattr(agents_route, "_write_agent_local_skill", _raise_exists)
+    body = agents_route.AddSkillBody(
+        input_mode="template", registry="clawrium", name="tdd"
+    )
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.add_agent_skill("tdd-hermes", body))
+    assert exc.value.status_code == 409
+    assert "tdd" not in read_state("tdd-hermes")
 
 
 def test_add_skill_404_when_agent_not_found(monkeypatch):
