@@ -41,6 +41,7 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 """Slug pattern for `<name>` in `<registry>/<name>` and for directory names."""
 
 _CATALOG_OVERLAY_COLLISIONS_WARNED: set[str] = set()
+SOURCE_REF_FIELD = "x-clawrium-source"
 
 _EXTERNAL_PREFIXES = (
     "http://",
@@ -291,26 +292,7 @@ def list_skills(registry: str | None = None) -> list[SkillRef]:
             f"Unknown registry {registry!r}. Allowed: {', '.join(REGISTRIES)}."
         )
 
-    registries: Iterable[str] = (registry,) if registry else REGISTRIES
-
-    root = _catalog_root()
-    refs: list[SkillRef] = []
-    for reg in registries:
-        reg_dir = root / reg
-        if not reg_dir.is_dir():
-            continue
-        names: list[str] = []
-        for entry in reg_dir.iterdir():
-            if not entry.is_dir():
-                continue
-            if not _NAME_RE.match(entry.name):
-                continue
-            if not _has_skill_files(entry, reg):
-                continue
-            names.append(entry.name)
-        for name in sorted(names):
-            refs.append(SkillRef(registry=reg, name=name))
-    return refs
+    return _list_skills_from_roots(registry=registry)
 
 
 def _list_skills_from_roots(registry: str | None = None) -> list[SkillRef]:
@@ -385,9 +367,8 @@ def load_skill(ref: SkillRef | str) -> Skill:
     if isinstance(ref, str):
         ref = parse_skill_ref(ref)
 
-    root = _catalog_root()
-    skill_dir = root / ref.registry / ref.name
-    if not skill_dir.is_dir():
+    skill_dir = _find_catalog_skill_dir(ref)
+    if skill_dir is None:
         raise SkillNotFound(
             f"Skill {ref} not found. Run `clawctl skill registry get` to see "
             "available skills."
@@ -647,6 +628,40 @@ def materialize_skill_for_agent(skill: Skill, agent_type: str) -> Skill:
     return native_skill
 
 
+def render_skill_md(skill: Skill) -> str:
+    """Render a native ``Skill`` as canonical ``SKILL.md`` bytes.
+
+    Callers use this when persisting add-time materialized skills. Sync does
+    not call this helper; sync copies existing local files byte-for-byte.
+    """
+    frontmatter = yaml.safe_dump(
+        dict(skill.skill_md_frontmatter),
+        sort_keys=False,
+        allow_unicode=True,
+    ).strip()
+    body = (skill.body or "").lstrip("\n").rstrip("\n")
+    if body:
+        return f"---\n{frontmatter}\n---\n\n{body}\n"
+    return f"---\n{frontmatter}\n---\n"
+
+
+def with_source_ref(skill: Skill, source_ref: str) -> Skill:
+    """Return ``skill`` with informational catalog-source metadata attached."""
+    frontmatter = dict(skill.skill_md_frontmatter)
+    metadata = dict(skill.metadata)
+    frontmatter[SOURCE_REF_FIELD] = source_ref
+    metadata[SOURCE_REF_FIELD] = source_ref
+    sourced = Skill(
+        ref=SkillRef(skill.ref.registry, skill.ref.name),
+        path=skill.path,
+        metadata=metadata,
+        body=skill.body,
+        skill_md_frontmatter=frontmatter,
+    )
+    validate_skill(sourced)
+    return sourced
+
+
 def _split_frontmatter(text: str) -> tuple[str, dict[str, Any]]:
     """Split a SKILL.md into (body, frontmatter dict).
 
@@ -775,6 +790,9 @@ __all__ = [
     "clear_schema_cache",
     "materialize_for_claw",
     "materialize_skill_for_agent",
+    "render_skill_md",
+    "SOURCE_REF_FIELD",
+    "with_source_ref",
 ]
 # Note: `scripts/validate_skills.py` imports a handful of underscored
 # helpers from this module by explicit name (`_NAME_RE`, `_load_schema`,

@@ -33,7 +33,7 @@ from clawrium.core.skills_apply import (
     SkillApplyError,
     SkillApplyNotSupported,
 )
-from clawrium.core.skills_state import read_state, write_state
+from clawrium.core.skills_state import agent_skills_dir, read_state, write_state
 from clawrium.gui.routes import agents as agents_route
 
 
@@ -94,6 +94,17 @@ def _stub_apply(
     return calls
 
 
+def _write_local_skill(agent_name: str = "tdd-hermes", name: str = "tdd") -> None:
+    skill_dir = agent_skills_dir(agent_name) / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Test skill\nversion: '1.0'\n"
+        f"x-clawrium-source: clawrium/{name}\n---\n\nBody\n",
+        encoding="utf-8",
+    )
+    write_state(agent_name, [name])
+
+
 # ---------- GET /api/agents/{agent}/skills ----------------------------------
 
 
@@ -106,7 +117,7 @@ def test_list_returns_404_when_agent_not_resolved(monkeypatch):
 
 def test_list_includes_installed_and_available_for_hermes(monkeypatch):
     _stub_resolved(monkeypatch, agent_type="hermes")
-    write_state("tdd-hermes", ["clawrium/tdd"])
+    _write_local_skill("tdd-hermes", "tdd")
 
     result = _run(agents_route.list_agent_skills("tdd-hermes"))
 
@@ -161,29 +172,31 @@ def test_list_handles_empty_desired_state(monkeypatch):
 
 def test_install_writes_state_and_calls_apply(monkeypatch):
     _stub_resolved(monkeypatch)
-    calls = _stub_apply(monkeypatch, applied=["clawrium/tdd"])
+    calls = _stub_apply(monkeypatch, applied=["tdd"])
 
     result = _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
 
     assert result["success"] is True
     assert result["ref"] == "clawrium/tdd"
     assert result["changed"] is True
-    assert result["installed"] == ["clawrium/tdd"]
+    assert result["installed"] == ["tdd"]
     assert calls == ["tdd-hermes"]
-    assert read_state("tdd-hermes") == ["clawrium/tdd"]
+    assert read_state("tdd-hermes") == ["tdd"]
+    local_skill = agent_skills_dir("tdd-hermes") / "tdd" / "SKILL.md"
+    assert local_skill.exists()
+    assert "x-clawrium-source: clawrium/tdd" in local_skill.read_text()
 
 
-def test_install_is_idempotent_but_still_applies(monkeypatch):
-    """Re-installing an already-installed skill is the documented drift
-    recovery path — state is unchanged but the playbook still runs."""
+def test_install_rejects_duplicate_local_skill_without_apply(monkeypatch):
     _stub_resolved(monkeypatch)
-    write_state("tdd-hermes", ["clawrium/tdd"])
-    calls = _stub_apply(monkeypatch, applied=["clawrium/tdd"])
+    _write_local_skill("tdd-hermes", "tdd")
 
-    result = _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
+    monkeypatch.setattr(agents_route, "apply_state", _raises_if_called("apply_state"))
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
 
-    assert result["changed"] is False
-    assert calls == ["tdd-hermes"], "apply_state must run on re-install"
+    assert exc.value.status_code == 409
+    assert read_state("tdd-hermes") == ["tdd"]
 
 
 def test_install_404_when_agent_missing(monkeypatch):
@@ -267,7 +280,7 @@ def test_remove_502_on_apply_error(monkeypatch):
     the DELETE side so the redaction can't regress only for removes.
     """
     _stub_resolved(monkeypatch)
-    write_state("tdd-hermes", ["clawrium/tdd"])
+    _write_local_skill("tdd-hermes", "tdd")
     raw_msg = (
         "Skills apply failed (status=failed): host unreachable "
         "(log: /home/op/.config/clawrium/logs/skills_apply-x)."
@@ -295,7 +308,20 @@ def test_install_422_on_incompatible_claw(monkeypatch):
     # Real apply_state will refuse: write the state then let the real
     # code path validate. But we don't want a real run — supply a fake
     # apply_state that raises IncompatibleSkillRegistry.
-    from clawrium.core.skills import IncompatibleSkillRegistry
+    from clawrium.core.skills import IncompatibleSkillRegistry, Skill, SkillRef
+
+    monkeypatch.setattr(agents_route, "load_skill", lambda _ref: object())
+    monkeypatch.setattr(
+        agents_route,
+        "materialize_skill_for_agent",
+        lambda _skill, _agent_type: Skill(
+            ref=SkillRef("openclaw", "foo"),
+            path=Path("__materialized__"),
+            metadata={},
+            body="Body",
+            skill_md_frontmatter={"name": "foo", "description": "Test"},
+        ),
+    )
 
     def fake(_name: str, **_kw):
         raise IncompatibleSkillRegistry(
@@ -326,9 +352,25 @@ def test_install_502_on_apply_error(monkeypatch):
     assert "/home/op/.config/clawrium/logs" not in str(exc.value.detail)
     assert "/tmp/nope" not in str(exc.value.detail)
     assert "Check server logs" in str(exc.value.detail)
-    # State should still reflect the user's intent — apply failures
-    # don't roll back desired state; the user will retry.
-    assert read_state("tdd-hermes") == ["clawrium/tdd"]
+    assert read_state("tdd-hermes") == []
+    assert not (agent_skills_dir("tdd-hermes") / "tdd").exists()
+
+
+def test_install_500_on_local_write_error_rolls_back_state(monkeypatch):
+    _stub_resolved(monkeypatch)
+    monkeypatch.setattr(
+        agents_route,
+        "_write_agent_local_skill",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    monkeypatch.setattr(agents_route, "apply_state", _raises_if_called("apply_state"))
+
+    with pytest.raises(HTTPException) as exc:
+        _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
+
+    assert exc.value.status_code == 500
+    assert read_state("tdd-hermes") == []
+    assert not (agent_skills_dir("tdd-hermes") / "tdd").exists()
 
 
 # ---------- DELETE /api/agents/{agent}/skills/{registry}/{skill} -------------
@@ -336,12 +378,13 @@ def test_install_502_on_apply_error(monkeypatch):
 
 def test_remove_drops_state_and_calls_apply(monkeypatch):
     _stub_resolved(monkeypatch)
-    write_state("tdd-hermes", ["clawrium/tdd"])
+    _write_local_skill("tdd-hermes", "tdd")
     calls = _stub_apply(monkeypatch, applied=[])
 
     result = _run(agents_route.remove_agent_skill("tdd-hermes", "clawrium", "tdd"))
 
     assert result["success"] is True
+    assert result["ref"] == "clawrium/tdd"
     assert result["changed"] is True
     assert result["installed"] == []
     assert calls == ["tdd-hermes"]
@@ -376,18 +419,14 @@ def test_remove_422_on_malformed_ref(monkeypatch):
 # ---------- Documented behavior on apply failure ------------------------------
 
 
-def test_state_is_not_rolled_back_on_apply_failure(monkeypatch):
-    """ATX-1 W3 documents the design choice (carried over from the CLI):
-    on apply failure the desired-state mutation is *kept*, so the user
-    can retry the apply without re-typing the ref. This test pins the
-    behavior so any future change to "validate-before-write" is
-    deliberate, not accidental.
-    """
+def test_install_state_is_rolled_back_on_apply_failure(monkeypatch):
+    """Compatibility POST applies inline, so apply failure restores local state."""
     _stub_resolved(monkeypatch)
     _stub_apply(monkeypatch, raises=SkillApplyError("host unreachable"))
     with pytest.raises(HTTPException):
         _run(agents_route.install_agent_skill("tdd-hermes", "clawrium", "tdd"))
-    assert read_state("tdd-hermes") == ["clawrium/tdd"]
+    assert read_state("tdd-hermes") == []
+    assert not (agent_skills_dir("tdd-hermes") / "tdd").exists()
 
 
 # ---------- _is_compatible_for_agent_type unit tests --------------------------

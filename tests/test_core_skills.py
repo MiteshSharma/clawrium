@@ -27,6 +27,7 @@ from clawrium.core.skills import (
     NATIVE_REGISTRIES,
     REGISTRIES,
     SchemaValidationError,
+    Skill,
     SkillNotFound,
     SkillRef,
     list_agent_skills,
@@ -35,6 +36,7 @@ from clawrium.core.skills import (
     load_skill,
     materialize_skill_for_agent,
     parse_skill_ref,
+    render_skill_md,
     validate_skill,
 )
 from clawrium.core.skills_state import agent_skills_dir
@@ -206,7 +208,7 @@ def test_catalog_roots_raises_when_neither_root_exists(monkeypatch):
         skills._catalog_roots()
 
 
-def test_public_list_skills_ignores_overlay_until_wired(monkeypatch, tmp_path):
+def test_public_list_skills_includes_overlay(monkeypatch, tmp_path):
     bundled = tmp_path / "bundled"
     overlay = skills._overlay_root()
     bundled.mkdir()
@@ -217,10 +219,10 @@ def test_public_list_skills_ignores_overlay_until_wired(monkeypatch, tmp_path):
 
     refs = list_skills(registry="hermes")
     assert SkillRef("hermes", "bundled-skill") in refs
-    assert SkillRef("hermes", "overlay-only") not in refs
+    assert SkillRef("hermes", "overlay-only") in refs
 
 
-def test_public_load_skill_ignores_overlay_until_wired(monkeypatch, tmp_path):
+def test_public_load_skill_uses_overlay(monkeypatch, tmp_path):
     bundled = tmp_path / "bundled"
     overlay = skills._overlay_root()
     bundled.mkdir()
@@ -232,8 +234,7 @@ def test_public_load_skill_ignores_overlay_until_wired(monkeypatch, tmp_path):
     assert load_skill("hermes/bundled-skill").ref == SkillRef(
         "hermes", "bundled-skill"
     )
-    with pytest.raises(SkillNotFound):
-        load_skill("hermes/overlay-only")
+    assert load_skill("hermes/overlay-only").path == overlay / "hermes" / "overlay-only"
 
 
 def test_list_skills_includes_overlay_only(monkeypatch, tmp_path):
@@ -505,6 +506,38 @@ def test_materialize_skill_for_agent_rejects_explicit_false_compatibility(
     skill = load_skill("clawrium/tdd")
     with pytest.raises(IncompatibleSkillRegistry, match="not compatible"):
         materialize_skill_for_agent(skill, agent_type)
+
+
+def test_render_skill_md_round_trips_frontmatter_and_body():
+    skill = Skill(
+        ref=SkillRef("hermes", "custom"),
+        path=Path("__materialized__"),
+        metadata={"name": "custom", "description": "Tést skill"},
+        body="\n# Custom\n\nBody\n",
+        skill_md_frontmatter={"name": "custom", "description": "Tést skill"},
+    )
+
+    rendered = render_skill_md(skill)
+    body, frontmatter = skills._split_frontmatter(rendered)
+
+    assert rendered.endswith("\n")
+    assert "Tést skill" in rendered
+    assert frontmatter == {"name": "custom", "description": "Tést skill"}
+    assert body == "\n# Custom\n\nBody\n"
+
+
+def test_render_skill_md_handles_empty_body():
+    skill = Skill(
+        ref=SkillRef("hermes", "empty"),
+        path=Path("__materialized__"),
+        metadata={"name": "empty", "description": "Empty"},
+        body="",
+        skill_md_frontmatter={"name": "empty", "description": "Empty"},
+    )
+
+    rendered = render_skill_md(skill)
+
+    assert rendered == "---\nname: empty\ndescription: Empty\n---\n"
 
 
 def test_validate_skill_enforces_slug_invariant(monkeypatch, tmp_path):
