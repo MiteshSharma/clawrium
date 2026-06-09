@@ -3,3 +3,4 @@
 - V9 SDLC smoke test ran end-to-end with clawrium-maurice (issue prep), clawrium-triage (plan #684 merged), clawrium-exec (this PR), clawrium-gtm (announcement). (#678)
 - V10 SDLC smoke test ran end-to-end with clawrium-maurice (issue prep), clawrium-triage (plan #686 merged), clawrium-exec (this PR), clawrium-gtm (announcement). (#679)
 - V11 SDLC smoke test ran end-to-end with clawrium-maurice (issue prep), clawrium-triage (plan #689 merged), clawrium-exec (this PR), clawrium-gtm (announcement). (#682)
+- Changed: hermes bedrock multi-attach is now allowed when every bedrock attachment shares the same `(access_key, secret_key, region)` triple — previously any second bedrock attachment raised. Divergent credentials or regions still raise upfront with an updated error message. (#692)
