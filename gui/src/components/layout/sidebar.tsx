@@ -83,12 +83,17 @@ export function Sidebar() {
 
   const closeStub = useCallback(() => {
     // Capture the trigger before clearing state so subsequent renders
-    // can't race the ref. focus() is safe to call synchronously: by the
-    // time the dialog's 'close' event fires, the browser has already
-    // released focus to <body>.
+    // can't race the ref. closeStub is invoked from three paths:
+    // (1) the ✕ button's React onClick, (2) the backdrop-click handler
+    // on the <dialog>, and (3) the native 'close' event (ESC). In all
+    // three, React batches the state update — the dialog is still
+    // mounted at the moment focus() runs, but the trigger button is
+    // also still mounted (it lives in <nav>, not inside the dialog),
+    // so refocusing it is safe. The document.contains guard catches the
+    // edge case where the trigger was conditionally rendered away.
     const trigger = triggerRef.current;
     setOpenStub(null);
-    if (trigger) trigger.focus();
+    if (trigger && document.contains(trigger)) trigger.focus();
   }, []);
 
   useEffect(() => {
@@ -158,7 +163,7 @@ export function Sidebar() {
           if (item.kind === "stub") {
             return (
               <button
-                key={item.label}
+                key={`stub:${item.label}`}
                 type="button"
                 aria-label={`${item.label} — coming soon`}
                 onClick={(e) => {
@@ -175,7 +180,7 @@ export function Sidebar() {
           const isActive = isItemActive(pathname, item.href);
           return (
             <Link
-              key={item.href}
+              key={`link:${item.href}`}
               href={item.href}
               aria-current={isActive ? "page" : undefined}
               className={linkRowClasses(isActive)}

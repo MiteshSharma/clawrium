@@ -77,6 +77,7 @@ describe("Sidebar", () => {
   it("renders every top-level nav item", async () => {
     await renderAndFlush();
     expect(screen.getByRole("link", { name: "Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Agents" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Topology" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Providers" })).toBeInTheDocument();
     expect(
@@ -97,21 +98,25 @@ describe("Sidebar", () => {
     expect(img?.getAttribute("aria-hidden")).toBe("true");
   });
 
-  it("places Skills and Integrations between Providers and Settings", async () => {
+  it("preserves the canonical link order Dashboard → Agents → Topology → Providers → Skills → Integrations → Settings", async () => {
+    // ATX-4 W3: the previous ordering test only checked four labels and
+    // missed the new Agents row entirely. Lock in the full main-nav
+    // sequence plus the footer Settings link, in document order.
     await renderAndFlush();
-    const labels = screen
-      .getAllByRole("link")
-      .map((el) => el.textContent?.trim())
-      .filter(
-        (t) =>
-          t && ["Providers", "Skills", "Integrations", "Settings"].includes(t),
-      );
-    expect(labels).toEqual([
+    const expected = [
+      "Dashboard",
+      "Agents",
+      "Topology",
       "Providers",
       "Skills",
       "Integrations",
       "Settings",
-    ]);
+    ];
+    const labels = screen
+      .getAllByRole("link")
+      .map((el) => el.textContent?.trim())
+      .filter((t) => t && expected.includes(t));
+    expect(labels).toEqual(expected);
   });
 
   it("labels the nav for assistive tech", async () => {
