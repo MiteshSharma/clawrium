@@ -2,47 +2,47 @@
 authors: [maurice]
 tags: [release]
 ---
-# Organizing the Providers Experience
+# Cleaning up Provider Management
 
-Managing your AI providers is now more organized. The Providers page has been split to separate active configurations from global discovery.
+Managing model providers is now more intuitive. We have separated the act of configuring credentials from the act of discovering available models.
 
 <!-- truncate -->
 
-## Provider page restructure
+## A Clearer Provider Interface
 
-The Providers page now uses a two-tab layout. You can switch between your active configurations and the global registry. This removes the clutter of having everything on one long page. It helps you focus on managing your current setup without distractions. Now, configuring a provider and browsing supported models are distinct actions. This structure makes the interface more intuitive for team leads managing multiple keys.
+The Providers page now uses a two-tab layout to separate concerns. The "Configured" tab is the landing page where you manage your active provider records. The "Registry" tab serves as a read-only catalog of everything clawrium supports. This split prevents the UI from conflating your specific credentials with the general list of available models. Operators no longer have to scroll past a massive model list to find their own settings.
 
-Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696)
+Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696), [#697](https://github.com/ric03uec/clawrium/pull/697)
 
-## Configured Providers table
+## Better Visibility for Configured Providers
 
-Your active providers are now displayed in a clear table. You can see the provider name, type, and default model at a glance. A new "Used by" column shows which agents are using that specific provider. If no agent is attached, it is marked as "Unassigned". You can also check when each provider was created to track old configurations. This view makes it easier to audit your fleet's connectivity without digging into individual records.
+We replaced the card-based list with a high-density table. This view includes columns for the provider icon, name, type, and the default model assigned to that record. A new "Used by" column explicitly lists the agents attached to the provider. If no agents are using it, an "Unassigned" pill appears. You can also see exactly when a provider was created. This helps team leads audit which credentials are still necessary and which can be deleted.
 
-Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696)
+Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696), [#697](https://github.com/ric03uec/clawrium/pull/697)
 
-## Registry tab
+## Dedicated Model Registry
 
-The model catalog has moved to its own dedicated Registry tab. This tab serves as a directory of all endpoint types Clawrium supports. You can expand each provider type to see the full list of available models. This separation means you no longer have to scroll to the bottom of the page to find model IDs. It provides a clean reference for what you can add to your environment. Experimenters can quickly find new models to test without losing their place in the config.
+The model catalog has moved to its own dedicated tab. Instead of one long list, a dropdown allows you to filter models by provider type. You can select "All providers" for a complete view or choose a specific provider like OpenRouter. Because some providers offer hundreds of models, the list is now paginated. If you select Ollama, the rest of the page swaps to a helper message explaining that models are discovered live from the local daemon.
 
-Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696)
+Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696), [#697](https://github.com/ric03uec/clawrium/pull/697)
 
-## Bedrock credentials
+## Corrected Bedrock Credentials
 
-Setting up AWS Bedrock is now more accurate. The form no longer asks for a generic API key that Bedrock does not use. Instead, it requests your AWS Access Key ID and Secret Access Key. You can also specify your AWS Region, which defaults to us-east-1 but remains editable. This ensures that Bedrock providers are configured with the correct AWS authentication flow. AI experimenters can now deploy Bedrock agents without credential errors.
+The credential flow for AWS Bedrock has been completely reworked. The form no longer asks for a generic API key, which was incorrect for this provider. Instead, it prompts for an AWS Access Key ID and Secret Access Key. You can also define the AWS Region, which defaults to `us-east-1` but remains editable. For security, these fields use password-style inputs with show/hide toggles. This ensures that the setup process matches actual AWS requirements.
 
-Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696)
+Related: [#694](https://github.com/ric03uec/clawrium/issues/694), [#696](https://github.com/ric03uec/clawrium/pull/696), [#697](https://github.com/ric03uec/clawrium/pull/697)
 
 ## Validation Metrics
 
-These are the automated validation metrics for the features described
-above. Numbers aggregate every [ATX](https://github.com/atx-ci)
-review iteration across the PRs that shipped these changes. ATX is
-the multi-agent code review system that runs against every PR; the
-metrics below reflect its work.
+These are the automated validation metrics for the features
+described above. Numbers aggregate every [ATX](https://github.com/atx-ci)
+review iteration across the PRs that shipped these changes. ATX
+is the multi-agent code review system that runs against every
+PR; the metrics below reflect its work.
 
 | Metric | Value |
 |---|---|
-| PRs covered | 1 |
+| PRs covered | 2 |
 | Automated review iterations | 4 |
 | Blocking issues resolved | 17 |
 | Total review cost | ~$8.52 |
