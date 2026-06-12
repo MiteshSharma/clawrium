@@ -47,12 +47,29 @@ const NAV_ITEMS: NavItem[] = [
     body: "A visual editor for new agent definitions isn't available yet. It's on the roadmap — your upvote on GitHub helps us prioritize.",
     upvoteUrl: "https://github.com/ric03uec/clawrium/issues/700",
   },
-  { kind: "link", label: "Settings", href: "/settings" },
 ];
 
 function isItemActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(href + "/");
+}
+
+function SettingsIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className={className}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
 }
 
 export function Sidebar() {
@@ -71,12 +88,20 @@ export function Sidebar() {
     return () => ctrl.abort();
   }, []);
 
-  const rowClasses = (active: boolean) =>
+  const linkRowClasses = (active: boolean) =>
     `block w-full text-left px-5 py-2.5 text-sm font-medium transition-colors ${
       active
         ? "text-primary border-l-[3px] border-primary bg-surface"
         : "text-secondary hover:text-primary hover:bg-panel border-l-[3px] border-transparent"
     }`;
+
+  // Stub rows are intentionally grayed: text-muted resting, hover lifts to
+  // text-secondary so the click affordance still reads. No left bar — they
+  // never represent an "active page."
+  const stubRowClasses =
+    "block w-full text-left px-5 py-2.5 text-sm font-medium text-muted hover:text-secondary hover:bg-panel transition-colors border-l-[3px] border-transparent";
+
+  const settingsActive = isItemActive(pathname, "/settings");
 
   return (
     <aside className="fixed left-0 top-0 bottom-0 w-sidebar bg-panel border-r border-default flex flex-col">
@@ -122,7 +147,7 @@ export function Sidebar() {
                 key={item.label}
                 type="button"
                 onClick={() => setOpenStub(item)}
-                className={rowClasses(false)}
+                className={stubRowClasses}
               >
                 {item.label}
               </button>
@@ -135,7 +160,7 @@ export function Sidebar() {
               key={item.href}
               href={item.href}
               aria-current={isActive ? "page" : undefined}
-              className={rowClasses(isActive)}
+              className={linkRowClasses(isActive)}
             >
               {item.label}
             </Link>
@@ -144,6 +169,22 @@ export function Sidebar() {
       </nav>
 
       <div className="px-5 py-4 border-t border-default space-y-3">
+        <ul className="space-y-1">
+          <li>
+            <Link
+              href="/settings"
+              aria-current={settingsActive ? "page" : undefined}
+              className={`flex items-center gap-2 px-1 py-1.5 text-sm rounded transition-colors ${
+                settingsActive
+                  ? "text-primary font-medium"
+                  : "text-secondary hover:text-primary"
+              }`}
+            >
+              <SettingsIcon className="h-4 w-4" />
+              <span>Settings</span>
+            </Link>
+          </li>
+        </ul>
         <ExternalLinkRows />
         <div className="pt-2 border-t border-default">
           <span className="text-xs text-muted">
