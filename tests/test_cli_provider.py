@@ -15,7 +15,7 @@ class TestProviderTypes:
     """Tests for 'clm provider types' command."""
 
     def test_types_lists_all_providers(self, isolated_config):
-        """'clm provider types' lists all supported provider types."""
+        """'clawctl provider types' lists all supported provider types."""
         result = runner.invoke(app, ["provider", "types"])
 
         assert result.exit_code == 0
@@ -26,6 +26,7 @@ class TestProviderTypes:
         assert "vertex" in result.output
         assert "zai" in result.output
         assert "ollama" in result.output
+        assert "litellm" in result.output
 
 
 class TestProviderTypesModels:
@@ -563,6 +564,227 @@ class TestProviderRefresh:
 
         assert result.exit_code == 1
         assert "no endpoint" in result.output.lower()
+
+
+class TestProviderLiteLLM:
+    """Tests for LiteLLM provider (URL + bearer API key)."""
+
+    def _allow_address(self):
+        return patch(
+            "clawrium.core.providers.storage.socket.getaddrinfo",
+            return_value=[(2, 1, 0, "", ("93.184.216.34", 0))],
+        )
+
+    def test_add_litellm_success(self, isolated_config):
+        """'clawctl provider add --type litellm' writes the provider record."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "gemma4:31b"}, {"id": "qwen3:30b-64k"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with self._allow_address(), patch(
+            "clawrium.core.providers.storage.requests.get",
+            return_value=mock_response,
+        ), patch(
+            "clawrium.cli.provider.set_provider_api_key", return_value=True
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "provider",
+                    "add",
+                    "inx-litellm",
+                    "--type",
+                    "litellm",
+                    "--url",
+                    "http://litellm.example.com:4000",
+                    "--model",
+                    "gemma4:31b",
+                ],
+                input="sk-master-key\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "added successfully" in result.output.lower()
+
+        providers_path = isolated_config / PROVIDERS_FILE
+        with open(providers_path) as f:
+            providers = json.load(f)
+        assert providers[0]["type"] == "litellm"
+        assert providers[0]["endpoint"] == "http://litellm.example.com:4000"
+        assert providers[0]["default_model"] == "gemma4:31b"
+        assert "gemma4:31b" in providers[0]["available_models"]
+
+    def test_add_litellm_requires_url(self, isolated_config):
+        """'clawctl provider add --type litellm' errors without --url."""
+        result = runner.invoke(
+            app,
+            [
+                "provider",
+                "add",
+                "x",
+                "--type",
+                "litellm",
+                "--model",
+                "gemma4:31b",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "--url is required" in result.output.lower()
+
+    def test_add_litellm_requires_model(self, isolated_config):
+        """'clawctl provider add --type litellm' errors without --model."""
+        with self._allow_address():
+            result = runner.invoke(
+                app,
+                [
+                    "provider",
+                    "add",
+                    "x",
+                    "--type",
+                    "litellm",
+                    "--url",
+                    "http://litellm.example.com:4000",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "--model is required" in result.output.lower()
+
+    def test_add_litellm_proxy_unreachable_still_creates(self, isolated_config):
+        """Provider is created even when /v1/models probe fails (warning only)."""
+        import requests
+
+        with self._allow_address(), patch(
+            "clawrium.core.providers.storage.requests.get",
+            side_effect=requests.exceptions.ConnectionError(),
+        ), patch(
+            "clawrium.cli.provider.set_provider_api_key", return_value=True
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "provider",
+                    "add",
+                    "inx-litellm",
+                    "--type",
+                    "litellm",
+                    "--url",
+                    "http://litellm.example.com:4000",
+                    "--model",
+                    "gemma4:31b",
+                ],
+                input="sk-master-key\n",
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "could not list models" in result.output.lower()
+        providers_path = isolated_config / PROVIDERS_FILE
+        with open(providers_path) as f:
+            providers = json.load(f)
+        assert providers[0]["available_models"] == []
+
+    def test_refresh_litellm_success(self, isolated_config):
+        """'clawctl provider refresh' updates LiteLLM available_models."""
+        provider_record = {
+            "name": "inx-litellm",
+            "type": "litellm",
+            "endpoint": "http://litellm.example.com:4000",
+            "default_model": "gemma4:31b",
+            "available_models": [],
+            "created_at": "2026-06-13T00:00:00+00:00",
+            "updated_at": "2026-06-13T00:00:00+00:00",
+        }
+        isolated_config.mkdir(parents=True, exist_ok=True)
+        save_providers([provider_record])
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "gemma4:31b"}, {"id": "qwen3:30b"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch(
+            "clawrium.cli.provider.get_provider_api_key",
+            return_value="sk-master-key",
+        ), patch(
+            "clawrium.core.providers.storage.requests.get",
+            return_value=mock_response,
+        ):
+            result = runner.invoke(app, ["provider", "refresh", "inx-litellm"])
+
+        assert result.exit_code == 0, result.output
+        assert "found 2 models" in result.output.lower()
+
+        with open(isolated_config / PROVIDERS_FILE) as f:
+            providers = json.load(f)
+        assert providers[0]["available_models"] == ["gemma4:31b", "qwen3:30b"]
+
+    def test_refresh_litellm_missing_key_errors(self, isolated_config):
+        """Refresh fails when no API key is stored for the litellm provider."""
+        provider_record = {
+            "name": "inx-litellm",
+            "type": "litellm",
+            "endpoint": "http://litellm.example.com:4000",
+            "default_model": "gemma4:31b",
+            "available_models": [],
+            "created_at": "2026-06-13T00:00:00+00:00",
+            "updated_at": "2026-06-13T00:00:00+00:00",
+        }
+        isolated_config.mkdir(parents=True, exist_ok=True)
+        save_providers([provider_record])
+
+        with patch(
+            "clawrium.cli.provider.get_provider_api_key", return_value=None
+        ):
+            result = runner.invoke(app, ["provider", "refresh", "inx-litellm"])
+
+        assert result.exit_code == 1
+        assert "no stored api key" in result.output.lower()
+
+    def test_edit_litellm_url_refreshes_models(self, isolated_config):
+        """Editing LiteLLM URL re-probes /v1/models with stored bearer."""
+        provider_record = {
+            "name": "inx-litellm",
+            "type": "litellm",
+            "endpoint": "http://old.example.com:4000",
+            "default_model": "gemma4:31b",
+            "available_models": ["gemma4:31b"],
+            "created_at": "2026-06-13T00:00:00+00:00",
+            "updated_at": "2026-06-13T00:00:00+00:00",
+        }
+        isolated_config.mkdir(parents=True, exist_ok=True)
+        save_providers([provider_record])
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "data": [{"id": "gemma4:31b"}, {"id": "olmo-3.1:32b"}]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with self._allow_address(), patch(
+            "clawrium.cli.provider.get_provider_api_key",
+            return_value="sk-master-key",
+        ), patch(
+            "clawrium.core.providers.storage.requests.get",
+            return_value=mock_response,
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "provider",
+                    "edit",
+                    "inx-litellm",
+                    "--url",
+                    "http://new.example.com:4000",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        with open(isolated_config / PROVIDERS_FILE) as f:
+            providers = json.load(f)
+        assert providers[0]["endpoint"] == "http://new.example.com:4000"
+        assert "olmo-3.1:32b" in providers[0]["available_models"]
 
 
 class TestProviderBedrock:

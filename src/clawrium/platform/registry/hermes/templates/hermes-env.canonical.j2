@@ -22,6 +22,9 @@ AWS_DEFAULT_REGION={{ (provider.region or 'us-east-1') | shq }}
 HERMES_INFERENCE_PROVIDER='bedrock'
 {% elif provider.type == 'ollama' %}
 HERMES_INFERENCE_PROVIDER='custom'
+{% elif provider.type == 'litellm' %}
+LITELLM_API_KEY={{ provider.api_key | shq }}
+HERMES_INFERENCE_PROVIDER='custom'
 {% endif %}
 {# Issue #621: auxiliary provider credentials. `aux_api_keys` is a dict
    keyed by provider type (already deduped + dedup-vs-primary in
@@ -43,6 +46,13 @@ OPENAI_API_KEY={{ key | shq }}
 AWS_ACCESS_KEY_ID={{ triple[0] | shq }}
 AWS_SECRET_ACCESS_KEY={{ triple[1] | shq }}
 AWS_DEFAULT_REGION={{ triple[2] | shq }}
+{% endfor %}
+{# Per-aux LiteLLM keys: one `LITELLM_<ROLE_UPPER>_API_KEY=` line per
+   non-primary litellm attachment. Different proxies (different URLs)
+   can be attached at different roles, so per-role naming avoids the
+   collision that a flat `LITELLM_API_KEY=` env var would create. #}
+{% for entry in aux_litellm %}
+LITELLM_{{ entry.role_upper }}_API_KEY={{ entry.api_key | shq }}
 {% endfor %}
 {% if api_server is not none %}
 API_SERVER_ENABLED=1
