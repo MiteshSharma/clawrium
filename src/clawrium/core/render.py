@@ -1014,28 +1014,12 @@ def render_hermes(inputs: RenderInputs) -> RenderedFiles:
         aux_api_keys = {}
         aux_aws_credentials = {}
 
-    # Per-aux litellm view: one entry per litellm auxiliary attachment.
-    # Surfaces role_upper so the env template emits
-    # `LITELLM_<ROLE_UPPER>_API_KEY=` lines without Python-style string
-    # manipulation in Jinja. The YAML template doesn't read this — it
-    # iterates aux_attachments directly because each entry already
-    # carries `entry.base_url` and `entry.api_key`.
-    aux_litellm_views: list[dict] = [
-        {
-            "role_upper": entry.role.upper(),
-            "api_key": entry.api_key,
-        }
-        for entry in aux_attachments
-        if entry.type == "litellm"
-    ]
-
     env_body = _render_hermes_template(
         "hermes-env.canonical.j2",
         agent_name=inputs.agent_name,
         provider=inputs.provider,
         aux_api_keys=aux_api_keys,
         aux_aws_credentials=aux_aws_credentials,
-        aux_litellm=aux_litellm_views,
         api_server=inputs.api_server,
         channels=inputs.channels,
         integrations=integration_views,

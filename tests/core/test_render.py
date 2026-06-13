@@ -508,7 +508,13 @@ def test_hermes_ollama_yaml_has_v1_suffix():
 
 
 def test_hermes_litellm_primary_renders_custom_provider_with_v1():
-    """LiteLLM primary emits provider: custom, /v1 base_url, and bearer key."""
+    """LiteLLM primary emits provider: custom + inline api_key in YAML.
+
+    Hermes' custom provider reads the bearer from `model.api_key:` in
+    the YAML, NOT from a `<NAME>_API_KEY=` env var (verified against
+    the upstream docs at
+    https://hermes-agent.nousresearch.com/docs/integrations/providers#litellm-proxy--multi-provider-gateway).
+    """
     inputs = _baseline_inputs(ptype="litellm")
     out = render_hermes(inputs)
     yaml = out.files[".hermes/config.yaml"]
@@ -517,8 +523,11 @@ def test_hermes_litellm_primary_renders_custom_provider_with_v1():
     assert 'provider: "custom"' in yaml
     assert "http://10.0.0.5:4000/v1" in yaml
     assert "gemma4:31b" in yaml
-    assert "LITELLM_API_KEY='sk-master-1'" in env
+    assert "api_key: 'sk-master-1'" in yaml
     assert "HERMES_INFERENCE_PROVIDER='custom'" in env
+    # No `LITELLM_API_KEY=` env var — hermes' custom provider doesn't
+    # consume one; the bearer lives in config.yaml exclusively.
+    assert "LITELLM_API_KEY" not in env
 
 
 def test_hermes_litellm_endpoint_with_v1_suffix_not_double_appended():
@@ -545,8 +554,14 @@ def test_hermes_litellm_endpoint_with_v1_suffix_not_double_appended():
     assert "http://10.0.0.5:4000/v1/v1" not in yaml
 
 
-def test_hermes_litellm_aux_attachment_emits_role_namespaced_key():
-    """LiteLLM aux attachment gets LITELLM_<ROLE>_API_KEY + per-aux base_url."""
+def test_hermes_litellm_aux_attachment_emits_inline_api_key_in_yaml():
+    """LiteLLM aux attachment emits per-aux base_url + api_key inline in YAML.
+
+    Each litellm aux carries its own URL + key inline in the auxiliary
+    block — hermes' custom provider reads them from the YAML. No env
+    var is emitted, so two litellm proxies at different roles cannot
+    collide.
+    """
     base = _baseline_inputs(ptype="openrouter")
     # Primary openrouter + one litellm aux at curator role.
     bundle = HermesProviderBundle(
@@ -584,14 +599,15 @@ def test_hermes_litellm_aux_attachment_emits_role_namespaced_key():
     yaml = out.files[".hermes/config.yaml"]
     env = out.files[".hermes/.env"]
 
-    # YAML: per-aux block with custom shape
+    # YAML: per-aux block with custom shape + inline bearer.
     assert "curator:" in yaml
     assert 'provider: "custom"' in yaml
     assert "http://192.168.1.17:4000/v1" in yaml
     assert "gemma4:31b" in yaml
+    assert "api_key: 'sk-litellm-aux'" in yaml
 
-    # Env: role-namespaced API key for the aux entry
-    assert "LITELLM_CURATOR_API_KEY='sk-litellm-aux'" in env
+    # No env var — hermes reads aux bearer from YAML, not from env.
+    assert "LITELLM" not in env
 
 
 def test_hermes_litellm_missing_endpoint_raises():
