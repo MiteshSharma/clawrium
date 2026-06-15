@@ -12,3 +12,8 @@ release-notes:
   label: Release Notes
   permalink: /release-notes
   description: Version release notes and changelogs
+
+release:
+  label: Release
+  permalink: /release
+  description: Per-release blog posts drafted by clawrium-gtm
