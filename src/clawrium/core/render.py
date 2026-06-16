@@ -72,18 +72,19 @@ _BEARER_API_KEY_WITH_ENDPOINT_TYPES = frozenset({"litellm"})
 # instead of crashing later inside `render_hermes`. The membership
 # matches the renderer dispatch tables further below.
 #
-# `litellm` is hermes-only in this revision. Wiring zeroclaw/openclaw
-# would require validating that those renderers' "custom"/OpenAI-shape
-# branches accept a free-form base_url + per-aux key pattern; that
-# expansion belongs in a follow-up after the hermes E2E verifies the
-# render shape end to end (#705).
+# `litellm` on zeroclaw is still deferred — the zeroclaw renderer has no
+# `models.providers.<id>` writer and no env-var path for a free-form
+# OpenAI-compatible base_url + bearer pair. Openclaw gained litellm
+# support in #723: the renderer writes a `models.providers.<provider-name>`
+# block into `openclaw.json` with `api: "openai-completions"`, matching
+# upstream openclaw's custom-provider shape.
 _AGENT_TYPE_PROVIDER_SUPPORT: dict[str, frozenset[str]] = {
     "hermes": frozenset(
         {"openrouter", "anthropic", "openai", "bedrock", "ollama", "litellm"}
     ),
     "zeroclaw": frozenset({"openrouter", "anthropic", "openai", "ollama"}),
     "openclaw": frozenset(
-        {"openrouter", "anthropic", "openai", "bedrock", "ollama", "zai"}
+        {"openrouter", "anthropic", "openai", "bedrock", "ollama", "zai", "litellm"}
     ),
 }
 
@@ -1290,7 +1291,7 @@ def _render_zeroclaw_config_template(
 # strings. Vertex support belongs in a follow-up that extends the
 # credential schema with a credential-kind field (path vs bearer).
 _OPENCLAW_SUPPORTED_PROVIDERS = frozenset(
-    {"openrouter", "anthropic", "openai", "bedrock", "ollama", "zai"}
+    {"openrouter", "anthropic", "openai", "bedrock", "ollama", "zai", "litellm"}
 )
 _OPENCLAW_SUPPORTED_CHANNELS = frozenset({"discord", "slack"})
 _OPENCLAW_SUPPORTED_INTEGRATIONS = frozenset(
@@ -1317,13 +1318,16 @@ def render_openclaw(inputs: RenderInputs) -> RenderedFiles:
     Both files are loaded as canonical resources via `importlib.resources` so
     the wheel ships them. Env is rendered from
     `openclaw-env.canonical.j2`; JSON is loaded from `openclaw.json` baseline
-    and the five clawctl-managed paths are deep-updated from `inputs`:
+    and the clawctl-managed paths are deep-updated from `inputs`:
 
       - `channels.discord.enabled`
       - `channels.discord.allowFrom` (from inputs.channels[discord].allowed_users)
       - `channels.discord.guilds`    (nested reshape from allowed_guilds + allowed_channels)
       - `gateway.port` + `gateway.bind`
       - `agents.defaults.model.primary` (from inputs.provider.default_model + type prefix)
+      - `models.providers.<provider-name>` — litellm only (#723); writes a
+        custom OpenAI-compatible provider block so openclaw routes via the
+        operator-supplied proxy (LiteLLM, vLLM, etc.).
 
     Every other key in the baseline is preserved byte-identically (modulo
     `json.dumps` formatting), matching the silent-wipe-prevention contract
@@ -1371,7 +1375,14 @@ def render_openclaw(inputs: RenderInputs) -> RenderedFiles:
 
     # --- Build prefixed model id (used by both env + openclaw.json) -------
     model_id = inputs.provider.default_model
-    prefix = _OPENCLAW_MODEL_PREFIX.get(ptype, "")
+    if ptype == "litellm":
+        # The litellm prefix is the clawctl provider name, not a static
+        # type-keyed string — every litellm proxy is its own custom
+        # provider in `models.providers.<name>`, so the daemon picks the
+        # right block via `<provider-name>/<model>`.
+        prefix = f"{inputs.provider.name}/"
+    else:
+        prefix = _OPENCLAW_MODEL_PREFIX.get(ptype, "")
     if prefix and not model_id.startswith(prefix):
         model_id = prefix + model_id
 
@@ -1420,6 +1431,7 @@ def render_openclaw(inputs: RenderInputs) -> RenderedFiles:
 
     # --- openclaw.json: load baseline + deep-update managed paths ---------
     json_body = _render_openclaw_json(
+        provider=inputs.provider,
         provider_default_model=model_id,
         gateway=inputs.gateway,
         discord_channel=discord_channel,
@@ -1495,11 +1507,28 @@ def _openclaw_json_baseline() -> str:
 
 def _render_openclaw_json(
     *,
+    provider: "ProviderInputs",
     provider_default_model: str,
     gateway: "GatewayInputs | None",
     discord_channel: "ChannelInputs | None",
 ) -> str:
-    """Deep-update the openclaw.json baseline with the 5 clawctl-managed paths.
+    """Deep-update the openclaw.json baseline with the clawctl-managed paths.
+
+    Managed paths:
+      1. `agents.defaults.model.primary`
+      2. `gateway.port`
+      3. `gateway.bind` (+ `gateway.auth` when present)
+      4. `channels.discord.enabled` / `allowFrom` / `guilds`
+      5. (litellm only) `models.providers.<provider-name>` — a custom
+         OpenAI-compatible provider block matching upstream openclaw's
+         `models.providers` schema (see
+         `docs.openclaw.ai/gateway/config-tools#custom-providers-and-base-urls`).
+         The block sets `api: "openai-completions"`, `baseUrl` from the
+         provider's `endpoint` (`/v1` appended if missing), `apiKey` from
+         the provider's bearer, and one `models[]` entry built from
+         `default_model`. Non-litellm provider types do NOT write this
+         path — for them, model selection flows through `OPENCLAW_DEFAULT_MODEL`
+         in `.openclaw/env` only.
 
     Every other key in the baseline is preserved byte-for-byte (modulo
     json.dumps formatting). Output uses `indent=2, sort_keys=False` to keep
@@ -1514,6 +1543,36 @@ def _render_openclaw_json(
     defaults = agents.setdefault("defaults", {})
     model = defaults.setdefault("model", {})
     model["primary"] = provider_default_model
+
+    # 5. models.providers.<provider-name> — litellm only.
+    if provider.type == "litellm":
+        base_url = provider.endpoint
+        if not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+        model_name = provider.default_model
+        models_block = baseline.setdefault("models", {})
+        providers_block = models_block.setdefault("providers", {})
+        providers_block[provider.name] = {
+            "baseUrl": base_url,
+            "apiKey": provider.api_key,
+            "api": "openai-completions",
+            "models": [
+                {
+                    "id": model_name,
+                    "name": model_name,
+                    "reasoning": False,
+                    "input": ["text"],
+                    "cost": {
+                        "input": 0,
+                        "output": 0,
+                        "cacheRead": 0,
+                        "cacheWrite": 0,
+                    },
+                    "contextWindow": 65536,
+                    "maxTokens": 16384,
+                }
+            ],
+        }
 
     # 2. gateway.port + 3. gateway.bind + gateway.auth (managed bearer)
     #

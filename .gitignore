@@ -242,3 +242,6 @@ docs/demos/recordings/*
 !docs/demos/recordings/.gitkeep
 /gtm/
 tests/platform/fixtures/.ws_cache/
+
+# itx live-verification snapshots (may contain secrets from hosts.json/secrets.json)
+.itx/*/snapshots/

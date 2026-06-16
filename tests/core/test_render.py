@@ -461,6 +461,7 @@ def _baseline_inputs(*, ptype: str = "openrouter") -> RenderInputs:
         (render_openclaw, "bedrock"),
         (render_openclaw, "ollama"),
         (render_openclaw, "zai"),
+        (render_openclaw, "litellm"),
     ],
 )
 def test_renderer_is_idempotent(renderer, ptype):
@@ -2275,6 +2276,22 @@ _OPENCLAW_ENV_ZAI = (
     "GITHUB_TOKEN='ghp_a'\n"
 )
 
+# #723: litellm emits NO provider-specific env var — the bearer + base URL
+# live inline in `openclaw.json` under `models.providers.<name>`. The
+# only litellm-visible difference vs the openclaw + ollama baseline is
+# the model id (which carries the provider-name prefix).
+_OPENCLAW_ENV_LITELLM = (
+    "# Managed by clawrium (clawctl). Re-render with `clawctl agent configure alpha`.\n"
+    "OPENCLAW_GATEWAY_BIND='lan'\n"
+    "OPENCLAW_GATEWAY_PORT=40000\n"
+    "OPENCLAW_GATEWAY_AUTH_MODE=token\n"
+    "OPENCLAW_GATEWAY_AUTH_TOKEN='tkn'\n"
+    "OPENCLAW_DEFAULT_MODEL='lt/gemma4:31b'\n"
+    "DISCORD_BOT_TOKEN='discord-bot'\n"
+    "GITHUB_TOKEN_GH_A='ghp_a'\n"
+    "GITHUB_TOKEN='ghp_a'\n"
+)
+
 
 @pytest.mark.parametrize(
     "ptype,expected",
@@ -2285,14 +2302,29 @@ _OPENCLAW_ENV_ZAI = (
         ("bedrock", _OPENCLAW_ENV_BEDROCK),
         ("ollama", _OPENCLAW_ENV_OLLAMA),
         ("zai", _OPENCLAW_ENV_ZAI),
+        ("litellm", _OPENCLAW_ENV_LITELLM),
     ],
 )
 def test_openclaw_env_byte_lock(ptype, expected):
-    """Phase 3: byte-equivalence lock for `.openclaw/env` across all 6
+    """Phase 3: byte-equivalence lock for `.openclaw/env` across all 7
     supported provider types. Any drift in the Jinja template must be
     intentional and surface here with a clear diff."""
     out = render_openclaw(_openclaw_inputs(ptype=ptype))
     assert out.files[".openclaw/env"] == expected
+
+
+def test_openclaw_litellm_env_has_no_litellm_specific_vars():
+    """#723: pin that the openclaw + litellm env body emits NO
+    LITELLM_*, OPENCLAW_LITELLM_*, or provider.api_key env var — the
+    bearer and base URL live inline in `openclaw.json` under
+    `models.providers.<name>`. If a future env-template branch leaks the
+    bearer to disk via systemd's EnvironmentFile (different blast radius
+    than `openclaw.json`), this test catches it before it ships."""
+    env = render_openclaw(_openclaw_inputs(ptype="litellm")).files[".openclaw/env"]
+    assert "LITELLM_" not in env
+    assert "OPENCLAW_LITELLM_" not in env
+    # The litellm bearer must NOT appear in the env file.
+    assert "sk-master-1" not in env
 
 
 def test_openclaw_json_managed_paths_populated():
@@ -3535,3 +3567,117 @@ def test_621_openclaw_render_ignores_hermes_bundle():
     out_base = render_openclaw(openclaw_base)
     out_with = render_openclaw(openclaw_with)
     assert out_base.files == out_with.files
+
+
+# ---------------------------------------------------------------------------
+# #723: openclaw + litellm — models.providers.<provider-name> writer.
+#
+# Shape pinned against upstream openclaw's custom-provider docs at
+# docs.openclaw.ai/gateway/config-tools#custom-providers-and-base-urls.
+# ---------------------------------------------------------------------------
+
+
+def test_openclaw_litellm_writes_models_providers_block():
+    """#723: render_openclaw must emit a `models.providers.<name>` block
+    keyed by the clawctl provider name, with api='openai-completions',
+    inline apiKey, baseUrl normalized to <endpoint>/v1, and one models[]
+    entry built from default_model. The block enables openclaw to route
+    requests at the LiteLLM/vLLM proxy without any env-var hop.
+    """
+    import json
+
+    inputs = _openclaw_inputs(ptype="litellm")
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+
+    assert "models" in blob, "models block must be added for litellm"
+    assert blob["models"]["providers"].keys() == {"lt"}
+    block = blob["models"]["providers"]["lt"]
+    assert block["baseUrl"] == "http://10.0.0.5:4000/v1"
+    assert block["apiKey"] == "sk-master-1"
+    assert block["api"] == "openai-completions"
+    assert block["models"] == [
+        {
+            "id": "gemma4:31b",
+            "name": "gemma4:31b",
+            "reasoning": False,
+            "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 65536,
+            "maxTokens": 16384,
+        }
+    ]
+    # agents.defaults.model.primary carries the provider-name prefix so the
+    # daemon routes via `models.providers.lt`.
+    assert blob["agents"]["defaults"]["model"]["primary"] == "lt/gemma4:31b"
+
+
+def test_openclaw_litellm_baseurl_with_v1_suffix_not_double_appended():
+    """#723: endpoint already ending in `/v1` must not be double-suffixed.
+    Mirrors hermes' litellm normalization invariant (see
+    test_hermes_litellm_endpoint_with_v1_suffix_not_double_appended)."""
+    import json
+
+    base = _baseline_inputs(ptype="litellm")
+    provider = ProviderInputs(
+        name=base.provider.name,
+        type=base.provider.type,
+        default_model=base.provider.default_model,
+        endpoint=base.provider.endpoint + "/v1",
+        api_key=base.provider.api_key,
+    )
+    inputs = RenderInputs(
+        agent_name=base.agent_name,
+        agent_type="openclaw",
+        provider=provider,
+        channels=base.channels,
+        integrations=base.integrations,
+        gateway=GatewayInputs(host="0.0.0.0", port=40000, auth="tkn", bind="lan"),
+    )
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+    assert blob["models"]["providers"]["lt"]["baseUrl"] == "http://10.0.0.5:4000/v1"
+
+
+def test_openclaw_non_litellm_does_not_emit_models_block():
+    """#723: only litellm writes `models.providers`. The other openclaw
+    provider types route via OPENCLAW_DEFAULT_MODEL env-var only — a
+    stray `models` key in `openclaw.json` would shadow the daemon's
+    built-in provider table for openrouter/anthropic/openai/bedrock/zai
+    and break those agents."""
+    import json
+
+    for ptype in ("openrouter", "anthropic", "openai", "bedrock", "ollama", "zai"):
+        inputs = _openclaw_inputs(ptype=ptype)
+        body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+        blob = json.loads(body)
+        assert "models" not in blob, (
+            f"openclaw + {ptype} must not write models.providers; "
+            f"only litellm uses that path"
+        )
+
+
+def test_openclaw_litellm_preserves_unmanaged_baseline_keys():
+    """#723: adding the `models` block must not perturb any other key in
+    the baseline `openclaw.json`. Pin the full top-level key set."""
+    import json
+
+    inputs = _openclaw_inputs(ptype="litellm")
+    body = render_openclaw(inputs).files[".openclaw/openclaw.json"]
+    blob = json.loads(body)
+    # `models` is the only addition vs the baseline top-level keys.
+    assert set(blob.keys()) == {
+        "agents",
+        "gateway",
+        "session",
+        "tools",
+        "channels",
+        "browser",
+        "env",
+        "models",
+    }
+    # Unmanaged sections survive the litellm branch byte-for-byte.
+    assert blob["tools"]["deny"] == ["browser"]
+    assert blob["session"]["dmScope"] == "per-channel-peer"
+    assert blob["env"]["shellEnv"] == {"enabled": True, "timeoutMs": 15000}
+    assert blob["agents"]["defaults"]["workspace"] == "~/.openclaw/workspace"
