@@ -16,6 +16,13 @@ cut. The `itx:release` skill archives this section into a new
 
 ### Added
 
+- `openclaw` agents can now attach `type=litellm` providers — custom
+  OpenAI-compatible endpoints (LiteLLM, vLLM, any `/v1/chat/completions`
+  proxy). `clawctl agent configure` / `clawctl agent sync` render a
+  `models.providers.<provider-name>` block into `.openclaw/openclaw.json`
+  with `api: "openai-completions"`, inline `apiKey`, and `baseUrl`
+  normalized to `<endpoint>/v1`. The bearer lives in `openclaw.json`
+  exclusively — no new `.openclaw/env` var emitted. Closes #723.
 - Right-hand rail on the `/blog` listing (About, Tags, Community sections),
   filling the previously empty `col--2` slot. Sticky-positioned with its own
   scroll on short viewports; hidden below 996px. Individual post pages still

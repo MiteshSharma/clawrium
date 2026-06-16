@@ -32,6 +32,7 @@ OpenClaw supports all major LLM providers:
 | **[Google Vertex](providers/vertex.md)** | ✅ | [Setup Guide](providers/vertex.md) | Gemini series |
 | **[ZAI / BigModel](providers/zai.md)** | ✅ | [Setup Guide](providers/zai.md) | GLM series |
 | **[Ollama](providers/ollama.md)** | ✅ | [Setup Guide](providers/ollama.md) | Self-hosted models |
+| **LiteLLM / vLLM / custom OpenAI-compatible proxy** | ✅ | `clawctl provider registry create <name> --type litellm --litellm-url <proxy> --model <id> --api-key <bearer>` | Any model exposed by the proxy (rendered into `models.providers.<name>` in `openclaw.json` with `api: "openai-completions"`) |
 | **[Azure OpenAI](providers/azure-openai.md)** | 📋 | [Not Planned](providers/azure-openai.md) | — |
 
 **Quick Setup:**
