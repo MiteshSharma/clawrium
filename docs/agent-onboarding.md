@@ -2,7 +2,7 @@
 
 ## Overview
 
-When you install an agent (claw) on a host, it goes through a structured onboarding workflow before it can be started. This workflow ensures the agent is properly configured with inference providers, identity settings, communication channels, and has passed validation checks.
+When you install an agent on a host, it goes through a structured onboarding workflow before it can be started. This workflow ensures the agent is properly configured with inference providers, identity settings, communication channels, and has passed validation checks.
 
 Think of onboarding as a setup wizard that walks you through all the essential configuration steps for your newly installed agent.
 

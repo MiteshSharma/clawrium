@@ -19,12 +19,12 @@ guides go deeper on each.
 
 | You're adding…                                  | Registry         |
 |-------------------------------------------------|------------------|
-| Behaviour that should run on every claw         | `clawrium/`      |
+| Behaviour that should run on every agent        | `clawrium/`      |
 | openclaw-specific frontmatter (e.g. allowed-tools) | `openclaw/`   |
 | hermes-specific metadata (tags, homepage)       | `hermes/`        |
 | zeroclaw-specific frontmatter                   | `zeroclaw/`      |
 
-A native skill (`<claw>/<name>`) is installable **only** on agents of
+A native skill (`<agent-type>/<name>`) is installable **only** on agents of
 the matching type. A `clawrium/<name>` skill is installable on any
 agent whose entry in the skill's `compatibility:` map is truthy.
 
@@ -76,12 +76,12 @@ description: One-line elevator pitch.
 # Skill body...
 ```
 
-## `<claw>/<name>/` — native
+## `<agent-type>/<name>/` — native
 
 Layout:
 
 ```
-skills/<claw>/<name>/
+skills/<agent-type>/<name>/
 ├── SKILL.md        # required — frontmatter is the source of truth
 └── README.md       # optional
 ```
@@ -103,11 +103,11 @@ description: One-line elevator pitch.
 Forbidden in native frontmatter:
 
 - `compatibility:` — clawrium-only.
-- `native:` — clawrium-only (per-claw override map for the cross-agent
+- `native:` — clawrium-only (per-agent-type override map for the cross-agent
   shape).
 
 The native schemas are otherwise lenient (`additionalProperties: true`)
-so a claw can add new frontmatter fields upstream without breaking CI.
+so an agent type can add new frontmatter fields upstream without breaking CI.
 
 ## Validate locally
 
@@ -141,11 +141,11 @@ Run the test suite too:
 make test
 ```
 
-## Smoke-test against a real claw
+## Smoke-test against a real agent
 
 Before merging, exercise the add/sync/list/remove round-trip against a
 real agent. For a `clawrium/<name>` skill, this means three agents
-(one per claw); for a `<claw>/<name>` native skill, one agent of the
+(one per agent type); for an `<agent-type>/<name>` native skill, one agent of the
 matching type.
 
 ```bash

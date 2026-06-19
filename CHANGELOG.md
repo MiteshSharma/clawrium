@@ -21,3 +21,23 @@ cut. The `itx:release` skill archives this section into a new
 ### Fixed
 
 ### Documentation
+
+- Landing page audit: restructured the GitHub README first-success path —
+  added a Support Matrix near the top (control/host OS, agent runtimes,
+  providers, channels), dropped the deliberate `xclm SSH verification
+  failed` step from the 5-Minute Setup, added **Tested on Ubuntu** and
+  **Tested on macOS** badges, and updated FAQ #1 to reflect macOS
+  end-to-end support.
+- Renamed the generic noun "Claw" / "Claws" → "Agent" / "Agents" across
+  the README, AGENTS.md, the Docusaurus landing (tagline, hero,
+  HomepageFeatures), website docs (intro, architecture, configuration,
+  CLI reference, skills, fleet management, hermes/memory pages), and the
+  repo-rooted docs index. Brand names (Clawrium, OpenClaw, ZeroClaw,
+  IronClaw, NemoClaw, Hermes) are preserved, as are real on-disk
+  identifiers (`*claw` systemd glob, `claw_supports_memory` Python
+  symbol).
+- Replaced remaining `clm` references with `clawctl` on the website
+  landing's `HomepageFeatures` ASCII diagram and sample output, and in
+  the `troubleshooting.md` setup-snippet placeholder. Dated migration
+  blog posts and `docs/releases/*/CHANGELOG.md` archives are intentionally
+  left untouched.

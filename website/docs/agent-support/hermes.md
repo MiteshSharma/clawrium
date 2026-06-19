@@ -16,7 +16,7 @@ Hermes is the [Nous Research self-improving AI agent](https://github.com/NousRes
 |--------|---------|
 | ✅ | Fully supported and tested |
 | 🚧 | In development / Planned |
-| ❌ | Not supported (use a different claw) |
+| ❌ | Not supported (use a different agent) |
 | 📋 | Deferred — tracked as follow-up |
 
 ---

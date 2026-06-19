@@ -11,7 +11,7 @@
 
 Clawrium ships a curated catalog of **skills** that any agent in your
 fleet can copy into local state and sync to its host. A skill is a directory of
-behaviour-shaping prompts and metadata that the underlying claw
+behaviour-shaping prompts and metadata that the underlying agent
 discovers at runtime — Test-Driven Development discipline, code-review
 guardrails, security-audit playbooks, and so on.
 
@@ -72,7 +72,7 @@ agent-local names, not registry refs.
 ### When to use `clawrium/`
 
 Use the `clawrium/` registry when the skill is behaviour you want
-available on **every** kind of claw. The normalized `_meta.yaml` shape
+available on **every** kind of agent. The normalized `_meta.yaml` shape
 is materialized into each native frontmatter format at `clawctl agent
 skill add` time — a single source template becomes an openclaw-shaped
 local SKILL.md for an openclaw agent, hermes-shaped for a hermes agent,
@@ -82,7 +82,7 @@ copies that already-native local file to the host unchanged.
 ### When to use a native registry
 
 Use `openclaw/`, `hermes/`, or `zeroclaw/` when the skill depends on
-that claw's specific frontmatter fields (e.g. hermes-only `metadata`
+that agent type's specific frontmatter fields (e.g. hermes-only `metadata`
 keys, openclaw allowed-tools lists). Native skills are installable
 **only** on agents of the matching type. Attempting to install a
 `hermes/<name>` skill on an openclaw agent fails with
@@ -119,8 +119,8 @@ semantics, and the no-collision rule.
 
 | Guide | Use when |
 |-------|----------|
-| [Authoring clawrium skills](authoring-clawrium.md) | Cross-agent skill — works on every claw |
-| [Authoring native skills](authoring-native.md)     | Skill specific to one claw's frontmatter |
+| [Authoring clawrium skills](authoring-clawrium.md) | Cross-agent skill — works on every agent |
+| [Authoring native skills](authoring-native.md)     | Skill specific to one agent type's frontmatter |
 
 Every PR that touches `skills/` runs `scripts/validate_skills.py` in CI
 ([skills-validate.yml](https://github.com/ric03uec/clawrium/blob/main/.github/workflows/skills-validate.yml))
@@ -143,7 +143,7 @@ python scripts/validate_skills.py
 
 ## On-host materialization
 
-| Claw     | Install location                              | Mechanism                                  |
+| Agent type | Install location                            | Mechanism                                  |
 |----------|-----------------------------------------------|--------------------------------------------|
 | openclaw | `~/.openclaw/skills/<name>/SKILL.md`          | file copy (auto-scan)                      |
 | hermes   | `~/.hermes/skills/clawrium/<name>/SKILL.md`   | file copy (auto-scan)                      |
@@ -169,10 +169,10 @@ agent-local `SKILL.md` byte-for-byte, and applies that state to the host.
 ## Ownership boundaries
 
 Pruning never touches user-authored or upstream-bundled skills. Each
-claw uses a different marker so a future apply can distinguish
+agent type uses a different marker so a future apply can distinguish
 clawrium-managed dirs from anything else:
 
-| Claw     | Marker                                                                                  |
+| Agent type | Marker                                                                                |
 |----------|-----------------------------------------------------------------------------------------|
 | openclaw | `.clawrium-managed` sentinel file inside each clawrium-installed skill dir              |
 | hermes   | Implicit — clawrium skills live under the dedicated `~/.hermes/skills/clawrium/` subdir |
@@ -217,7 +217,7 @@ rm -rf ~/.config/clawrium/agents/<name>
 
 ### Local end-to-end smoke test
 
-After making a change to a `skills/clawrium/<name>/` or per-claw
+After making a change to a `skills/clawrium/<name>/` or per-agent-type
 playbook, exercise the full round-trip against a real agent before
 opening a PR:
 
@@ -232,13 +232,13 @@ clawctl agent skill list <agent>
 clawctl agent sync <agent>
 
 # 4. Verify on host (substitute the agent's unix user)
-ssh <host> "sudo -u <agent-user> ls -la /home/<agent-user>/<claw-skill-path>"
+ssh <host> "sudo -u <agent-user> ls -la /home/<agent-user>/<agent-skill-path>"
 
 # 5. Duplicate add — should fail and tell you to remove/rename first
 clawctl agent skill add <agent> --from-template clawrium/<name>
 
 # 6. Drift recovery — delete on host, sync reconverges
-ssh <host> "sudo -u <agent-user> rm -rf /home/<agent-user>/<claw-skill-path>"
+ssh <host> "sudo -u <agent-user> rm -rf /home/<agent-user>/<agent-skill-path>"
 clawctl agent sync <agent>
 
 # 7. Remove locally, then sync the removal

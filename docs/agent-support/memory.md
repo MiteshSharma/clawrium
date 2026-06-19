@@ -15,10 +15,10 @@ Note: in this iteration the CLI exposes `show`, `edit`, and `delete`. `read` and
 
 ## How dispatch works
 
-1. **Resolve the claw type.** `clawctl` looks up the agent in `hosts.json` (or scans candidates by name across all hosts when the user typed an ambiguous identifier) and reads the recorded `type`.
+1. **Resolve the agent type.** `clawctl` looks up the agent in `hosts.json` (or scans candidates by name across all hosts when the user typed an ambiguous identifier) and reads the recorded `type`.
 2. **Check the manifest.** `core/memory.py::claw_supports_memory(<type>)` loads `registry/<type>/manifest.yaml` and returns True iff `features.memory` is `true`.
 3. **Resolve the workspace path.** Used for display — read from `manifest.workspace.memory_path` and expanded against the agent user's home directory (`~`).
-4. **Dispatch the playbook.** The runner invokes `registry/<type>/playbooks/memory_<op>.yaml` (where `<op>` is `info`, `read`, `write`, or `delete`). Each claw ships its own playbooks targeting its own on-disk layout.
+4. **Dispatch the playbook.** The runner invokes `registry/<type>/playbooks/memory_<op>.yaml` (where `<op>` is `info`, `read`, `write`, or `delete`). Each agent type ships its own playbooks targeting its own on-disk layout.
 
 If `features.memory` is missing or `false`, the CLI exits non-zero with:
 
@@ -42,13 +42,13 @@ features:
   memory: true                                  # required to enable the memory CLI
 ```
 
-Both fields are optional in the `AgentManifest` TypedDict — legacy claws (e.g. zeroclaw) continue to validate without either. Declaring `features.memory: true` is the opt-in for memory CLI support.
+Both fields are optional in the `AgentManifest` TypedDict — legacy agent types (e.g. zeroclaw) continue to validate without either. Declaring `features.memory: true` is the opt-in for memory CLI support.
 
 ---
 
-## Per-claw on-disk layouts
+## Per-agent on-disk layouts
 
-The CLI surface is uniform, but each claw's on-disk model is different.
+The CLI surface is uniform, but each agent type's on-disk model is different.
 
 ### Hermes
 
@@ -79,13 +79,13 @@ Other filenames are rejected on `memory write` with `"hermes memory accepts only
     └── YYYY-MM-DD.md   # Daily files (dynamic listing)
 ```
 
-OpenClaw uses a daily-file model under `memory/`, plus a fixed set of top-level identity/profile files at the workspace root. There are no per-file character caps; the global cap is `MAX_MEMORY_CONTENT_BYTES = 5 MiB` (a transport safety bound, not a per-claw policy).
+OpenClaw uses a daily-file model under `memory/`, plus a fixed set of top-level identity/profile files at the workspace root. There are no per-file character caps; the global cap is `MAX_MEMORY_CONTENT_BYTES = 5 MiB` (a transport safety bound, not a per-agent policy).
 
 ---
 
 ## Write safety
 
-The two claws use different write strategies:
+The two agent types use different write strategies:
 
 **Hermes** (`registry/hermes/playbooks/memory_write.yaml`) uses a stage-then-rename pattern:
 

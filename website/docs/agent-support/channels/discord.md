@@ -18,7 +18,7 @@ Discord channel allows your agent to operate as a bot in Discord servers.
 
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
 2. Click **New Application**
-3. Name it (e.g., "My Claw Agent")
+3. Name it (e.g., "My Clawrium Agent")
 4. Go to **Bot** section
 5. Click **Add Bot**
 6. Enable **Message Content Intent** (required for reading messages)

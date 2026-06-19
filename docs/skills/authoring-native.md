@@ -1,7 +1,7 @@
 # Authoring a native skill
 
 Use a native registry (`openclaw/`, `hermes/`, `zeroclaw/`) when the
-skill depends on that claw's specific frontmatter fields and can't be
+skill depends on that agent type's specific frontmatter fields and can't be
 expressed in the cross-agent `clawrium/` normalized shape.
 
 A native skill is installable **only** on agents of the matching type.
@@ -18,16 +18,16 @@ Choose **native** when:
 - The skill needs openclaw-only frontmatter (e.g. `allowed-tools`).
 - The skill needs zeroclaw-only fields not part of the normalized
   shape.
-- The behaviour is fundamentally claw-specific (e.g. wraps a native
-  CLI flag that no other claw has).
+- The behaviour is fundamentally agent-type-specific (e.g. wraps a native
+  CLI flag that no other agent type has).
 
 Choose **clawrium** when the behaviour is portable and you'd write the
-same prose for every claw.
+same prose for every agent.
 
 ## Layout
 
 ```
-skills/<claw>/<name>/
+skills/<agent-type>/<name>/
 ├── SKILL.md      # required — frontmatter is the source of truth
 └── README.md     # optional
 ```
@@ -38,16 +38,16 @@ copy-pasted a clawrium skill into the wrong namespace.
 
 ## SKILL.md frontmatter
 
-The frontmatter is whatever the underlying claw expects. The catalog
+The frontmatter is whatever the underlying agent expects. The catalog
 schemas are intentionally lenient (`additionalProperties: true`) so a
-forward-compatible field added by a claw upstream doesn't immediately
+forward-compatible field added by an agent upstream doesn't immediately
 break CI — but the validator still requires:
 
-| Field         | Required | Notes                                |
-|---------------|:--------:|--------------------------------------|
-| `name`        | ✅       | MUST equal the directory name        |
-| `description` | ✅       | One-line elevator pitch              |
-| `version`     | optional | Surfaces in the claw's `skills list` |
+| Field         | Required | Notes                                  |
+|---------------|:--------:|----------------------------------------|
+| `name`        | ✅       | MUST equal the directory name          |
+| `description` | ✅       | One-line elevator pitch                |
+| `version`     | optional | Surfaces in the agent's `skills list`  |
 
 Plus: clawrium-only keys (`compatibility`, `native`) are **rejected**
 in native frontmatter. They have no meaning outside the cross-agent
@@ -129,11 +129,11 @@ the rest of the suite:
 make test
 ```
 
-## Smoke-test against the real claw
+## Smoke-test against the real agent
 
 A native skill must be installed and exercised on a real agent of the
 matching type. The clawrium GUI's `Skills` tab on the agent detail
-filters the installable list to `clawrium/*` + the matching `<claw>/*`,
+filters the installable list to `clawrium/*` + the matching `<agent-type>/*`,
 so you can confirm the install/list/remove round-trip there as well.
 
 ## Open the PR

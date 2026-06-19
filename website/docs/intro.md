@@ -11,20 +11,23 @@ keywords: [clawrium, AI assistant, fleet management, CLI tool, multi-host, agent
 
 [Documentation](https://ric03uec.github.io/clawrium/) · [Issues](https://github.com/ric03uec/clawrium/issues) · [Roadmap](https://github.com/users/ric03uec/projects/1) · [Discord](https://discord.gg/KzPuSxgQ98)
 
-## What is a Claw?
+## What is an Agent?
 
-A **claw** is a general-purpose AI assistant that runs on a machine in your network. Unlike coding-specific tools, claws are versatile assistants that can:
+A Clawrium **agent** is a general-purpose AI assistant that runs on a machine in your network. Unlike coding-specific tools, these agents are versatile assistants that can:
 
 - Answer questions via Discord, Slack, or CLI
 - Research topics and summarize findings
 - Help with writing, brainstorming, and planning
 - Connect to external services (GitHub, Jira, etc.)
 
-**Currently supported:**
-- [**OpenClaw**](https://github.com/openclaw/openclaw) - Full-featured assistant with multi-provider and multi-channel support
+**Fully supported today:**
+- [**OpenClaw**](https://github.com/openclaw/openclaw) ✅ - Full-featured assistant with multi-provider and multi-channel support
+
+**In development:**
+- [**Hermes**](https://github.com/NousResearch/hermes-agent) 🚧 (Nous Research) - Install, configure, and OpenAI-compatible API are working; `clawctl agent chat` and channel gateways are in progress
+- **ZeroClaw** 🚧 - Lightweight assistant for resource-constrained devices
 
 **Planned:**
-- **ZeroClaw** - Lightweight assistant for resource-constrained devices
 - **IronClaw** - High-performance assistant for demanding workloads
 
 ## Why Clawrium?
@@ -63,23 +66,10 @@ clawctl service init
 ```
 
 ```bash
-# Register a host. First run generates the keypair and prints the
-# manual xclm setup commands you need to run on the host (see the
-# Host Setup guide). Re-run after pasting them to register the host.
-clawctl host create 192.168.1.100 --user xclm --alias mybox
-```
-```
-Generating SSH keypair for 192.168.1.100...
-✓ Keypair created: ~/.config/clawrium/keys/192.168.1.100/
-xclm SSH verification failed: Authentication failed - check SSH keys
-
-Manual setup required. Log into the host with a sudo-capable user and
-run the printed Linux or macOS block, then re-run this command.
-```
-
-```bash
-# Add an initialized host to the fleet
-clawctl host create 192.168.1.100 --alias homelab
+# Register a host. The first invocation prints the manual xclm setup
+# commands to run on the host (see the Host Setup guide); re-run this
+# command afterwards to actually register the host.
+clawctl host create 192.168.1.100 --user xclm --alias homelab
 ```
 ```
 Connecting to 192.168.1.100 as xclm...
@@ -127,9 +117,9 @@ Clawrium GUI starting on http://127.0.0.1:36000 — press Ctrl+C to stop
 | Concept | Description |
 |---------|-------------|
 | **Host** | A machine in your network that runs one or more agents |
-| **Claw** | An AI assistant instance (like OpenClaw or ZeroClaw) |
-| **Agent** | An installed claw instance managed by Clawrium |
-| **Registry** | Available claw types with versions, dependencies, and templates |
+| **Agent** | An installed AI assistant instance managed by Clawrium (e.g. OpenClaw, Hermes) |
+| **Agent Type** | The implementation/runtime class of an agent |
+| **Registry** | Available agent types with versions, dependencies, and templates |
 
 ## What You'll Need
 
@@ -137,8 +127,8 @@ Before you start, make sure you have:
 
 | Requirement | Details |
 |-------------|---------|
-| **Control machine** | macOS or Linux with Python 3.10+ |
-| **Target host** | Ubuntu 22.04/24.04 with SSH access |
+| **Control machine** | Ubuntu or macOS with Python 3.10+ |
+| **Target host** | Ubuntu 22.04/24.04 or macOS with SSH access |
 | **Network** | Direct connectivity between control machine and hosts |
 | **API keys** | At least one LLM provider (OpenAI, Anthropic, etc.) |
 
@@ -152,11 +142,11 @@ Clawrium runs from your control machine and uses SSH + Ansible to manage remote 
 
 ### What operating systems are supported?
 
-Clawrium is currently tested on Ubuntu control machines and Ubuntu 22.04/24.04 target hosts.
+Clawrium is tested end-to-end on **Ubuntu** and **macOS** — both as the control machine and as target hosts. On macOS hosts, enable Remote Login before registering them; see the [Host Setup](./guides/host-setup.md) guide. Other Linux distributions may work but are not in the test matrix.
 
 ### Which agents are supported today?
 
-[OpenClaw](https://github.com/openclaw/openclaw) is supported with full lifecycle management. ZeroClaw support is planned.
+[OpenClaw](https://github.com/openclaw/openclaw) is fully supported end-to-end with multi-provider and multi-channel support. [Hermes](https://github.com/NousResearch/hermes-agent) and ZeroClaw are in active development. IronClaw is planned. See the [Support Matrix](https://github.com/ric03uec/clawrium#support-matrix) on the GitHub README for the canonical status table.
 
 ### Is Claude subscription supported?
 
