@@ -6,7 +6,7 @@ keywords: [fleet management, multi-host, deployment, operations]
 
 # Fleet Management
 
-This guide covers managing multiple hosts and claws in your Clawrium fleet.
+This guide covers managing multiple hosts and agents in your Clawrium fleet.
 
 ## Overview
 
@@ -89,7 +89,7 @@ clawctl host status dev-server
 
 ### Deploying Across Fleet
 
-Deploy the same claw to multiple hosts:
+Deploy the same agent type to multiple hosts:
 
 ```bash
 # Install ZeroClaw on multiple hosts
@@ -115,7 +115,7 @@ clawctl agent secret create OPENAI_API_KEY --host dev-server
 
 Before resetting a host:
 
-1. **Check for running claws**
+1. **Check for running agents**
    ```bash
    clawctl host status pi-lab
    ```
@@ -128,7 +128,7 @@ Before resetting a host:
 3. **Backup any custom configuration**
    ```bash
    # SSH into host and backup custom configs
-   ssh xclm@pi-lab "tar -czf /tmp/claw-backup.tar.gz ~/.config/"
+   ssh xclm@pi-lab "tar -czf /tmp/agent-backup.tar.gz ~/.config/"
    ```
 
 ### Executing Reset
@@ -284,7 +284,7 @@ Each host has an isolated SSH keypair:
 
 2. **Document host configurations**
    - Keep a fleet manifest
-   - Track which claws are on which hosts
+   - Track which agents are on which hosts
    - Note any custom configurations
 
 3. **Backup before changes**

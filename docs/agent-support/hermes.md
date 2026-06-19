@@ -16,7 +16,7 @@ Hermes is the [Nous Research self-improving AI agent](https://github.com/NousRes
 |--------|---------|
 | ✅ | Fully supported and tested |
 | 🚧 | In development / Planned |
-| ❌ | Not supported (use a different claw) |
+| ❌ | Not supported (use a different agent) |
 | 📋 | Deferred — tracked as follow-up |
 
 ---
@@ -437,7 +437,7 @@ The following are explicitly out of scope for issue #68 and tracked as separate 
 
 ## Next Steps
 
-- [Memory model](memory.md) — manifest-driven memory CLI across claw types
+- [Memory model](memory.md) — manifest-driven memory CLI across agent types
 - [OpenClaw Support Matrix](openclaw.md) — full-featured alternative with multi-channel support
 - [Agent Onboarding](../agent-onboarding.md) — detailed onboarding wizard guide
 - [Host Preparation](../host-preparation.md) — installing provider credentials and host prereqs

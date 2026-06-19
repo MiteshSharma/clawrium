@@ -1,29 +1,29 @@
 # Secret Commands
 
-Manage secrets for claw instances.
+Manage secrets for agent instances.
 
 ```bash
 clawctl agent secret <command> [options]
 ```
 
-Secrets are stored locally in `~/.config/clawrium/secrets.yml` and are never transmitted to remote hosts in plain text. Each claw instance has its own isolated secret namespace.
+Secrets are stored locally in `~/.config/clawrium/secrets.yml` and are never transmitted to remote hosts in plain text. Each agent instance has its own isolated secret namespace.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| [`clawctl agent secret create`](#clawctl-agent-secret-create) | Set a secret value for a claw instance |
-| [`clawctl agent secret get --agent`](#clawctl-agent-secret-get---agent) | List secrets for a claw instance |
-| [`clawctl agent secret delete`](#clawctl-agent-secret-delete) | Remove a secret from a claw instance |
+| [`clawctl agent secret create`](#clawctl-agent-secret-create) | Set a secret value for an agent instance |
+| [`clawctl agent secret get --agent`](#clawctl-agent-secret-get---agent) | List secrets for an agent instance |
+| [`clawctl agent secret delete`](#clawctl-agent-secret-delete) | Remove a secret from an agent instance |
 
 ---
 
 ## clawctl agent secret create
 
-Set a secret value for a claw instance.
+Set a secret value for an agent instance.
 
 ```bash
-clawctl agent secret create <claw_name> <key> [options]
+clawctl agent secret create <agent_name> <key> [options]
 ```
 
 Prompts for the value using masked input (not visible on screen).
@@ -32,7 +32,7 @@ Prompts for the value using masked input (not visible on screen).
 
 | Argument | Description |
 |----------|-------------|
-| `claw_name` | Claw instance name (e.g., `zc-work`) |
+| `agent_name` | Agent instance name (e.g., `zc-work`) |
 | `key` | Secret key name (e.g., `ANTHROPIC_API_KEY`) |
 
 ### Options
@@ -79,32 +79,32 @@ Invalid examples: `my-api-key`, `apiKey`, `123_KEY`
 | Code | Meaning |
 |------|---------|
 | 0 | Secret set successfully or operation cancelled |
-| 1 | Claw not found, invalid key name, or empty value |
+| 1 | Agent not found, invalid key name, or empty value |
 
 ---
 
 ## clawctl agent secret get --agent
 
-List secrets for a claw instance.
+List secrets for an agent instance.
 
 ```bash
-clawctl agent secret get --agent <claw_name>
+clawctl agent secret get --agent <agent_name>
 ```
 
-Shows secret keys and metadata. Values are never displayed. Also shows missing required secrets defined in the claw's manifest.
+Shows secret keys and metadata. Values are never displayed. Also shows missing required secrets defined in the agent's manifest.
 
 ### Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `claw_name` | Claw instance name (e.g., `zc-kevin`) |
+| `agent_name` | Agent instance name (e.g., `zc-kevin`) |
 
 ### Example
 
 ```bash
 $ clawctl agent secret get --agent zc-work
 
-Claw: zc-work (192.168.1.100)
+Agent: zc-work (192.168.1.100)
 ┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
 ┃ Key                ┃ Description                ┃ Updated    ┃
 ┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
@@ -118,7 +118,7 @@ With missing required secrets:
 ```bash
 $ clawctl agent secret get --agent zc-work
 
-Claw: zc-work (192.168.1.100)
+Agent: zc-work (192.168.1.100)
 ┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
 ┃ Key                ┃ Description                ┃ Updated    ┃
 ┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
@@ -132,7 +132,7 @@ No secrets configured:
 ```bash
 $ clawctl agent secret get --agent zc-new
 
-Claw: zc-new (192.168.1.100)
+Agent: zc-new (192.168.1.100)
   No secrets set
   Missing: ANTHROPIC_API_KEY (Required for Claude API access)
 ```
@@ -142,16 +142,16 @@ Claw: zc-new (192.168.1.100)
 | Code | Meaning |
 |------|---------|
 | 0 | Secrets listed successfully |
-| 1 | Claw not found or secrets file corrupted |
+| 1 | Agent not found or secrets file corrupted |
 
 ---
 
 ## clawctl agent secret delete
 
-Remove a secret from a claw instance.
+Remove a secret from an agent instance.
 
 ```bash
-clawctl agent secret delete <claw_name> <key> [--force]
+clawctl agent secret delete <agent_name> <key> [--force]
 ```
 
 Prompts for confirmation unless `--force` is specified.
@@ -160,7 +160,7 @@ Prompts for confirmation unless `--force` is specified.
 
 | Argument | Description |
 |----------|-------------|
-| `claw_name` | Claw instance name |
+| `agent_name` | Agent instance name |
 | `key` | Secret key to remove |
 
 ### Options
@@ -189,4 +189,4 @@ Secret 'GITHUB_TOKEN' removed from 'zc-work'.
 | Code | Meaning |
 |------|---------|
 | 0 | Secret removed successfully or operation cancelled |
-| 1 | Claw not found, secret not found, or removal failed |
+| 1 | Agent not found, secret not found, or removal failed |

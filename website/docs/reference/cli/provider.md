@@ -1,6 +1,6 @@
 # Provider Commands
 
-Manage inference providers (LLM APIs) for claw instances.
+Manage inference providers (LLM APIs) for agent instances.
 
 ```bash
 clawctl provider <command> [options]

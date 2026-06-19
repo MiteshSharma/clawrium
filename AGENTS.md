@@ -1,4 +1,4 @@
-# Clawrium - An aquarium for *claws
+# Clawrium
 
 ## How It Works
 

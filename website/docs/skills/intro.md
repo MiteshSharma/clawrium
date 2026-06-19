@@ -8,7 +8,7 @@ keywords: [skills, registry, clawrium, openclaw, hermes, zeroclaw, install]
 
 Clawrium ships a curated **skills catalog** that any agent in your
 fleet can copy into local agent state with one command. A skill is a directory of
-behaviour-shaping prompts and metadata that the underlying claw
+behaviour-shaping prompts and metadata that the underlying agent
 discovers at runtime — Test-Driven Development discipline, code-review
 guardrails, security-audit playbooks.
 
@@ -66,14 +66,14 @@ local names.
 ### `clawrium/` — cross-agent
 
 Use the `clawrium/` registry when the skill is behaviour you want
-available on **every** kind of claw. The normalized `_meta.yaml` shape
+available on **every** kind of agent. The normalized `_meta.yaml` shape
 is materialized into each native frontmatter format at `clawctl agent
 skill add` time. `clawctl agent sync` later copies the already-native
 local file to the host unchanged.
 
 ### `openclaw/`, `hermes/`, `zeroclaw/` — native
 
-Use a native registry when the skill needs that claw's specific
+Use a native registry when the skill needs that agent's specific
 frontmatter fields. Native skills are installable **only** on agents
 of the matching type — `clawctl agent skill add` fails fast if you try
 to mix them.
@@ -96,7 +96,7 @@ clawctl agent sync <agent>
 
 ## On-host install path
 
-| Claw     | On-host location                              | Mechanism                                  |
+| Agent type | On-host location                            | Mechanism                                  |
 |----------|-----------------------------------------------|--------------------------------------------|
 | openclaw | `~/.openclaw/skills/<name>/SKILL.md`          | file copy (auto-scan)                      |
 | hermes   | `~/.hermes/skills/clawrium/<name>/SKILL.md`   | file copy (auto-scan)                      |

@@ -14,7 +14,7 @@ clawctl host <command> [options]
 | [`clawctl host get`](#clawctl-host-get) | List all registered hosts |
 | [`clawctl host delete`](#clawctl-host-delete) | Remove a host from the fleet |
 | [`clawctl host status`](#clawctl-host-status) | Check status of a host |
-| [`clawctl host reset`](#clawctl-host-reset) | Reset a host, removing all claws and users |
+| [`clawctl host reset`](#clawctl-host-reset) | Reset a host, removing all agents and users |
 | [`clawctl host address`](#address-subcommands) | Manage multiple addresses for a host |
 
 ---
@@ -226,7 +226,7 @@ Hardware information updated.
 
 ## clawctl host reset
 
-Reset a host, removing all claws and users.
+Reset a host, removing all agents and users.
 
 ```bash
 clawctl host reset <hostname> [options]

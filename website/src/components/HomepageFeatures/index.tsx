@@ -35,14 +35,15 @@ function UnlockIcon() {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: '🌐 Universal Claw Support',
+    title: '🌐 Universal Agent Support',
     icon: <GlobeIcon />,
     description: (
       <>
-        Today, Clawrium supports{' '}
-        <a href="https://github.com/openclaw/openclaw">OpenClaw</a> and{' '}
-        <a href="https://github.com/NousResearch/hermes-agent">Hermes</a> for end-to-end
-        install, onboarding, and lifecycle management. Additional claw types are planned.
+        Clawrium supports{' '}
+        <a href="https://github.com/openclaw/openclaw">OpenClaw</a>,{' '}
+        <a href="https://github.com/NousResearch/hermes-agent">Hermes</a>, and{' '}
+        <a href="https://github.com/zeroclaw-labs/zeroclaw">ZeroClaw</a> end-to-end today.
+        Additional agent types are planned.
       </>
     ),
   },
@@ -51,8 +52,8 @@ const FeatureList: FeatureItem[] = [
     icon: <GearIcon />,
     description: (
       <>
-        One config format for every claw. Define your preferences once and
-        Clawrium translates them for each claw&apos;s native format.
+        One config format for every agent. Define your preferences once and
+        Clawrium translates them into each agent&apos;s native format.
       </>
     ),
   },
@@ -110,14 +111,14 @@ function BeforeAfterSection(): ReactNode {
           <div className={clsx('col col--6', styles.beforeAfterCol)}>
             <Heading as="h3">After: One CLI, all agents</Heading>
             <pre className={styles.asciiDiagram}>
-{`You (laptop + clm CLI)
+{`You (laptop + clawctl CLI)
     │
-    └── clm ────┬── pi-lab ───> openclaw
-                │
-                ├── nuc-01 ───> openclaw
-                │
-                └── dev-box ──> hermes
-    
+    └── clawctl ──┬── pi-lab ───> openclaw
+                  │
+                  ├── nuc-01 ───> openclaw
+                  │
+                  └── dev-box ──> hermes
+
     ✅ Single command center
     ✅ Consistent configuration
     ✅ Centralized secrets`}
@@ -127,13 +128,13 @@ function BeforeAfterSection(): ReactNode {
         <div className={styles.clmPsOutput}>
           <Heading as="h4" className="text--center">See your entire fleet with one command:</Heading>
           <pre className={styles.terminalOutput}>
-{`$ clm ps
+{`$ clawctl agent get
 
-HOST        AGENT          TYPE       STATUS    UPTIME
-─────────────────────────────────────────────────────────
-pi-lab      oc-discord     openclaw   running   3d 4h
-nuc-01      oc-work        openclaw   running   12h
-dev-box     hm-research    hermes     running   2h`}
+NAME           TYPE       HOST       PROVIDER    STATUS    AGE
+─────────────────────────────────────────────────────────────────
+oc-discord     openclaw   pi-lab     anthropic   running   3d 4h
+oc-work        openclaw   nuc-01     anthropic   running   12h
+hm-research    hermes     dev-box    openrouter  running   2h`}
           </pre>
         </div>
       </div>

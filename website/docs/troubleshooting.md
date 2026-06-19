@@ -75,7 +75,7 @@ Permission denied (publickey)
    # Add public key (from Clawrium's output)
    sudo mkdir -p /home/xclm/.ssh
    sudo chmod 700 /home/xclm/.ssh
-   echo '<public-key-from-clm-host-init>' | sudo tee /home/xclm/.ssh/authorized_keys
+   echo '<public-key-from-clawctl-host-create>' | sudo tee /home/xclm/.ssh/authorized_keys
    sudo chmod 600 /home/xclm/.ssh/authorized_keys
    sudo chown -R xclm:xclm /home/xclm/.ssh
    ```

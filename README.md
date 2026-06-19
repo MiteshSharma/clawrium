@@ -1,6 +1,8 @@
-# <img src="docs/assets/clawrium-logo.png" alt="Clawrium" height="40" align="center"> Clawrium - An aquarium for *claws
+# <img src="docs/assets/clawrium-logo.png" alt="Clawrium" height="40" align="center"> Clawrium
 
 <p align="center">
+  <strong>Agent Fleet Manager</strong>
+  <br>
   Fleet management for AI agents on your local network.
 </p>
 
@@ -9,6 +11,8 @@
   <a href="https://pypi.org/project/clawrium/"><img src="https://img.shields.io/pypi/v/clawrium" alt="PyPI"></a>
   <a href="https://pypi.org/project/clawrium/"><img src="https://img.shields.io/pypi/pyversions/clawrium" alt="Python"></a>
   <a href="https://github.com/ric03uec/clawrium/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ric03uec/clawrium" alt="License"></a>
+  <img src="https://img.shields.io/badge/Tested_on-Ubuntu-E95420?logo=ubuntu&logoColor=white" alt="Tested on Ubuntu">
+  <img src="https://img.shields.io/badge/Tested_on-macOS-000000?logo=apple&logoColor=white" alt="Tested on macOS">
 </p>
 
 <p align="center">
@@ -16,6 +20,17 @@
 </p>
 
 ---
+
+## Support matrix
+
+| What | Supported today | Notes |
+|------|-----------------|-------|
+| **Control machine OS** | Ubuntu, macOS | Tested end-to-end |
+| **Target host OS** | Ubuntu, macOS | macOS hosts must enable Remote Login first ([host setup](docs/host-preparation.md)) |
+| **Agent runtimes** | OpenClaw ✅, Hermes ✅, ZeroClaw ✅ | IronClaw planned |
+| **Inference providers** | Anthropic, OpenAI, OpenRouter, Ollama | Claude subscription is NOT supported — API keys only |
+| **Messaging channels** | Discord, Slack | OpenClaw only |
+| **Container runtime** | None required | No Docker, no Kubernetes — SSH + Ansible |
 
 ## How it works
 
@@ -38,13 +53,14 @@ Clawrium gives you `kubectl`-style fleet control for AI agents:
 - **Lifecycle management.** Upgrades, rollbacks, secrets rotation, backups - handled.
 - **Token tracking & guardrails.** See spend across your fleet. Set limits before someone's experiment burns through your API budget.
 
-## What is a "Claw" or an Agent?
+## What is an Agent?
 
-A **Claw** or an Agent is a general-purpose AI assistant that runs on a host in your network. Unlike coding-focused assistants (Copilot, Cursor), Claws are designed for broader tasks:
+A Clawrium **agent** is a general-purpose AI assistant that runs on a host in your network. Unlike coding-focused assistants (Copilot, Cursor), these agents are designed for broader tasks. Agent implementations:
 
-- **[OpenClaw](https://github.com/openclaw/openclaw)** - Open-source general assistant
-- **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** - Lightweight assistant for resource-constrained hosts
-- **[IronClaw](https://github.com/nearai/ironclaw)** - High-performance assistant for demanding workloads
+- **[OpenClaw](https://github.com/openclaw/openclaw)** ✅ - Open-source general assistant
+- **[Hermes](https://github.com/NousResearch/hermes-agent)** ✅ (Nous Research) - OpenAI-compatible local API
+- **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** ✅ - Lightweight assistant for resource-constrained hosts
+- **[IronClaw](https://github.com/nearai/ironclaw)** _(planned)_ - High-performance assistant for demanding workloads
 
 Clawrium manages the lifecycle of these agents across your fleet - install, configure, start, stop, upgrade, monitor.
 
@@ -83,40 +99,60 @@ For full installation instructions including how to install `uv`, see [docs/inst
 
 ### 5-Minute Setup
 
+**Step 1 — On your control machine: initialize Clawrium**
+
 ```bash
-# Initialize config
 clawctl service init
-# → Created /home/user/.config/clawrium/config.yaml
+```
 
-# Register your host. First run generates a per-host SSH keypair and
-# prints the manual xclm setup commands (Linux + macOS) you need to
-# run on the host — see docs/host-preparation.md.
+**Step 2 — On your control machine: generate the xclm setup commands for the host**
+
+```bash
 clawctl host create 192.168.1.100 --user xclm --alias worker-1
-# → Generating SSH keypair for '192.168.1.100'...
-# → xclm SSH verification failed: Authentication failed - check SSH keys
-# → Manual setup required. (paste printed block on the host, then re-run)
+```
 
-# Re-run after running the printed setup commands on the host:
+This generates a per-host SSH keypair and, because the `xclm` user doesn't exist on the host yet, prints the **exact setup block** (Linux and macOS variants) with your fresh public key inlined. Example output (Linux):
+
+```bash
+## Linux
+# Create xclm user
+sudo useradd -m -s /bin/bash xclm
+# Passwordless sudo
+echo "xclm ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/xclm
+sudo chmod 440 /etc/sudoers.d/xclm
+# Authorized key
+sudo mkdir -p /home/xclm/.ssh && sudo chmod 700 /home/xclm/.ssh
+echo 'ssh-ed25519 AAAA…' | sudo tee /home/xclm/.ssh/authorized_keys
+sudo chmod 600 /home/xclm/.ssh/authorized_keys
+sudo chown -R xclm:xclm /home/xclm/.ssh
+```
+
+**Step 3 — SSH into the host and paste the printed block**
+
+```bash
+ssh you@192.168.1.100   # log in as any sudo-capable user
+# paste the block from Step 2, exit
+```
+
+(Full Linux + macOS variants and rationale: [docs/host-preparation.md](docs/host-preparation.md).)
+
+**Step 4 — On your control machine: re-run `clawctl host create` to register the host**
+
+```bash
 clawctl host create 192.168.1.100 --user xclm --alias worker-1
-# → host/worker-1 created on 192.168.1.100:22
+# → host/worker-1 registered (xclm verified)
+```
 
-# Register an inference provider
+**Step 5 — Register a provider, install + start the agent**
+
+```bash
+# Inference provider
 clawctl provider registry create anthropic --type anthropic --api-key-stdin
-# → Provider 'anthropic' configured
 
-# Install OpenClaw agent
+# Install, configure, and start an OpenClaw agent
 clawctl agent create my-assistant --type openclaw --host worker-1 --provider anthropic
-# → Installing openclaw on worker-1...
-# → Agent 'my-assistant' installed
-
-# Configure and start
 clawctl agent configure my-assistant
 clawctl agent start my-assistant
-# → Agent 'my-assistant' started
-
-# Copy a catalog skill into the agent's local state and sync it
-clawctl agent skill add my-assistant --from-template clawrium/tdd
-clawctl agent sync my-assistant
 
 # Check fleet status
 clawctl agent get
@@ -125,12 +161,9 @@ clawctl agent get
 
 # Chat with your agent
 clawctl agent chat my-assistant
-# → Connected to my-assistant
-# → Type your message...
 
 # Or open the local web dashboard
 clawctl gui
-# → Clawrium GUI starting on http://127.0.0.1:36000 — press Ctrl+C to stop
 ```
 
 **You should see:** A running agent in `clawctl agent get` output with status `running`.
@@ -151,9 +184,7 @@ clawctl gui
 
 ### 1. What operating systems are supported?
 
-Right now, Clawrium is only tested on Ubuntu hosts and Ubuntu control machines.
-
-Other Linux distributions may work, but they are not currently part of the test matrix.
+Ubuntu and macOS are in the test matrix — both as the control machine and as target hosts. On macOS hosts you must enable Remote Login before registering them; see [docs/host-preparation.md](docs/host-preparation.md). Other Linux distributions may work but aren't tested.
 
 ### 2. Which agents are supported today?
 

@@ -6,7 +6,7 @@ keywords: [architecture, components, network topology, data flow, system design]
 
 # Architecture
 
-Clawrium manages AI assistant deployments across your network through three key concepts: **Hosts**, **Claws**, and the **Registry**.
+Clawrium manages AI agent deployments across your network through three key concepts: **Hosts**, **Agents**, and the **Registry**.
 
 ![Clawrium architecture](/img/clawrium-architecture.png)
 
@@ -42,26 +42,28 @@ graph TB
 
 ### Host
 
-A **Host** is any machine on your network that runs one or more claws. Clawrium connects to hosts via SSH using a dedicated management user (`xclm`).
+A **Host** is any machine on your network that runs one or more agents. Clawrium connects to hosts via SSH using a dedicated management user (`xclm`).
 
 **Characteristics:**
 - Direct network access required (no ProxyJump support in v1)
 - Per-host SSH keypair for security isolation
 - Hardware capabilities detected automatically (CPU, GPU, memory)
 
-### Claw
+### Agent
 
-A **Claw** is an AI assistant instance. Today, Clawrium supports OpenClaw for end-to-end deployment and management.
+An **Agent** is an AI assistant instance.
 
-**Current support:**
-- OpenClaw
+**Fully supported today:**
+- OpenClaw ✅
+- Hermes ✅
+- ZeroClaw ✅
 
 **Planned:**
-- ZeroClaw and additional claw types
+- IronClaw and additional agent types
 
 ### Registry
 
-The **Registry** defines available claw types with their versions, dependencies, and installation templates. It's the source of truth for what can be deployed.
+The **Registry** defines available agent types with their versions, dependencies, and installation templates. It's the source of truth for what can be deployed.
 
 ## Host Management Flow
 
@@ -89,7 +91,7 @@ sequenceDiagram
 3. **Re-run** (`clawctl host create …`): verifies SSH as `xclm`, persists the host record.
 4. **Manage**: list, check status, or remove hosts as needed.
 
-## Claw Installation Flow
+## Agent Installation Flow
 
 ```mermaid
 sequenceDiagram
@@ -103,19 +105,19 @@ sequenceDiagram
     Registry-->>CLM: Version, dependencies, template
     CLM->>Host: SSH as xclm
     CLM->>Host: Install dependencies
-    CLM->>Host: Create claw user
+    CLM->>Host: Create agent user
     CLM->>Host: Deploy configuration
-    CLM->>Host: Start claw service
-    Host-->>CLM: Claw running on port XXXX
+    CLM->>Host: Start agent service
+    Host-->>CLM: Agent running on port XXXX
 ```
 
 **The installation process:**
 
-1. Reads claw definition from registry
+1. Reads agent definition from registry
 2. Installs system dependencies via Ansible
-3. Creates unprivileged user for the claw instance
-4. Deploys normalized configuration (translated to claw-native format)
-5. Starts the claw as a systemd service
+3. Creates unprivileged user for the agent instance
+4. Deploys normalized configuration (translated to agent-native format)
+5. Starts the agent as a systemd service
 
 ## Data Storage
 
@@ -194,7 +196,7 @@ flowchart LR
 
     subgraph "External"
         HOST[Remote Host]
-        REGISTRY[(Claw Registry)]
+        REGISTRY[(Agent Registry)]
     end
 
     CLI -->|commands| CORE
@@ -221,7 +223,7 @@ flowchart LR
 | Core Logic | Business logic, state management, orchestration |
 | Ansible Runner | Executes playbooks on remote hosts |
 | Config Manager | Reads/writes configuration files |
-| Registry | Claw type definitions and templates |
+| Registry | Agent type definitions and templates |
 
 ## Data Flow
 
@@ -277,7 +279,7 @@ Each component operates with minimal required permissions:
 |-----------|------------|
 | Clawrium CLI | User-level, reads/writes `~/.config/clawrium/` |
 | xclm user | Passwordless sudo for specific commands |
-| Claw instances | Unprivileged user, no sudo access |
+| Agent instances | Unprivileged user, no sudo access |
 
 ### SSH Key Isolation
 

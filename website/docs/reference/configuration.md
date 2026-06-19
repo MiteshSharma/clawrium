@@ -26,7 +26,7 @@ $XDG_CONFIG_HOME/clawrium/
 ```
 ~/.config/clawrium/
 ├── hosts.yml           # Registered hosts and their metadata
-├── secrets.yml         # Encrypted secrets for claw instances
+├── secrets.yml         # Encrypted secrets for agent instances
 └── keys/               # SSH keypairs for host authentication
     ├── host1.key       # Private key (permissions: 0600)
     └── host1.key.pub   # Public key
@@ -55,7 +55,7 @@ Contains registered hosts and their configuration:
     tags:
       - production
       - arm
-  claws:
+  agents:
     zeroclaw:
       version: "0.1.0"
       user: zc
@@ -65,7 +65,7 @@ Contains registered hosts and their configuration:
 
 ### secrets.yml
 
-Contains secrets organized by claw instance:
+Contains secrets organized by agent instance:
 
 ```yaml
 192.168.1.100:zeroclaw:zc-work:
@@ -79,7 +79,7 @@ Contains secrets organized by claw instance:
     value: <encrypted>
 ```
 
-The instance key format is `hostname:claw_type:instance_name`.
+The instance key format is `hostname:agent_type:instance_name`.
 
 ### keys/
 

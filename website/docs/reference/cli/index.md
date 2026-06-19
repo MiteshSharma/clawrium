@@ -1,11 +1,11 @@
 ---
-description: Complete CLI reference for the clawctl command. Root commands and command groups for managing your AI claw fleet.
+description: Complete CLI reference for the clawctl command. Root commands and command groups for managing your AI agent fleet.
 keywords: [CLI, reference, commands, clawctl, usage, options]
 ---
 
 # CLI Reference
 
-Clawrium provides the `clawctl` command-line interface for managing your AI claw fleet.
+Clawrium provides the `clawctl` command-line interface for managing your AI agent fleet.
 
 ## Installation
 
@@ -39,8 +39,8 @@ clawctl <group> <command> [options]
 | Group | Description |
 |-------|-------------|
 | [`clawctl host`](host.md) | Manage hosts in your fleet |
-| [`clawctl agent registry`](registry.md) | Browse available claw types |
-| [`clawctl agent secret`](secret.md) | Manage secrets for claw instances |
+| [`clawctl agent registry`](registry.md) | Browse available agent types |
+| [`clawctl agent secret`](secret.md) | Manage secrets for agent instances |
 
 ---
 
@@ -87,7 +87,7 @@ Show fleet status across all hosts.
 clawctl agent describe [--host HOST]
 ```
 
-Displays claw instances grouped by claw type with live health checks. Shows name, version, host, and status for each installed claw.
+Displays agent instances grouped by agent type with live health checks. Shows name, version, host, and status for each installed agent.
 
 ### Options
 
@@ -118,10 +118,10 @@ $ clawctl agent describe --host pi-lab
 
 | Status | Meaning |
 |--------|---------|
-| `running` | Claw is healthy and operational |
-| `degraded` | Claw is running but missing required secrets |
-| `stopped` | Claw service is not running |
-| `not installed` | Claw record exists but service not found |
+| `running` | Agent is healthy and operational |
+| `degraded` | Agent is running but missing required secrets |
+| `stopped` | Agent service is not running |
+| `not installed` | Agent record exists but service not found |
 | `install failed` | Installation did not complete successfully |
 | `installing...` | Installation in progress |
 

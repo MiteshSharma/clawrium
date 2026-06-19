@@ -52,8 +52,8 @@ export default function Home(): ReactNode {
   const {siteConfig} = useDocusaurusContext();
   return (
     <Layout
-      title="Manage Your AI Claw Fleet"
-      description="CLI tool for managing AI assistant fleets on local networks. Deploy and manage multiple claw instances across hosts from a single command center.">
+      title="Manage Your AI Agent Fleet"
+      description="CLI tool for managing AI agent fleets on local networks. Deploy and manage multiple agent instances across hosts from a single command center.">
       <HomepageHeader />
       <main>
         <HomepageFeatures />
