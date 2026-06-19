@@ -2514,6 +2514,35 @@ def configure_agent(
             # the lifecycle state machine half-walked.
             return False, f"Hermes render failed: {exc}"
 
+    # #734 Openclaw brave plugin pin. Hydrated from the openclaw
+    # manifest's `plugins.brave` block so a version bump is a one-line
+    # change in `manifest.yaml`. Default values keep the playbook
+    # parseable for hermes/zeroclaw runs where these vars are unused
+    # (Ansible's `when:` guard already skips the install task).
+    openclaw_brave_plugin_package = "@openclaw/brave-plugin"
+    openclaw_brave_plugin_version = ""
+    if resolved_type == "openclaw":
+        try:
+            import yaml as _yaml
+
+            manifest_path = (
+                Path(__file__).parent.parent
+                / "platform"
+                / "registry"
+                / "openclaw"
+                / "manifest.yaml"
+            )
+            manifest = _yaml.safe_load(manifest_path.read_text())
+            brave_cfg = (manifest.get("plugins") or {}).get("brave") or {}
+            openclaw_brave_plugin_package = (
+                brave_cfg.get("npm_package") or openclaw_brave_plugin_package
+            )
+            openclaw_brave_plugin_version = brave_cfg.get("version") or ""
+        except Exception as exc:
+            logger.warning(
+                "Failed to read openclaw plugin pins from manifest: %s", exc
+            )
+
     # Build Ansible inventory with API key passed directly
     ansible_vars = {
         "agent_name": unix_agent_name,
@@ -2528,6 +2557,8 @@ def configure_agent(
         "slack_bot_token": slack_bot_token,
         "slack_app_token": slack_app_token,
         "integrations": integrations_data,
+        "openclaw_brave_plugin_package": openclaw_brave_plugin_package,
+        "openclaw_brave_plugin_version": openclaw_brave_plugin_version,
         "prerendered_zeroclaw_config_toml": prerendered_files.get(
             ".zeroclaw/config.toml", ""
         ),

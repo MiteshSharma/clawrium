@@ -283,3 +283,206 @@ def test_delete_with_yes_removes(fleet_dir, stdin_not_tty) -> None:
     )
     result = runner.invoke(app, ["integration", "registry", "delete", "dy", "--yes"])
     assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Brave (#734) — --api-key convenience flag + rotate command.
+# ---------------------------------------------------------------------------
+
+
+def test_create_brave_with_api_key_flag(fleet_dir, stdin_not_tty) -> None:
+    """`--api-key` is the documented entry point for single-credential
+    types like brave. Avoids shell-history leaks vs `--credential KEY=V`
+    (the value still ends up in `ps`/history, but the key name doesn't
+    leak the operator's intent the same way)."""
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "my-brave",
+            "--type",
+            "brave",
+            "--api-key",
+            "bsk-123",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "integration/my-brave" in result.output
+
+    from clawrium.core.integrations import get_integration_credentials
+
+    assert get_integration_credentials("my-brave") == {"BRAVE_API_KEY": "bsk-123"}
+
+
+def test_create_brave_with_api_key_stdin(fleet_dir, stdin_not_tty) -> None:
+    """`--api-key-stdin` reads the bearer from non-TTY stdin. The
+    `stdin_not_tty` fixture flips isatty() to False so the CLI accepts
+    the piped value."""
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "my-brave-2",
+            "--type",
+            "brave",
+            "--api-key-stdin",
+        ],
+        input="bsk-stdin\n",
+    )
+    assert result.exit_code == 0, result.output
+
+    from clawrium.core.integrations import get_integration_credentials
+
+    assert get_integration_credentials("my-brave-2") == {"BRAVE_API_KEY": "bsk-stdin"}
+
+
+def test_create_brave_api_key_stdin_empty_rejected(fleet_dir, stdin_not_tty) -> None:
+    """Empty stdin to `--api-key-stdin` is an error, not a silent empty
+    credential. The CLI must exit non-zero with a clear message."""
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "my-brave-3",
+            "--type",
+            "brave",
+            "--api-key-stdin",
+        ],
+        input="",
+    )
+    assert result.exit_code != 0
+    assert "empty stdin" in result.output
+
+
+def test_create_brave_api_key_rejects_empty_value(fleet_dir, stdin_not_tty) -> None:
+    """`--api-key ''` is an error — the operator most likely fat-fingered
+    a shell variable. Silently creating an empty credential would
+    surface later as an opaque upstream 401."""
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "my-brave-4",
+            "--type",
+            "brave",
+            "--api-key",
+            "",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "empty" in result.output
+
+
+def test_create_api_key_rejected_for_multi_cred_type(
+    fleet_dir, stdin_not_tty
+) -> None:
+    """`--api-key` is single-credential-type-only. atlassian has three
+    required credentials; the flag cannot disambiguate so it must
+    refuse rather than guess."""
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "atl",
+            "--type",
+            "atlassian",
+            "--api-key",
+            "tk",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "not supported" in result.output
+
+
+def test_create_api_key_conflicts_with_matching_credential(
+    fleet_dir, stdin_not_tty
+) -> None:
+    """If both `--api-key VAL1` and `--credential BRAVE_API_KEY=VAL2` are
+    passed, the CLI rejects the ambiguous input. Silently picking one
+    would be a foot-gun during credential rotation."""
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "conflict",
+            "--type",
+            "brave",
+            "--api-key",
+            "v1",
+            "--credential",
+            "BRAVE_API_KEY=v2",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "conflict" in result.output.lower()
+
+
+def test_rotate_brave_no_attached_agents(fleet_dir, stdin_not_tty) -> None:
+    """`integration rotate` on an unattached integration updates the
+    credential and exits 0 with a clear "nothing to sync" message."""
+    runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "rot1",
+            "--type",
+            "brave",
+            "--api-key",
+            "bsk-old",
+        ],
+    )
+    result = runner.invoke(
+        app,
+        [
+            "integration",
+            "rotate",
+            "rot1",
+            "--api-key",
+            "bsk-new",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "no agents attached" in result.output
+
+    from clawrium.core.integrations import get_integration_credentials
+
+    assert get_integration_credentials("rot1") == {"BRAVE_API_KEY": "bsk-new"}
+
+
+def test_rotate_requires_new_credential(fleet_dir, stdin_not_tty) -> None:
+    """`integration rotate` with no `--api-key`/`--credential` is an
+    error — a no-op rotate would silently re-sync agents without any
+    cred change, which is misleading."""
+    runner.invoke(
+        app,
+        [
+            "integration",
+            "registry",
+            "create",
+            "rot2",
+            "--type",
+            "brave",
+            "--api-key",
+            "k",
+        ],
+    )
+    result = runner.invoke(
+        app, ["integration", "rotate", "rot2", "--yes"]
+    )
+    assert result.exit_code != 0
+    assert "no new credential" in result.output

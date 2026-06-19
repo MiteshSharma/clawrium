@@ -103,6 +103,48 @@ _SECRET_KEY_SUFFIXES = (
 )
 
 
+# Minimum on-host openclaw version that ships with the brave plugin
+# manifest (`@openclaw/brave-plugin` declares `minHostVersion`). Brave
+# attach on an older openclaw fails the preflight before any SSH write,
+# pointing the operator at `clawctl agent upgrade <name>` instead of
+# letting the plugin install land on an unsupported host (#734).
+_OPENCLAW_BRAVE_MIN_VERSION = (2026, 4, 10)
+
+
+def _parse_semver_tuple(raw: str) -> tuple[int, int, int] | None:
+    """Parse a leading `X.Y.Z` out of `raw`. Returns None when no triple
+    is present (treated as unknown, NOT zero — see preflight)."""
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", raw or "")
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def _get_host_openclaw_version(
+    client: paramiko.SSHClient, agent_name: str, *, timeout: int = 10
+) -> tuple[int, int, int] | None:
+    """Run `openclaw --version` on the host as the agent user and parse
+    the X.Y.Z triple. Returns None when the binary is missing or its
+    output cannot be parsed — the preflight treats that as a hard fail
+    so we never let a brave attach proceed against an unknown version.
+
+    Uses the agent user's login shell (`bash -lc`) so the binary is
+    resolved via the same `PATH` that `install.yaml` configures —
+    `/usr/local/bin`, `/usr/bin`, or `~/.openclaw/bin` are all
+    acceptable per the install playbook's safelist.
+    """
+    quoted_agent = shlex.quote(agent_name)
+    cmd = (
+        f"sudo -n -u {quoted_agent} bash -lc "
+        f"{shlex.quote('command -v openclaw >/dev/null 2>&1 && openclaw --version')}"
+    )
+    _, out, _ = client.exec_command(cmd, timeout=timeout)
+    body = out.read().decode("utf-8", errors="replace").strip()
+    if out.channel.recv_exit_status() != 0:
+        return None
+    return _parse_semver_tuple(body)
+
+
 class CanonicalSyncError(Exception):
     """Any failure in the canonical sync pipeline."""
 
@@ -600,6 +642,36 @@ def sync_agent_canonical(
 
     client = _open_ssh(host)
     try:
+        # #734 openclaw brave plugin requires minHostVersion 2026.4.10. We
+        # check on the live host (not on hosts.json cached state) because
+        # an operator may have upgraded out-of-band since the last
+        # `clawctl agent get` and we'd otherwise reject a now-valid host.
+        # Done after `_open_ssh` so the connect/auth errors surface with
+        # their normal messages instead of getting swallowed by the
+        # preflight error formatting.
+        if inputs.agent_type == "openclaw" and any(
+            i.type == "brave" for i in inputs.integrations
+        ):
+            version = _get_host_openclaw_version(client, agent_name)
+            min_ver = _OPENCLAW_BRAVE_MIN_VERSION
+            if version is None or version < min_ver:
+                actual = (
+                    ".".join(str(p) for p in version)
+                    if version is not None
+                    else "<unknown>"
+                )
+                min_str = ".".join(str(p) for p in min_ver)
+                raise CanonicalSyncError(
+                    f"openclaw on {hostname!r} is {actual}; brave plugin "
+                    f"requires >= {min_str}. Run "
+                    f"`clawctl agent upgrade {agent_name}` first."
+                )
+            emit(
+                "brave_integration_configured",
+                f"openclaw {'.'.join(str(p) for p in version)} on {hostname} "
+                f"satisfies brave plugin min version",
+            )
+
         for d in diffs:
             if not d.unified_diff:
                 files_unchanged.append(d.path)

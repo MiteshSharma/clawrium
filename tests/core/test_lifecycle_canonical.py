@@ -1337,3 +1337,141 @@ class TestVerifyHealthDiagnosticWrap:
         # Crucial: the catalog raise must NOT mask the verdict.
         assert "Diagnosis:" not in msg
         assert "catalog blew up" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Brave (#734) — openclaw version preflight.
+# ---------------------------------------------------------------------------
+
+
+class TestOpenclawBraveVersionPreflight:
+    """`sync_agent_canonical` must refuse to write `.openclaw/env` with a
+    brave block when the host openclaw is older than the plugin's
+    `minHostVersion`. Without the preflight the plugin would install
+    against a host it doesn't support and surface as a daemon-side
+    error that's much harder to diagnose."""
+
+    def _setup(self, monkeypatch, host_version: tuple[int, int, int] | None):
+        from clawrium.core.render import (
+            GatewayInputs,
+            IntegrationInputs,
+            ProviderInputs,
+            RenderInputs,
+            RenderedFiles,
+        )
+
+        inputs = RenderInputs(
+            agent_name="oc",
+            agent_type="openclaw",
+            provider=ProviderInputs(
+                name="or",
+                type="openrouter",
+                api_key="sk",
+                default_model="m",
+            ),
+            gateway=GatewayInputs(host="h", port=40000, auth="a"),
+            integrations=(
+                IntegrationInputs(
+                    name="my-brave",
+                    type="brave",
+                    credentials=(("BRAVE_API_KEY", "bsk-1"),),
+                ),
+            ),
+        )
+        monkeypatch.setattr(lc, "build_render_inputs", lambda _: inputs)
+        rendered = RenderedFiles(
+            files={
+                ".openclaw/env": "BRAVE_API_KEY='bsk-1'\n",
+                ".openclaw/openclaw.json": "{}",
+            }
+        )
+        monkeypatch.setitem(lc._RENDERERS, "openclaw", lambda _: rendered)
+        monkeypatch.setattr(
+            lc,
+            "get_agent_by_name",
+            lambda _: ({"hostname": "h"}, "openclaw:oc", {}),
+        )
+        monkeypatch.setattr(lc, "diff_files", lambda **_: [])
+        monkeypatch.setattr(lc, "_open_ssh", lambda _h, **__: MagicMock())
+        monkeypatch.setattr(
+            lc,
+            "_get_host_openclaw_version",
+            lambda *_a, **_kw: host_version,
+        )
+
+    def test_below_min_version_raises(self, monkeypatch):
+        self._setup(monkeypatch, (2026, 3, 13))
+        with pytest.raises(
+            CanonicalSyncError,
+            match=r"openclaw on 'h' is 2026\.3\.13; brave plugin requires >= 2026\.4\.10",
+        ):
+            sync_agent_canonical("oc", restart=False, verify=False)
+
+    def test_exact_min_version_passes(self, monkeypatch):
+        self._setup(monkeypatch, (2026, 4, 10))
+        # Should not raise on the preflight; diffs are empty so the rest
+        # of the pipeline is a no-op.
+        sync_agent_canonical("oc", restart=False, verify=False)
+
+    def test_newer_than_min_version_passes(self, monkeypatch):
+        self._setup(monkeypatch, (2026, 5, 28))
+        sync_agent_canonical("oc", restart=False, verify=False)
+
+    def test_unknown_version_raises(self, monkeypatch):
+        """Unknown version (binary missing / unparseable output) is a
+        hard fail — never let the brave plugin install land on an
+        unknown host where the plugin's minHostVersion contract cannot
+        be evaluated."""
+        self._setup(monkeypatch, None)
+        with pytest.raises(
+            CanonicalSyncError, match=r"openclaw on 'h' is <unknown>"
+        ):
+            sync_agent_canonical("oc", restart=False, verify=False)
+
+    def test_preflight_skipped_when_no_brave_integration(self, monkeypatch):
+        """The preflight has a measurable cost (one SSH exec). When no
+        brave integration is attached we MUST NOT invoke it — otherwise
+        every openclaw sync pays for a feature that's not in use."""
+        from clawrium.core.render import (
+            GatewayInputs,
+            ProviderInputs,
+            RenderInputs,
+            RenderedFiles,
+        )
+
+        inputs = RenderInputs(
+            agent_name="oc",
+            agent_type="openclaw",
+            provider=ProviderInputs(
+                name="or",
+                type="openrouter",
+                api_key="sk",
+                default_model="m",
+            ),
+            gateway=GatewayInputs(host="h", port=40000, auth="a"),
+        )
+        monkeypatch.setattr(lc, "build_render_inputs", lambda _: inputs)
+        rendered = RenderedFiles(
+            files={".openclaw/env": "", ".openclaw/openclaw.json": "{}"}
+        )
+        monkeypatch.setitem(lc._RENDERERS, "openclaw", lambda _: rendered)
+        monkeypatch.setattr(
+            lc,
+            "get_agent_by_name",
+            lambda _: ({"hostname": "h"}, "openclaw:oc", {}),
+        )
+        monkeypatch.setattr(lc, "diff_files", lambda **_: [])
+        monkeypatch.setattr(lc, "_open_ssh", lambda _h, **__: MagicMock())
+
+        # Sentinel that fails the test if invoked.
+        called = []
+
+        def _should_not_be_called(*_a, **_kw):
+            called.append(True)
+            return (2026, 5, 28)
+
+        monkeypatch.setattr(
+            lc, "_get_host_openclaw_version", _should_not_be_called
+        )
+        sync_agent_canonical("oc", restart=False, verify=False)
+        assert called == [], "_get_host_openclaw_version was invoked"
