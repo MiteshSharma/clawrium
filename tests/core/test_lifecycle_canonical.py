@@ -1778,6 +1778,206 @@ class TestGetHostOpenclawVersionDispatcher:
         )
         assert "/home/wolf-i/.openclaw/bin/openclaw" in probe.commands[0]
 
+    def test_capitalized_darwin_routes_to_macos(self):
+        """S4 ATX iter 2: `Darwin` (capitalized) must route to the
+        macOS variant. Without lowercase normalization in the
+        dispatcher, a host record persisted with `Darwin` would
+        silently fall back to Linux and the macOS fork would be
+        dead code for that host."""
+        probe = _ProbeMockClient("openclaw 2026.6.8\n", "", 0)
+        lc._get_host_openclaw_version(
+            probe.as_client(), "wolf-m", os_family="Darwin"
+        )
+        assert "/Users/wolf-m/.openclaw/bin/openclaw" in probe.commands[0]
+
+
+class TestGetHostOpenclawVersionMacosInjection:
+    """S6 ATX iter 2: mirror the Linux shell-injection guard on the
+    macOS variant so a regression that drops `shlex.quote` from the
+    macOS path is caught symmetrically."""
+
+    def test_agent_name_is_shell_quoted_on_macos(self):
+        probe = _ProbeMockClient("0.0.0\n", "", 0)
+        lc._get_host_openclaw_version_macos(probe.as_client(), "a;rm -rf /")
+        cmd = probe.commands[0]
+        assert cmd.startswith("sudo -n -u 'a;rm -rf /' bash -lc '")
+        assert cmd.endswith("'")
+
+
+class TestRunOpenclawVersionProbeStderr:
+    """S7 ATX iter 2: pin the 512-byte cap on `stderr_tail` so a
+    regression flipping `[-512:]` to `[:512]` or dropping the slice
+    surfaces immediately. The cap exists to bound log size when a
+    runaway openclaw binary spews stderr."""
+
+    def test_stderr_tail_capped_at_512_bytes(self):
+        long_stderr = "ABCDEFGHIJ" * 200  # 2000 bytes
+        probe = _ProbeMockClient("", long_stderr, 1)
+        _, stderr_tail = lc._get_host_openclaw_version_linux(
+            probe.as_client(), "wolf-i"
+        )
+        assert len(stderr_tail) <= 512
+        # And it's the TAIL, not the head — last 512 chars (post-strip).
+        assert stderr_tail == long_stderr[-512:].strip()
+
+
+class TestOpenclawVersionProbeShellSemantics:
+    """B4 ATX iter 2: the safelist enforcement must be verified
+    against a real bash, not mocked SSH output. The previous
+    `' || '.join(case ...)` shape passed every substring assertion
+    while only enforcing the first safelist prefix at runtime
+    because `case` always exits 0. This class runs the inner script
+    via `subprocess.run(['bash', '-c', ...])` against fixture
+    binaries to pin the actual shell semantics."""
+
+    def _make_fake_openclaw(self, path):
+        """Write a minimal executable shim that prints the canonical
+        version line + a marker echoing the resolved path so tests
+        can confirm which binary actually ran."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "#!/bin/bash\n"
+            'echo "openclaw 2026.6.8"\n'
+        )
+        path.chmod(0o755)
+
+    def _run(self, inner_script, *, path_dirs):
+        import shutil
+        import subprocess
+
+        bash = shutil.which("bash") or "/bin/bash"
+        # Restrict PATH inside the script to ONLY the test-fixture
+        # dirs so `command -v openclaw` returns the fixture we set
+        # up — never the test runner's actual openclaw if one exists.
+        # `bash` itself is invoked by absolute path so it doesn't
+        # need PATH to start.
+        env = {"PATH": ":".join(str(p) for p in path_dirs)}
+        return subprocess.run(
+            [bash, "-c", inner_script],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    def test_per_agent_binary_takes_precedence_over_path(self, tmp_path):
+        agent_home = tmp_path / "agents"
+        per_agent = agent_home / "x" / ".openclaw" / "bin" / "openclaw"
+        self._make_fake_openclaw(per_agent)
+
+        # PATH points elsewhere with a DIFFERENT version string so
+        # we can tell which binary ran.
+        path_bin = tmp_path / "path-fallback"
+        path_bin.mkdir()
+        (path_bin / "openclaw").write_text(
+            "#!/bin/bash\necho 'openclaw 1.0.0'\n"
+        )
+        (path_bin / "openclaw").chmod(0o755)
+
+        script = lc._build_openclaw_version_inner_script(
+            "x", home_root=str(agent_home), path_safelist=(str(path_bin) + "/",)
+        )
+        result = self._run(script, path_dirs=[path_bin])
+        assert result.returncode == 0, result.stderr
+        assert "2026.6.8" in result.stdout
+        assert "1.0.0" not in result.stdout
+
+    def test_path_fallback_accepts_first_safelisted_prefix(self, tmp_path):
+        """Single-prefix safelist with PATH binary inside it — must accept."""
+        safelist_dir = tmp_path / "good"
+        self._make_fake_openclaw(safelist_dir / "openclaw")
+
+        script = lc._build_openclaw_version_inner_script(
+            "x",
+            home_root=str(tmp_path / "missing"),
+            path_safelist=(str(safelist_dir) + "/",),
+        )
+        result = self._run(script, path_dirs=[safelist_dir])
+        assert result.returncode == 0, result.stderr
+        assert "2026.6.8" in result.stdout
+
+    def test_path_fallback_accepts_every_safelist_prefix(self, tmp_path):
+        """B4 regression catcher: a 3-prefix safelist with the
+        binary under the *third* prefix MUST be accepted. The
+        previous `||`-chained `case` shape would short-circuit on
+        the first `case` (always exits 0) and reject the binary as
+        unsafelisted even though the third prefix covers it."""
+        prefix_a = tmp_path / "a"
+        prefix_b = tmp_path / "b"
+        prefix_c = tmp_path / "c"
+        for p in (prefix_a, prefix_b, prefix_c):
+            p.mkdir()
+        self._make_fake_openclaw(prefix_c / "openclaw")
+
+        script = lc._build_openclaw_version_inner_script(
+            "x",
+            home_root=str(tmp_path / "missing"),
+            path_safelist=(
+                str(prefix_a) + "/",
+                str(prefix_b) + "/",
+                str(prefix_c) + "/",
+            ),
+        )
+        result = self._run(script, path_dirs=[prefix_c])
+        assert result.returncode == 0, (
+            f"3rd-prefix binary was rejected — case-chain regression "
+            f"(stderr: {result.stderr!r})"
+        )
+        assert "2026.6.8" in result.stdout
+
+    def test_path_fallback_rejects_unsafelisted_prefix(self, tmp_path):
+        """Binary outside the safelist → exit 2, stderr names the path."""
+        outside_dir = tmp_path / "outside"
+        self._make_fake_openclaw(outside_dir / "openclaw")
+
+        safelist_dir = tmp_path / "safe"
+        safelist_dir.mkdir()  # exists, but binary is NOT here
+
+        script = lc._build_openclaw_version_inner_script(
+            "x",
+            home_root=str(tmp_path / "missing"),
+            path_safelist=(str(safelist_dir) + "/",),
+        )
+        result = self._run(script, path_dirs=[outside_dir])
+        assert result.returncode == 2
+        assert "unsafe path" in result.stderr
+        assert str(outside_dir / "openclaw") in result.stderr
+
+    def test_no_binary_anywhere_exits_one(self, tmp_path):
+        """No per-agent binary, nothing on PATH → exit 1."""
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        script = lc._build_openclaw_version_inner_script(
+            "x",
+            home_root=str(tmp_path / "missing"),
+            path_safelist=(str(empty_dir) + "/",),
+        )
+        result = self._run(script, path_dirs=[empty_dir])
+        assert result.returncode == 1
+
+    def test_zero_byte_per_agent_binary_falls_through_to_path(self, tmp_path):
+        """W1 ATX iter 1: a 0-byte executable file in the per-agent
+        slot must NOT be used. With `[ -x ] && [ -s ]` the gate
+        fails (size==0) and we fall through to the PATH fallback,
+        which here finds a valid binary."""
+        agent_home = tmp_path / "agents"
+        per_agent = agent_home / "x" / ".openclaw" / "bin" / "openclaw"
+        per_agent.parent.mkdir(parents=True)
+        per_agent.touch()  # zero bytes
+        per_agent.chmod(0o755)
+
+        path_dir = tmp_path / "good"
+        self._make_fake_openclaw(path_dir / "openclaw")
+
+        script = lc._build_openclaw_version_inner_script(
+            "x",
+            home_root=str(agent_home),
+            path_safelist=(str(path_dir) + "/",),
+        )
+        result = self._run(script, path_dirs=[path_dir])
+        assert result.returncode == 0, result.stderr
+        assert "2026.6.8" in result.stdout
+
 
 class TestLoadOpenclawBravePin:
     """`_load_openclaw_brave_pin` is the single source of truth for the

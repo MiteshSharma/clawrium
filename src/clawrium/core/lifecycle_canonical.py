@@ -169,32 +169,49 @@ def _parse_semver_tuple(raw: str) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
 
-def _build_openclaw_version_probe(
+def _build_openclaw_version_inner_script(
     agent_name: str, *, home_root: str, path_safelist: tuple[str, ...]
 ) -> str:
-    """Build the `sudo -n -u <agent> bash -lc '...'` command that
-    resolves the openclaw binary the same way exec.yaml does and
-    prints its `--version` output. Per-agent binary at
-    `<home_root>/<agent>/.openclaw/bin/openclaw` wins; PATH fallback
-    is accepted only when `command -v openclaw` resolves under one of
-    `path_safelist` (matches install.yaml's discovery gate).
+    """Return the bash body that resolves the openclaw binary (no
+    sudo wrap, no `bash -lc` shell quoting). Split out so tests can
+    execute the script directly via `subprocess.run(['bash', '-c',
+    ...])` against fixture binaries — mocked SSH cannot catch shell
+    semantics regressions like the one ATX iter 2 found.
+
+    Per-agent binary at `<home_root>/<agent>/.openclaw/bin/openclaw`
+    wins; PATH fallback is accepted only when `command -v openclaw`
+    resolves under one of `path_safelist` (matches install.yaml's
+    discovery gate).
     """
-    quoted_agent = shlex.quote(agent_name)
     per_agent = f"{home_root}/{agent_name}/.openclaw/bin/openclaw"
     quoted_per_agent = shlex.quote(per_agent)
-    safelist_test = " || ".join(
-        f'case "$resolved" in {shlex.quote(prefix)}*) ok=1 ;; esac'
-        for prefix in path_safelist
-    )
-    inner = (
+    # IMPORTANT: a single `case` with `|` alternation is the only
+    # shape that actually enforces every prefix. A chain of separate
+    # `case ... esac || case ... esac` short-circuits on the first
+    # one because `case` always exits 0 regardless of whether a
+    # pattern matched (ATX iter 2 B4).
+    patterns = "|".join(f"{shlex.quote(prefix)}*" for prefix in path_safelist)
+    return (
         f"if [ -x {quoted_per_agent} ] && [ -s {quoted_per_agent} ]; then "
         f"  {quoted_per_agent} --version; "
         f"elif resolved=$(command -v openclaw 2>/dev/null); then "
-        f"  ok=0; {safelist_test}; "
+        f"  ok=0; "
+        f'  case "$resolved" in {patterns}) ok=1 ;; esac; '
         f'  if [ "$ok" = 1 ]; then "$resolved" --version; '
         f'  else echo "openclaw on PATH is at unsafe path: $resolved" 1>&2; exit 2; fi; '
         f"else exit 1; fi"
     )
+
+
+def _build_openclaw_version_probe(
+    agent_name: str, *, home_root: str, path_safelist: tuple[str, ...]
+) -> str:
+    """Build the `sudo -n -u <agent> bash -lc '...'` command that
+    runs the inner version-probe script on the host."""
+    inner = _build_openclaw_version_inner_script(
+        agent_name, home_root=home_root, path_safelist=path_safelist
+    )
+    quoted_agent = shlex.quote(agent_name)
     return f"sudo -n -u {quoted_agent} bash -lc {shlex.quote(inner)}"
 
 
@@ -274,7 +291,7 @@ def _get_host_openclaw_version(
     dispatcher is the only place that knows about both, matching the
     dispatcher-only-OS-fork convention in AGENTS.md.
     """
-    if (os_family or "linux") == "darwin":
+    if (os_family or "linux").lower() == "darwin":
         return _get_host_openclaw_version_macos(
             client, agent_name, timeout=timeout
         )
