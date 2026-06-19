@@ -8,6 +8,21 @@ keywords: [quickstart, tutorial, first agent, deploy, get started, 5 minutes]
 
 Deploy your first [OpenClaw](https://github.com/openclaw/openclaw) instance in under 5 minutes. This guide walks through the complete workflow from installation to a running agent.
 
+## Watch the walkthrough (3 min)
+
+<div style={{position: 'relative', paddingBottom: '56.25%', height: 0, overflow: 'hidden', maxWidth: '100%', marginBottom: '2rem'}}>
+  <iframe
+    style={{position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'}}
+    src="https://www.youtube.com/embed/qEqDnzJBaig"
+    title="Clawrium Quickstart — Install + Chat With Your First Agent (3 min)"
+    frameBorder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowFullScreen>
+  </iframe>
+</div>
+
+The video runs the exact steps below end-to-end on a real host. Recorded against `clawctl` 26.6.4 with a `hermes` agent attached to a `litellm` provider.
+
 ## What You'll Need
 
 Before you start, verify you have:
