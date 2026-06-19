@@ -79,9 +79,8 @@ clawctl service init
 ```
 
 ```bash
-# Register a host. The first invocation prints the manual xclm setup
-# commands to run on the host (see the Host Setup guide); re-run this
-# command afterwards to actually register the host.
+# Register a host (the xclm management user must already exist on the host —
+# see the Host Setup guide for one-time host preparation).
 clawctl host create 192.168.1.100 --user xclm --alias homelab
 ```
 ```
@@ -106,8 +105,8 @@ nuc-01      oc-work        openclaw   anthropic  running   12h
 ```
 
 ```bash
-# Install an agent on a host
-clawctl agent create --type openclaw --host homelab --name my-assistant
+# Install an agent on a host (name is positional)
+clawctl agent create my-assistant --type openclaw --host homelab
 ```
 ```
 Installing openclaw on homelab...
