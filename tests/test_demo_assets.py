@@ -703,7 +703,8 @@ class TestNarratePipeline:
         clips = [tmp_path / f"c{i}.mp3" for i in range(2)]
         for c in clips:
             c.touch()
-        in_v = tmp_path / "in.mp4"; in_v.touch()
+        in_v = tmp_path / "in.mp4"
+        in_v.touch()
         out_v = tmp_path / "out.mp4"
 
         narrate_mod.mux(input_video=in_v, output_video=out_v, beats=beats, clip_paths=clips)
