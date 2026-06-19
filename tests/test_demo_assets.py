@@ -425,3 +425,112 @@ class TestRecordingsDirectoryConvention:
             f"{gitkeep} missing — directory will not exist for fresh clones, "
             "first `/create-vhs` run would fail without a `mkdir -p`."
         )
+
+
+class TestNarrationPipeline:
+    """Structural checks on the ElevenLabs narration pipeline (`lib/narrate.py`).
+
+    The pipeline reads narration from each demo's `storyboard.md` and produces
+    a voiceover-muxed `recording-narrated.mp4`. Drift in the parser regex or
+    the storyboard template format would silently break every existing demo's
+    narration, so we lock both shapes down here.
+    """
+
+    @pytest.fixture
+    def narrate_module(self):
+        path = DEMOS_LIB_DIR / "narrate.py"
+        if not path.exists():
+            pytest.skip(f"missing {path}")
+        import importlib.util
+        import sys as _sys
+
+        spec = importlib.util.spec_from_file_location(
+            "_narrate_under_test", path
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        # dataclass needs the module in sys.modules at exec time (py3.14+).
+        _sys.modules["_narrate_under_test"] = module
+        try:
+            spec.loader.exec_module(module)
+            yield module
+        finally:
+            _sys.modules.pop("_narrate_under_test", None)
+
+    def test_narrate_module_imports(self, narrate_module) -> None:
+        """`narrate.py` must import cleanly without runtime deps installed."""
+        assert hasattr(narrate_module, "parse_narration")
+        assert hasattr(narrate_module, "Scene")
+        assert hasattr(narrate_module, "main")
+
+    def test_parser_extracts_scenes_with_timecodes(
+        self, narrate_module, tmp_path: Path
+    ) -> None:
+        sb = tmp_path / "storyboard.md"
+        sb.write_text(
+            "# Demo\n"
+            "## Narration\n"
+            '- Scene 1 (start=14s): "hello"\n'
+            '- Scene 2 (start=36.5s): "decimal timecode"\n'
+            "## Other\n"
+            "ignored\n"
+        )
+        scenes = narrate_module.parse_narration(sb)
+        assert [s.n for s in scenes] == [1, 2]
+        assert scenes[0].text == "hello"
+        assert scenes[1].start_seconds == 36.5
+
+    def test_parser_skips_placeholder_and_missing_timecode(
+        self, narrate_module, tmp_path: Path
+    ) -> None:
+        """Lines without `(start=Xs)` or with `…` text must be skipped.
+
+        Lets authors commit a storyboard with narration text drafted before
+        watching the recording (no timecodes yet) without breaking the parser.
+        """
+        sb = tmp_path / "storyboard.md"
+        sb.write_text(
+            "## Narration\n"
+            '- Scene 1 (start=14s): "real"\n'
+            "- Scene 2 (start=20s): …\n"
+            '- Scene 3: "no timecode"\n'
+        )
+        scenes = narrate_module.parse_narration(sb)
+        assert [s.n for s in scenes] == [1]
+
+    def test_parser_rejects_missing_narration_section(
+        self, narrate_module, tmp_path: Path
+    ) -> None:
+        sb = tmp_path / "storyboard.md"
+        sb.write_text("# Demo\n## Scenes\nfoo\n")
+        with pytest.raises(ValueError, match="no `## Narration` section"):
+            narrate_module.parse_narration(sb)
+
+    def test_env_example_template_has_required_keys(self) -> None:
+        env_example = DEMOS_LIB_DIR / ".env.example"
+        if not env_example.exists():
+            pytest.skip(f"missing {env_example}")
+        text = env_example.read_text()
+        for key in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID"):
+            assert re.search(rf"^{key}=", text, re.MULTILINE), (
+                f".env.example missing required key `{key}` — `narrate.py` "
+                "exits non-zero when this var is unset."
+            )
+
+    def test_storyboard_template_uses_new_narration_format(self) -> None:
+        """The skill template's example narration line must declare a timecode.
+
+        Without the `(start=Xs)` pattern in the template, demos scaffolded
+        post-PR would carry the old narration format which `narrate.py`
+        cannot parse.
+        """
+        sb_template = SKILL_TEMPLATES_DIR / "storyboard.md.template"
+        if not sb_template.exists():
+            pytest.skip(f"missing {sb_template}")
+        text = sb_template.read_text()
+        assert re.search(
+            r"-\s+Scene\s+\d+\s*\(start\s*=\s*\S+\):", text
+        ), (
+            "storyboard.md.template missing the `- Scene N (start=Xs):` example "
+            "in its Narration section — narrate.py parser drift risk."
+        )

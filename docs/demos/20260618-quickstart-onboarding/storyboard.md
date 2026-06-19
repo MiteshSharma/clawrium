@@ -43,17 +43,17 @@
 - `replay` — tape executes `cat docs/demos/quickstart-onboarding/outputs/NN-<slug>.txt`. Deterministic; no infra needed at record time.
 - `LIVE`   — tape runs the real command. **This entire demo is LIVE.** Captured outputs in `outputs/` are reference material for stitching/truncation, not replay sources.
 
-## Narration (optional, for YouTube voiceover)
+## Narration (for ElevenLabs voiceover via `docs/demos/lib/narrate.py`)
 
-Per-scene script. Keep each beat to one or two sentences so timing matches the on-screen `Sleep`.
+Per-scene script. `(start=Xs)` is the scene's start timecode in the rendered `recording.mp4`. Fill in after watching the recording; `narrate.py` skips entries whose start value is the literal `Xs` placeholder.
 
-- Scene 1: "Running clawctl version X.Y.Z — everything you see in the rest of this demo was recorded against this release."
-- Scene 2: "First, initialize the clawrium service. This sets up the config directory and validates ansible and ssh are available."
-- Scene 3: "Next, register the host you want to deploy agents to. We're using wolf-i, a machine already on my home network."
-- Scene 4: "Now install a hermes agent on wolf-i. Clawrium uses ansible under the hood, so this runs a real install playbook end-to-end."
-- Scene 5: "Configure the agent — attach a model provider so it can actually answer prompts. We're using a litellm-backed provider already in the secret store."
-- Scene 6: "Check fleet status. The new quickstart-demo agent should appear as ready."
-- Scene 7: "Finally, chat with it. One prompt in, one response out — clawrium just routed the request through the configured provider."
+- Scene 1 (start=Xs): "Running clawctl version 26.6.4 — everything you see in the rest of this demo was recorded against this release."
+- Scene 2 (start=Xs): "First, initialize the clawrium service. This sets up the config directory and validates ansible and ssh are available."
+- Scene 3 (start=Xs): "Next, register the host you want to deploy agents to. We're using wolf-i, a machine already on my home network."
+- Scene 4 (start=Xs): "Now install a hermes agent on wolf-i. Clawrium uses ansible under the hood, so this runs a real install playbook end-to-end."
+- Scene 5 (start=Xs): "Configure the agent — attach a model provider so it can actually answer prompts. We're using a litellm-backed provider already in the secret store."
+- Scene 6 (start=Xs): "Check fleet status. The new quickstart-demo agent should appear as ready."
+- Scene 7 (start=Xs): "Finally, chat with it. One prompt in, one response out — clawrium just routed the request through the configured provider."
 
 ## Re-capture cadence
 

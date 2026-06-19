@@ -18,12 +18,18 @@ Shared scripts and ANSI card/progress helpers live in `docs/demos/lib/` so each 
 |-------------------------------------------------------|------------|------------------------------------------------------|
 | `docs/demos/lib/cards.sh`                             | yes        | Shared titlecard/outrocard/headline/progress functions (sourced by every per-demo `helpers.sh`) |
 | `docs/demos/lib/stitch.sh`                            | yes        | `bash docs/demos/lib/stitch.sh <demo-folder>` — concatenates `outputs/*.txt` into `stitched.txt` |
+| `docs/demos/lib/narrate.py`                           | yes        | `python docs/demos/lib/narrate.py <demo-folder>` — ElevenLabs TTS + ffmpeg voiceover mux |
+| `docs/demos/lib/requirements.txt`                     | yes        | Python deps for `narrate.py` (`elevenlabs`, `python-dotenv`) |
+| `docs/demos/lib/.env.example`                         | yes        | Template for ElevenLabs credentials + voice defaults |
+| `docs/demos/lib/.env`                                 | **no** (gitignored) | Real API key + voice/model IDs |
 | `docs/demos/YYYYMMDD-<slug>/tape.tape`                | yes        | Reproducible VHS source for the recording            |
-| `docs/demos/YYYYMMDD-<slug>/storyboard.md`            | yes        | Scene list, narration, capture index (mandatory for all demos) |
+| `docs/demos/YYYYMMDD-<slug>/storyboard.md`            | yes        | Scene list, capture index, narration text + start timecodes |
 | `docs/demos/YYYYMMDD-<slug>/helpers.sh`               | yes (long-form) | Per-demo variables (`_SCENES`, `_TITLE`, etc.) + `source ../lib/cards.sh` |
 | `docs/demos/YYYYMMDD-<slug>/outputs/NN-<slug>.txt`    | yes        | Per-scene captured stdout (used for replay scenes; reference for live scenes) |
 | `docs/demos/YYYYMMDD-<slug>/stitched.txt`             | yes        | Stitched timeline produced by `lib/stitch.sh` (Step 4 of the universal flow) |
+| `docs/demos/YYYYMMDD-<slug>/voice/scene-NN.mp3`       | **no** (gitignored) | Per-scene TTS clips produced by `lib/narrate.py` |
 | `docs/demos/YYYYMMDD-<slug>/recording.{mp4,gif}`      | **no** (gitignored) | Rendered recording — uploaded to YouTube. All `.mp4` files under `docs/demos/` are gitignored. |
+| `docs/demos/YYYYMMDD-<slug>/recording-narrated.mp4`   | **no** (gitignored) | Recording with ElevenLabs voiceover muxed in by `lib/narrate.py` |
 
 ## Arguments
 
@@ -52,7 +58,7 @@ Shared scripts and ANSI card/progress helpers live in `docs/demos/lib/` so each 
 
 ## Universal Flow (every demo, short or long)
 
-Every invocation of this skill follows the same four opening steps before branching into Flow A (short) or Flow B (long-form). **Do not skip any of them.**
+Every invocation of this skill follows four opening steps before branching into Flow A (short) or Flow B (long-form), then an optional post-record Step 5 for ElevenLabs narration. **Do not skip Steps 1–4.**
 
 ### Step 1 — Run the prereq validator
 
@@ -116,6 +122,51 @@ Produce a markdown table for the user:
 Present the stitched transcript + table to the user. They can then say "truncate scene N output to first M lines" or "cut scene K entirely" before the tape is generated. **Do not auto-truncate.**
 
 Only after the user signs off on the stitched timeline should you proceed to the format-specific flow (A or B) below.
+
+### Step 5 — Layer ElevenLabs narration (post-record, optional)
+
+After the tape records `recording.mp4`, an ElevenLabs voiceover can be muxed in via `docs/demos/lib/narrate.py`. This step runs **after** recording, not before, because scene start timecodes are read off the rendered video.
+
+**Setup (one-time per machine)**
+
+```bash
+pip install -r docs/demos/lib/requirements.txt
+cp docs/demos/lib/.env.example docs/demos/lib/.env
+# Edit docs/demos/lib/.env and fill in ELEVENLABS_API_KEY + ELEVENLABS_VOICE_ID.
+```
+
+`.env` is gitignored. The `voice/` folder under each demo is also gitignored.
+
+**Per-demo authoring**
+
+The single source of truth is the demo's `storyboard.md` `## Narration` section. Each line:
+
+```markdown
+- Scene N (start=Xs): "spoken text for this scene"
+```
+
+`X` is the scene's start time in seconds (decimals allowed: `start=36.5s`). Lines without a `(start=Xs)` value, or whose text is the literal `…` placeholder, are skipped by `narrate.py` — useful when drafting before timecodes are known.
+
+**Run**
+
+```bash
+python docs/demos/lib/narrate.py docs/demos/YYYYMMDD-<scenario-name>
+  [--force]              # regenerate ALL scene mp3s, even if cached
+  [--regen 4,5]          # regenerate only the listed scenes
+  [--skip-mux]           # generate audio only; skip ffmpeg
+  [--input recording.mp4 --output recording-narrated.mp4]
+```
+
+The script:
+1. Loads `docs/demos/lib/.env`.
+2. Parses the demo's `storyboard.md` `## Narration` section.
+3. For each narrated scene: writes `voice/scene-NN.mp3` via ElevenLabs TTS. Cached mp3s are re-used unless `--force` / `--regen` says otherwise.
+4. Builds an ffmpeg `adelay` filter chain that pads each clip to its `start_seconds` and `amix`-es them into a single track.
+5. Muxes audio onto `recording.mp4` (video stream copied without re-encode) → `recording-narrated.mp4`.
+
+**Iterate**
+
+If a scene's voice overruns the next scene visually, shorten the text or shift the next scene's `start=Xs`. Then re-run with `--regen N` to only re-bill the edited scenes.
 
 ## Configuration
 
@@ -372,16 +423,24 @@ Apply to long-form demos; pick-and-choose for short demos.
 docs/demos/
 ├── lib/                              # committed — shared, all demos
 │   ├── cards.sh                      # titlecard / outrocard / headline / progress functions
-│   └── stitch.sh                     # concatenate outputs/*.txt -> stitched.txt
+│   ├── stitch.sh                     # concatenate outputs/*.txt -> stitched.txt
+│   ├── narrate.py                    # ElevenLabs TTS + ffmpeg voiceover mux
+│   ├── requirements.txt              # python deps for narrate.py
+│   ├── .env.example                  # template for narrate.py credentials
+│   └── .env                          # GITIGNORED — real ELEVENLABS_API_KEY etc.
 └── YYYYMMDD-<slug>/                  # one folder per demo
     ├── tape.tape                     # committed — VHS source
-    ├── storyboard.md                 # committed — scene list, narration
+    ├── storyboard.md                 # committed — scenes + narration (text + start timecodes)
     ├── helpers.sh                    # committed (long-form) — per-demo _SCENES/_TITLE/… + source lib/cards.sh
     ├── outputs/                      # committed — per-scene captures
     │   ├── 01-version.txt
     │   └── 02-….txt
     ├── stitched.txt                  # committed — full timeline transcript
-    └── recording.mp4                 # gitignored — output of `vhs tape.tape`
+    ├── voice/                        # GITIGNORED — per-scene TTS clips from narrate.py
+    │   ├── scene-01.mp3
+    │   └── scene-02.mp3
+    ├── recording.mp4                 # GITIGNORED — output of `vhs tape.tape`
+    └── recording-narrated.mp4        # GITIGNORED — recording with voiceover muxed in
 ```
 
 ## References

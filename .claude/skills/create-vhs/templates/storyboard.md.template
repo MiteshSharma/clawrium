@@ -28,13 +28,15 @@
 - `replay` — tape executes `cat docs/demos/<name>/outputs/NN-<slug>.txt`. Deterministic; no infra needed at record time.
 - `LIVE`   — tape runs the real command. Use only when the scene depends on a live process (TUIs, chat, long-running spinners that *are* the point).
 
-## Narration (optional, for YouTube voiceover)
+## Narration (for ElevenLabs voiceover via `docs/demos/lib/narrate.py`)
 
-Per-scene script. Keep each beat to one or two sentences so timing matches the on-screen `Sleep`.
+Per-scene script. Keep each beat short enough to fit between this scene's start and the next one's. The `(start=Xs)` value is read by `narrate.py` and passed to ffmpeg's `adelay` filter when muxing voice into `recording.mp4`.
 
-- Scene 1: "Running clawctl version X.Y.Z — everything you see in the rest of this demo was recorded against this release."
-- Scene 2: …
-- Scene N: …
+**Format**: `- Scene N (start=Xs): "spoken text"`. Lines without a `(start=Xs)` value, or whose text is the literal `…` placeholder, are skipped during narration generation — fill them in once you've watched the recording and noted real scene start times.
+
+- Scene 1 (start=14s): "Running clawctl version X.Y.Z — everything you see in the rest of this demo was recorded against this release."
+- Scene 2 (start=Xs): …
+- Scene N (start=Xs): …
 
 ## Re-capture cadence
 
