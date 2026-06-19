@@ -22,10 +22,8 @@ A Clawrium **agent** is a general-purpose AI assistant that runs on a machine in
 
 **Fully supported today:**
 - [**OpenClaw**](https://github.com/openclaw/openclaw) ✅ - Full-featured assistant with multi-provider and multi-channel support
-
-**In development:**
-- [**Hermes**](https://github.com/NousResearch/hermes-agent) 🚧 (Nous Research) - Install, configure, and OpenAI-compatible API are working; `clawctl agent chat` and channel gateways are in progress
-- **ZeroClaw** 🚧 - Lightweight assistant for resource-constrained devices
+- [**Hermes**](https://github.com/NousResearch/hermes-agent) ✅ (Nous Research) - Install, configure, and OpenAI-compatible API
+- [**ZeroClaw**](https://github.com/zeroclaw-labs/zeroclaw) ✅ - Lightweight assistant for resource-constrained devices
 
 **Planned:**
 - **IronClaw** - High-performance assistant for demanding workloads
@@ -146,7 +144,7 @@ Clawrium is tested end-to-end on **Ubuntu** and **macOS** — both as the contro
 
 ### Which agents are supported today?
 
-[OpenClaw](https://github.com/openclaw/openclaw) is fully supported end-to-end with multi-provider and multi-channel support. [Hermes](https://github.com/NousResearch/hermes-agent) and ZeroClaw are in active development. IronClaw is planned. See the [Support Matrix](https://github.com/ric03uec/clawrium#support-matrix) on the GitHub README for the canonical status table.
+[OpenClaw](https://github.com/openclaw/openclaw), [Hermes](https://github.com/NousResearch/hermes-agent), and [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) are fully supported end-to-end. IronClaw is planned. See the [Support Matrix](https://github.com/ric03uec/clawrium#support-matrix) on the GitHub README for the canonical status table.
 
 ### Is Claude subscription supported?
 

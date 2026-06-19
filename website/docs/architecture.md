@@ -55,10 +55,8 @@ An **Agent** is an AI assistant instance.
 
 **Fully supported today:**
 - OpenClaw ✅
-
-**In development:**
-- Hermes 🚧 (install + configure + OpenAI-compatible API working; chat + channels in progress)
-- ZeroClaw 🚧
+- Hermes ✅
+- ZeroClaw ✅
 
 **Planned:**
 - IronClaw and additional agent types

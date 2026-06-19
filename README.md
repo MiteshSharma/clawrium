@@ -1,6 +1,8 @@
 # <img src="docs/assets/clawrium-logo.png" alt="Clawrium" height="40" align="center"> Clawrium
 
 <p align="center">
+  <strong>Agent Fleet Manager</strong>
+  <br>
   Fleet management for AI agents on your local network.
 </p>
 
@@ -25,7 +27,7 @@
 |------|-----------------|-------|
 | **Control machine OS** | Ubuntu, macOS | Tested end-to-end |
 | **Target host OS** | Ubuntu, macOS | macOS hosts must enable Remote Login first ([host setup](docs/host-preparation.md)) |
-| **Agent runtimes** | OpenClaw ✅, Hermes 🚧, ZeroClaw 🚧 | IronClaw planned. ✅ = fully supported, 🚧 = in development |
+| **Agent runtimes** | OpenClaw ✅, Hermes ✅, ZeroClaw ✅ | IronClaw planned |
 | **Inference providers** | Anthropic, OpenAI, OpenRouter, Ollama | Claude subscription is NOT supported — API keys only |
 | **Messaging channels** | Discord, Slack | OpenClaw only |
 | **Container runtime** | None required | No Docker, no Kubernetes — SSH + Ansible |
@@ -55,9 +57,9 @@ Clawrium gives you `kubectl`-style fleet control for AI agents:
 
 A Clawrium **agent** is a general-purpose AI assistant that runs on a host in your network. Unlike coding-focused assistants (Copilot, Cursor), these agents are designed for broader tasks. Agent implementations:
 
-- **[OpenClaw](https://github.com/openclaw/openclaw)** ✅ - Open-source general assistant; fully supported end-to-end
-- **[Hermes](https://github.com/NousResearch/hermes-agent)** 🚧 (Nous Research) - Install + configure + OpenAI-compatible API working; chat + channels in progress. See [Hermes Support Matrix](https://ric03uec.github.io/clawrium/docs/agent-support/hermes)
-- **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** 🚧 - Lightweight assistant for resource-constrained hosts; in development
+- **[OpenClaw](https://github.com/openclaw/openclaw)** ✅ - Open-source general assistant
+- **[Hermes](https://github.com/NousResearch/hermes-agent)** ✅ (Nous Research) - OpenAI-compatible local API
+- **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** ✅ - Lightweight assistant for resource-constrained hosts
 - **[IronClaw](https://github.com/nearai/ironclaw)** _(planned)_ - High-performance assistant for demanding workloads
 
 Clawrium manages the lifecycle of these agents across your fleet - install, configure, start, stop, upgrade, monitor.
@@ -97,16 +99,54 @@ For full installation instructions including how to install `uv`, see [docs/inst
 
 ### 5-Minute Setup
 
-> **Prerequisite:** the target host must have an `xclm` user with passwordless sudo and the Clawrium-generated SSH key in `authorized_keys`. The first `clawctl host create` prints the exact commands to run on the host. See [docs/host-preparation.md](docs/host-preparation.md) (~3 minutes).
+**Step 1 — On your control machine: initialize Clawrium**
 
 ```bash
-# Initialize config
 clawctl service init
+```
 
-# Register your host (re-run after pasting the printed xclm setup commands on the host)
+**Step 2 — On your control machine: generate the xclm setup commands for the host**
+
+```bash
 clawctl host create 192.168.1.100 --user xclm --alias worker-1
+```
 
-# Register an inference provider
+This generates a per-host SSH keypair and, because the `xclm` user doesn't exist on the host yet, prints the **exact setup block** (Linux and macOS variants) with your fresh public key inlined. Example output (Linux):
+
+```bash
+## Linux
+# Create xclm user
+sudo useradd -m -s /bin/bash xclm
+# Passwordless sudo
+echo "xclm ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/xclm
+sudo chmod 440 /etc/sudoers.d/xclm
+# Authorized key
+sudo mkdir -p /home/xclm/.ssh && sudo chmod 700 /home/xclm/.ssh
+echo 'ssh-ed25519 AAAA…' | sudo tee /home/xclm/.ssh/authorized_keys
+sudo chmod 600 /home/xclm/.ssh/authorized_keys
+sudo chown -R xclm:xclm /home/xclm/.ssh
+```
+
+**Step 3 — SSH into the host and paste the printed block**
+
+```bash
+ssh you@192.168.1.100   # log in as any sudo-capable user
+# paste the block from Step 2, exit
+```
+
+(Full Linux + macOS variants and rationale: [docs/host-preparation.md](docs/host-preparation.md).)
+
+**Step 4 — On your control machine: re-run `clawctl host create` to register the host**
+
+```bash
+clawctl host create 192.168.1.100 --user xclm --alias worker-1
+# → host/worker-1 registered (xclm verified)
+```
+
+**Step 5 — Register a provider, install + start the agent**
+
+```bash
+# Inference provider
 clawctl provider registry create anthropic --type anthropic --api-key-stdin
 
 # Install, configure, and start an OpenClaw agent

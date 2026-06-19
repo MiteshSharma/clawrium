@@ -40,9 +40,9 @@ const FeatureList: FeatureItem[] = [
     description: (
       <>
         Clawrium supports{' '}
-        <a href="https://github.com/openclaw/openclaw">OpenClaw</a> end-to-end today.{' '}
-        <a href="https://github.com/NousResearch/hermes-agent">Hermes</a> and{' '}
-        <a href="https://github.com/zeroclaw-labs/zeroclaw">ZeroClaw</a> are in active development.
+        <a href="https://github.com/openclaw/openclaw">OpenClaw</a>,{' '}
+        <a href="https://github.com/NousResearch/hermes-agent">Hermes</a>, and{' '}
+        <a href="https://github.com/zeroclaw-labs/zeroclaw">ZeroClaw</a> end-to-end today.
         Additional agent types are planned.
       </>
     ),

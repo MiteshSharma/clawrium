@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Clawrium',
-  tagline: 'Fleet management for AI agents on your local network',
+  tagline: 'Agent Fleet Manager',
   favicon: 'img/favicon.png',
 
   future: {
