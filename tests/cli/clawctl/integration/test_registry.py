@@ -608,16 +608,20 @@ def test_rotate_partial_failure_surfaces_nonzero_exit(
     assert "simulated sync failure" in result.output
 
 
-def test_rotate_zeroclaw_bearer_rotation_invariant(
+def test_rotate_routes_through_sync_agent_canonical_no_skip_path(
     fleet_dir, stdin_not_tty, monkeypatch
 ) -> None:
-    """#437 invariant — every zeroclaw sync that lands env bytes MUST
-    re-pair the gateway bearer unconditionally. `rotate` routes through
-    `sync_agent_canonical`, which calls `_zeroclaw_repair_after_start`;
-    asserting the sync is invoked is sufficient to pin the invariant
-    (the repair-call assertion lives in `tests/test_lifecycle.py`).
-    A regression adding a `--no-rotate` branch on rotate would skip
-    the sync entirely and fail this test. (B2 ATX iter 1)"""
+    """`rotate` MUST route every attached agent through
+    `sync_agent_canonical` — the only entry point that triggers the
+    zeroclaw `_zeroclaw_repair_after_start` bearer rotation (#437) and
+    the openclaw min-version preflight (#734). A regression adding an
+    "idempotent skip" branch on rotate would call the sync function
+    zero times and fail this assertion.
+
+    This test pins the *routing* invariant. The actual bearer-write
+    semantics (`hosts.json.gateway.auth` overwritten on a zeroclaw
+    sync) are covered by `tests/test_lifecycle.py`'s `#437` suite —
+    not duplicated here. (ATX iter 2 B2)"""
     runner.invoke(
         app,
         [

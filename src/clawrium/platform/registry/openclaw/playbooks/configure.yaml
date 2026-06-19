@@ -81,18 +81,26 @@
     #
     # Sentinel-gated by the pinned version: a bump in
     # `openclaw_brave_plugin_version` automatically re-triggers
-    # install on every host on the next configure. `no_log: true`
-    # because the install touches the agent's npm registry token if
-    # one is configured. (#734)
+    # install on every host on the next configure.
+    #
+    # `no_log` deliberately NOT set: the install pulls a public npm
+    # package with no secrets in scope, and suppressing output here
+    # hides legitimate failures (network 403, ENOSPC, postinstall
+    # error) which under the previous `no_log: true` masked all
+    # diagnostics. (#734 ATX iter 2 W4)
+    #
+    # PATH is exported so nvm/Homebrew Node hosts can resolve `npm`
+    # without an interactive login shell. (ATX iter 2 W3)
     - name: Install openclaw brave plugin (idempotent, gated by sentinel)
       become: yes
       become_user: "{{ agent_name }}"
+      environment:
+        PATH: "/home/{{ agent_name }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
       ansible.builtin.command: >-
         npm install --prefix /home/{{ agent_name }}/.openclaw
         {{ openclaw_brave_plugin_package }}@{{ openclaw_brave_plugin_version }}
       args:
         creates: "/home/{{ agent_name }}/.openclaw/.brave-plugin-installed.{{ openclaw_brave_plugin_version }}"
-      no_log: true
       when:
         - integrations is defined
         - integrations.values() | selectattr('type', 'equalto', 'brave') | list | length > 0

@@ -621,9 +621,10 @@ def rotate(
             typer.echo(f"  {hostname}:{agent_key}: SYNC FAILED ({exc})")
 
     if failures:
+        failed_list = ", ".join(a for _h, a, _e in failures)
         emit_error(
             f"rotation completed but {len(failures)} sync(s) failed; "
-            "re-run `clawctl agent sync <name>` on each.",
+            f"re-run `clawctl agent sync` for: {failed_list}.",
         )
     typer.echo(f"integration/{name}: rotated and synced {len(agents)} agent(s)")
 
