@@ -47,12 +47,12 @@ Sleep 1.0s
 # === TITLE CARD ===
 Type "titlecard"
 Enter
-Sleep 4.0s
+Sleep 8.559000000000001s
 
 # === SCENARIO CHECKLIST (all pending) ===
 Type "progress 0"
 Enter
-Sleep 5.0s
+Sleep 13.992s
 
 # ============================================================
 # SCENE 1 — clawctl version
@@ -68,7 +68,7 @@ Show
 Type "clawctl --version"
 Sleep 1.0s
 Enter
-Sleep 3.0s
+Sleep 8.42s
 Type "progress 1"
 Enter
 Sleep 2.5s
@@ -87,7 +87,7 @@ Show
 Type "clawctl service init"
 Sleep 1.0s
 Enter
-Sleep 5.0s
+Sleep 10.045s
 Type "progress 2"
 Enter
 Sleep 2.5s
@@ -106,7 +106,7 @@ Show
 Type "clawctl host create wolf.tailf7742d.ts.net --user xclm --alias wolf-i"
 Sleep 1.0s
 Enter
-Sleep 3.0s
+Sleep 7.862s
 Type "progress 3"
 Enter
 Sleep 2.5s
@@ -125,7 +125,7 @@ Show
 Type "clawctl agent create quickstart-demo --type hermes --host wolf-i"
 Sleep 1.0s
 Enter
-Sleep 14.0s
+Sleep 23.683s
 Type "progress 4"
 Enter
 Sleep 2.5s
@@ -144,7 +144,7 @@ Show
 Type "clawctl agent configure quickstart-demo --stage providers --provider clawrium-gtm-litellm"
 Sleep 1.0s
 Enter
-Sleep 5.0s
+Sleep 7.677s
 Type "progress 5"
 Enter
 Sleep 2.5s
@@ -163,7 +163,7 @@ Show
 Type "clawctl agent get"
 Sleep 1.0s
 Enter
-Sleep 5.0s
+Sleep 5.68s
 Type "progress 6"
 Enter
 Sleep 2.5s
@@ -182,7 +182,7 @@ Show
 Type "clawctl agent chat quickstart-demo"
 Sleep 1.0s
 Enter
-Sleep 8.0s
+Sleep 9.209s
 Type "progress 7"
 Enter
 Sleep 2.5s
@@ -190,4 +190,4 @@ Sleep 2.5s
 # === OUTRO CARD ===
 Type "outrocard"
 Enter
-Sleep 5.0s
+Sleep 5.029s

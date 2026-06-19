@@ -131,6 +131,39 @@ def generate_clips(
     return clip_paths
 
 
+def write_durations(demo_dir: Path, beats: list[Beat], clip_paths: list[Path]) -> None:
+    """Probe each generated clip with ffprobe and write voice/_durations.json.
+
+    Consumed by compile.py's Stage 2 refinement: on the next compile, the
+    char-rate estimate is replaced with these actual per-clip durations
+    so sleeps are tightened or extended to the real audio length.
+    Keyed by `<scene_n>.<beat_n>` so the lookup is voice-agnostic.
+    """
+    if shutil.which("ffprobe") is None:
+        # ffprobe ships with ffmpeg; if missing, narrate.py wouldn't reach mux either.
+        return
+    out: dict[str, float] = {}
+    for beat, clip in zip(beats, clip_paths):
+        if not clip.exists():
+            continue
+        result = subprocess.run(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(clip)],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            continue
+        try:
+            dur = float(result.stdout.strip())
+        except ValueError:
+            continue
+        out[f"{beat.scene_n}.{beat.beat_n}"] = round(dur, 3)
+    target = demo_dir / "voice" / "_durations.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
+
+
 def mux(
     *,
     input_video: Path,
@@ -207,6 +240,10 @@ def main() -> int:
         model_id=model_id, output_format=output_format,
         force=args.force,
     )
+
+    # Always probe + write _durations.json so the next compile.py picks up
+    # actual ffprobed durations (Stage 2 refinement).
+    write_durations(demo, beats, clip_paths)
 
     if args.skip_mux:
         print("[narrate] --skip-mux set; not running ffmpeg")

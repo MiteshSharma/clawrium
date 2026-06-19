@@ -208,7 +208,7 @@ class TestCompilePipeline:
             "    narration:\n"
             "      - text: hello\n"
         )
-        tape, manifest = compile_mod.compile_demo(demo)
+        tape, manifest, _warnings, _used_actuals = compile_mod.compile_demo(demo)
         assert tape.exists() and manifest.exists()
         assert (demo / "helpers.sh").exists()
         tape_text = tape.read_text()
@@ -268,7 +268,7 @@ class TestCompilePipeline:
             "    tail: 5\n"
             "    screen_seconds: 6\n"
         )
-        tape, _ = compile_mod.compile_demo(demo)
+        tape, _manifest, _w, _u = compile_mod.compile_demo(demo)
         helpers = (demo / "helpers.sh").read_text()
         assert "head -n 10" in helpers
         assert "tail -n 5" in helpers
@@ -322,13 +322,66 @@ class TestCompilePipeline:
             "outro: {line_1: x, line_2: y}\n"
             "scenes: []\n"
         )
-        tape, manifest = compile_mod.compile_demo(demo)
+        tape, manifest, _warnings, _used_actuals = compile_mod.compile_demo(demo)
         text = tape.read_text()
         assert 'Type "titlecard"' in text
         assert 'Type "outrocard"' in text
         data = json.loads(manifest.read_text())
         assert data["recording_duration_seconds"] > 0  # title + outro still cost time
         assert data["narration"] == []  # no narration without scenes
+
+    # --- timing safety: no narration audio bleeds across boundaries ---------- #
+    @pytest.mark.parametrize(
+        "demo_dir",
+        [
+            pytest.param(p, id=p.name)
+            for p in sorted(DEMOS_DIR.glob("*/"))
+            if (p / "scenes.yaml").exists()
+        ],
+    )
+    def test_no_narration_overlap_committed(
+        self, compile_mod, demo_dir: Path, tmp_path: Path
+    ) -> None:
+        """Every committed demo's narration beats must not audio-overlap.
+
+        For each consecutive pair of beats, assert that:
+            beat[i].absolute_seconds + est_audio_duration(beat[i].text)
+              <= beat[i+1].absolute_seconds + 0.5s slack
+
+        The 0.5s slack absorbs char-rate estimator noise; with the
+        DEFAULT_NARRATION_BUFFER=1.5s enforced by compile.py, real overlap
+        means a regression in the timing model.
+        """
+        scratch = tmp_path / demo_dir.name
+        shutil.copytree(demo_dir, scratch)
+        for derived in ("tape.tape", "helpers.sh", "compiled.json"):
+            (scratch / derived).unlink(missing_ok=True)
+        # Force Stage 1 (no ffprobed actuals) so the test is hermetic.
+        voice_dir = scratch / "voice"
+        if voice_dir.exists():
+            shutil.rmtree(voice_dir)
+        _, manifest, _w, _u = compile_mod.compile_demo(scratch)
+        data = json.loads(manifest.read_text())
+        beats = data["narration"]
+        assert beats, f"{demo_dir.name}: no narration beats"
+
+        cps = float(compile_mod.DEFAULT_AUDIO_CPS)
+        overlaps: list[str] = []
+        for cur, nxt in zip(beats, beats[1:]):
+            audio_end = cur["absolute_seconds"] + compile_mod._estimate_audio_seconds(cur["text"], cps)
+            next_start = nxt["absolute_seconds"]
+            slack = 0.5
+            if audio_end > next_start + slack:
+                overlaps.append(
+                    f"  beat {cur['scene_n']}.{cur['beat_n']} ends at {audio_end:.2f}s "
+                    f"(>{next_start + slack:.2f}s start of beat "
+                    f"{nxt['scene_n']}.{nxt['beat_n']})"
+                )
+        assert not overlaps, (
+            f"{demo_dir.name}: narration overlap detected — "
+            "compile.py auto-extension failed to size sleeps correctly:\n"
+            + "\n".join(overlaps)
+        )
 
     # --- W4 round-trip over the real committed demo --------------------------- #
     @pytest.mark.parametrize(
@@ -358,7 +411,7 @@ class TestCompilePipeline:
         for derived in ("tape.tape", "helpers.sh", "compiled.json"):
             (scratch / derived).unlink(missing_ok=True)
 
-        tape, manifest = compile_mod.compile_demo(scratch)
+        tape, manifest, _warnings, _used_actuals = compile_mod.compile_demo(scratch)
         assert tape.exists()
         assert (scratch / "helpers.sh").exists()
         tape_text = tape.read_text()

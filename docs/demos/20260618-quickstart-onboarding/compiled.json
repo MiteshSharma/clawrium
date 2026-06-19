@@ -1,7 +1,7 @@
 {
   "title": "Clawrium Quickstart",
   "subtitle": "onboarding walkthrough \u2014 clawctl 26.6.4",
-  "recording_duration_seconds": 131.8,
+  "recording_duration_seconds": 174.956,
   "narration": [
     {
       "scene_n": 0,
@@ -12,67 +12,67 @@
     {
       "scene_n": 0,
       "beat_n": 2,
-      "absolute_seconds": 5.95,
+      "absolute_seconds": 10.509,
       "text": "Here's the full walkthrough: check our clawctl version, initialize the service, register a host, install a hermes agent, configure it with a provider, verify the fleet is up, then chat with our new agent."
     },
     {
       "scene_n": 1,
       "beat_n": 1,
-      "absolute_seconds": 16.7,
+      "absolute_seconds": 30.251,
       "text": "This demo runs on clawctl 26.6.4 \u2014 everything you see was recorded against this release."
     },
     {
       "scene_n": 2,
       "beat_n": 1,
-      "absolute_seconds": 29.2,
+      "absolute_seconds": 48.171,
       "text": "First, initialize the clawrium service. This creates the config directory and validates that Ansible and SSH are available."
     },
     {
       "scene_n": 3,
       "beat_n": 1,
-      "absolute_seconds": 45.55,
+      "absolute_seconds": 69.566,
       "text": "Next, register the host you'll deploy agents to. We're pointing at wolf-i, a machine already on the network."
     },
     {
       "scene_n": 4,
       "beat_n": 1,
-      "absolute_seconds": 60.1,
+      "absolute_seconds": 88.978,
       "text": "Now install a hermes agent on wolf-i. Clawrium uses Ansible under the hood \u2014 this is a real install playbook running against the remote host."
     },
     {
       "scene_n": 4,
       "beat_n": 2,
-      "absolute_seconds": 68.1,
+      "absolute_seconds": 99.978,
       "text": "Skipping ahead \u2014 Ansible's TASK lines configure dependencies, lay down the systemd unit, and verify port allocations."
     },
     {
       "scene_n": 4,
       "beat_n": 3,
-      "absolute_seconds": 72.1,
+      "absolute_seconds": 108.978,
       "text": "Install complete \u2014 agent is ready."
     },
     {
       "scene_n": 5,
       "beat_n": 1,
-      "absolute_seconds": 86.65,
+      "absolute_seconds": 125.211,
       "text": "Configure the agent. We're attaching a litellm-backed provider from the secret store so it can actually answer prompts."
     },
     {
       "scene_n": 6,
       "beat_n": 1,
-      "absolute_seconds": 100.55,
+      "absolute_seconds": 141.788,
       "text": "Check fleet status. The new quickstart-demo agent is up and running."
     },
     {
       "scene_n": 7,
       "beat_n": 1,
-      "absolute_seconds": 115.35,
+      "absolute_seconds": 157.268,
       "text": "Finally, chat with it. One prompt in, one response out \u2014 clawrium just routed the request through the configured provider."
     },
     {
       "scene_n": 999,
       "beat_n": 1,
-      "absolute_seconds": 126.8,
+      "absolute_seconds": 169.927,
       "text": "Try it yourself at ric03uec.github.io/clawrium."
     }
   ]

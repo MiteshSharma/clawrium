@@ -71,6 +71,47 @@ PRE_ROLL = 1.0
 # command before its output floods in.
 COMMAND_TYPE_LAG = 1.0
 
+# Audio timing model -------------------------------------------------------- #
+# ElevenLabs at default speed renders English narration at roughly 14 chars
+# per second (≈ 150 wpm). Slight under-estimate is intentional — better to
+# leave a longer hold than to clip the tail of a clip mid-word.
+#
+# These are floors used by the "Stage 1" char-rate estimator. After
+# `narrate.py` runs, it writes the real ffprobed durations to
+# `<demo>/voice/_durations.json`; the next `compile.py` invocation reads
+# that file and uses the actuals instead (Stage 2 refinement).
+DEFAULT_AUDIO_CPS = 14.0
+# Silence buffer guaranteed BETWEEN a beat's audio end and the next
+# visual change (e.g. scene transition, progress check). Smaller = tighter
+# demo but more risk of late voice tail bleeding into the next moment.
+DEFAULT_NARRATION_BUFFER = 1.5
+
+
+def _estimate_audio_seconds(text: str, cps: float) -> float:
+    """Conservative estimate of TTS audio duration for `text` at `cps`."""
+    return len(text) / cps if cps > 0 else 0.0
+
+
+def _load_actual_durations(demo_dir: Path) -> dict[tuple[int, int], float]:
+    """Read narrate.py's voice/_durations.json if present.
+
+    Returns {(scene_n, beat_n): seconds}. Falls back to empty when the file
+    is missing (first compile / before any narrate run).
+    """
+    f = demo_dir / "voice" / "_durations.json"
+    if not f.exists():
+        return {}
+    raw = json.loads(f.read_text())
+    out: dict[tuple[int, int], float] = {}
+    for k, v in raw.items():
+        try:
+            s_str, b_str = k.split(".")
+            out[(int(s_str), int(b_str))] = float(v)
+        except (ValueError, TypeError):
+            # Skip malformed entries silently — Stage 2 is best-effort polish.
+            continue
+    return out
+
 
 @dataclass
 class NarrationBeat:
@@ -174,6 +215,31 @@ def compile_demo(demo_dir: Path) -> tuple[Path, Path]:
     width = int(tape_cfg.get("width", DEFAULT_WIDTH))
     height = int(tape_cfg.get("height", DEFAULT_HEIGHT))
     theme = tape_cfg.get("theme", DEFAULT_THEME)
+    audio_cps = float(tape_cfg.get("audio_cps", DEFAULT_AUDIO_CPS))
+    narration_buffer = float(tape_cfg.get("narration_buffer_seconds", DEFAULT_NARRATION_BUFFER))
+
+    # Stage 2 refinement: real durations from prior narrate.py run, if any.
+    actual_durations = _load_actual_durations(demo_dir)
+    extension_warnings: list[str] = []
+
+    def audio_seconds(scene_n: int, beat_n: int, text: str) -> float:
+        """Actual ffprobed duration if available, else conservative estimate."""
+        actual = actual_durations.get((scene_n, beat_n))
+        return actual if actual is not None else _estimate_audio_seconds(text, audio_cps)
+
+    def fit_hold(label: str, declared: float, narration_text: str, scene_n: int, beat_n: int) -> float:
+        """Return max(declared, audio_duration + buffer); warn when extended."""
+        if not narration_text:
+            return declared
+        audio = audio_seconds(scene_n, beat_n, narration_text)
+        required = audio + narration_buffer
+        if required > declared:
+            extension_warnings.append(
+                f"{label}: hold extended {declared:.1f}s → {required:.2f}s "
+                f"(narration ≈ {audio:.2f}s + {narration_buffer:.1f}s buffer)"
+            )
+            return required
+        return declared
 
     setup_steps: list[dict[str, Any]] = spec.get("setup", [])
     intro: dict[str, Any] = spec.get("intro", {})
@@ -249,7 +315,9 @@ def compile_demo(demo_dir: Path) -> tuple[Path, Path]:
     narration: list[NarrationBeat] = []
 
     # === TITLE CARD ===
-    tc_hold = float(title_card_cfg.get("hold_seconds", TITLECARD_HOLD))
+    tc_hold_declared = float(title_card_cfg.get("hold_seconds", TITLECARD_HOLD))
+    tc_narration_text = (title_card_cfg.get("narration") or "").strip()
+    tc_hold = fit_hold("title_card", tc_hold_declared, tc_narration_text, 0, 1)
     lines.extend([
         "",
         "# === TITLE CARD ===",
@@ -268,7 +336,9 @@ def compile_demo(demo_dir: Path) -> tuple[Path, Path]:
         ))
 
     # === CHECKLIST ===
-    cl_hold = float(checklist_cfg.get("hold_seconds", CHECKLIST_HOLD))
+    cl_hold_declared = float(checklist_cfg.get("hold_seconds", CHECKLIST_HOLD))
+    cl_narration_text = (checklist_cfg.get("narration") or "").strip()
+    cl_hold = fit_hold("checklist", cl_hold_declared, cl_narration_text, 0, 2)
     lines.extend([
         "",
         "# === SCENARIO CHECKLIST (all pending) ===",
@@ -295,15 +365,50 @@ def compile_demo(demo_dir: Path) -> tuple[Path, Path]:
         scene_n = int(scene["n"])
         s_title = scene["title"]
         s_mode = scene.get("mode", "replay")
-        screen = float(scene.get("screen_seconds", 4))
+        screen_declared = float(scene.get("screen_seconds", 4))
         command = scene["command"]  # ALWAYS the visible real command
+
+        # Fit screen_seconds so every narration beat for this scene has time
+        # to finish playing before the scene transitions to `progress N`.
+        # Per-beat: latest_audio_end = max(offset_seconds + audio_duration).
+        scene_beats = scene.get("narration", []) or []
+        latest_beat_end = 0.0
+        for i, beat in enumerate(scene_beats, start=1):
+            offset = float(beat.get("offset_seconds", 0))
+            audio = audio_seconds(scene_n, i, beat["text"].strip())
+            latest_beat_end = max(latest_beat_end, offset + audio)
+            # Intra-scene overlap warning (compile doesn't auto-fix this —
+            # offsets are author-driven; fixing them silently would change
+            # the user's intended pacing).
+            if i > 1:
+                prev_beat = scene_beats[i - 2]
+                prev_offset = float(prev_beat.get("offset_seconds", 0))
+                prev_audio = audio_seconds(scene_n, i - 1, prev_beat["text"].strip())
+                prev_end = prev_offset + prev_audio
+                if offset < prev_end:
+                    extension_warnings.append(
+                        f"scene {scene_n} beat {i}: offset_seconds={offset:.1f}s "
+                        f"starts BEFORE beat {i-1} ends at {prev_end:.2f}s "
+                        f"(intra-scene overlap — increase this beat's offset_seconds)"
+                    )
+
+        required_screen = latest_beat_end + narration_buffer if latest_beat_end > 0 else screen_declared
+        if required_screen > screen_declared:
+            extension_warnings.append(
+                f"scene {scene_n} ({s_title}): screen_seconds extended "
+                f"{screen_declared:.1f}s → {required_screen:.2f}s "
+                f"(narration runs to {latest_beat_end:.2f}s + {narration_buffer:.1f}s buffer)"
+            )
+            screen = required_screen
+        else:
+            screen = screen_declared
 
         scene_lines, scene_duration, cmd_output_offset = _scene_block(
             scene_n, s_title, s_mode, command, screen, typing_ms,
         )
         lines.extend(scene_lines)
         cmd_output_t = t + cmd_output_offset
-        for i, beat in enumerate(scene.get("narration", []), start=1):
+        for i, beat in enumerate(scene_beats, start=1):
             offset = float(beat.get("offset_seconds", 0))
             narration.append(NarrationBeat(
                 scene_n=scene_n, beat_n=i,
@@ -313,7 +418,9 @@ def compile_demo(demo_dir: Path) -> tuple[Path, Path]:
         t += scene_duration
 
     # === OUTRO CARD ===
-    oc_hold = float(outro_cfg.get("hold_seconds", OUTROCARD_HOLD))
+    oc_hold_declared = float(outro_cfg.get("hold_seconds", OUTROCARD_HOLD))
+    oc_narration_text = (outro_cfg.get("narration") or "").strip()
+    oc_hold = fit_hold("outro_card", oc_hold_declared, oc_narration_text, 999, 1)
     lines.extend([
         "",
         "# === OUTRO CARD ===",
@@ -359,7 +466,7 @@ def compile_demo(demo_dir: Path) -> tuple[Path, Path]:
     helpers_file = demo_dir / "helpers.sh"
     helpers_file.write_text(helpers_text)
 
-    return tape_path, compiled_path
+    return tape_path, compiled_path, extension_warnings, bool(actual_durations)
 
 
 def _build_helpers_sh(spec: dict[str, Any]) -> str:
@@ -440,12 +547,19 @@ def main() -> int:
     if not demo.is_dir():
         sys.exit(f"error: {demo} is not a directory")
 
-    tape, manifest = compile_demo(demo)
+    tape, manifest, warnings, used_actuals = compile_demo(demo)
     data = json.loads(manifest.read_text())
 
     print(f"compiled  → {tape}")
     print(f"compiled  → {manifest}")
     print(f"compiled  → {demo / 'helpers.sh'}")
+    stage = "Stage 2 (ffprobed actuals)" if used_actuals else "Stage 1 (char-rate estimate)"
+    print(f"audio sizing source: {stage}")
+    if warnings:
+        print()
+        print(f"⚠ {len(warnings)} timing adjustment(s) to fit narration:")
+        for w in warnings:
+            print(f"  - {w}")
     print()
     print(f"recording duration: {data['recording_duration_seconds']}s")
     print(f"narration beats:    {len(data['narration'])}")

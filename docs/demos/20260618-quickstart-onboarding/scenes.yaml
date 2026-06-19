@@ -82,10 +82,13 @@ scenes:
     screen_seconds: 14
     narration:
       - offset_seconds: 0
+        # ≈10s audio (141 chars @ 14 cps)
         text: "Now install a hermes agent on wolf-i. Clawrium uses Ansible under the hood — this is a real install playbook running against the remote host."
-      - offset_seconds: 8
+      - offset_seconds: 11
+        # ≈8.4s audio (117 chars). Starts 1s after beat 1 ends.
         text: "Skipping ahead — Ansible's TASK lines configure dependencies, lay down the systemd unit, and verify port allocations."
-      - offset_seconds: 12
+      - offset_seconds: 20
+        # ≈2.4s audio (34 chars). Starts after beat 2 ends.
         text: "Install complete — agent is ready."
 
   - n: 5
