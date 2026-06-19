@@ -965,12 +965,15 @@ def render_hermes(inputs: RenderInputs) -> RenderedFiles:
             # #734: hermes upstream (PR #21337) reads
             # `BRAVE_SEARCH_API_KEY` from the env, but the operator-facing
             # credential is `BRAVE_API_KEY` (single key name across all
-            # three agent types). Rename here — in the Python view
-            # builder, NOT in the Jinja template — so the template stays
-            # a dumb formatter and the rename is unit-testable in
-            # isolation from Jinja.
+            # three agent types). Mirror the value under the hermes-
+            # specific name — in the Python view builder, NOT in the
+            # Jinja template — so the template stays a dumb formatter
+            # and the rename is unit-testable in isolation from Jinja.
+            # Do NOT pop the source key (ATX iter 1 render-engine
+            # suggestion): a future consumer needing the operator name
+            # downstream would silently see an empty string.
             if "BRAVE_API_KEY" in creds:
-                creds["BRAVE_SEARCH_API_KEY"] = creds.pop("BRAVE_API_KEY")
+                creds["BRAVE_SEARCH_API_KEY"] = creds["BRAVE_API_KEY"]
         if integration.type == "atlassian":
             lo_slug = slug.lower()
             if not lo_slug:

@@ -2514,34 +2514,29 @@ def configure_agent(
             # the lifecycle state machine half-walked.
             return False, f"Hermes render failed: {exc}"
 
-    # #734 Openclaw brave plugin pin. Hydrated from the openclaw
-    # manifest's `plugins.brave` block so a version bump is a one-line
-    # change in `manifest.yaml`. Default values keep the playbook
-    # parseable for hermes/zeroclaw runs where these vars are unused
-    # (Ansible's `when:` guard already skips the install task).
-    openclaw_brave_plugin_package = "@openclaw/brave-plugin"
+    # #734 Openclaw brave plugin pin. Single source of truth lives in
+    # `lifecycle_canonical._load_openclaw_brave_pin()` (W2 ATX iter 1),
+    # which reads `plugins.brave` from the openclaw manifest and
+    # hard-fails if any of (npm_package, version, min_host_version) is
+    # missing — so a typo'd manifest never lets npm install
+    # `@openclaw/brave-plugin@` with an empty version (W3 ATX iter 1).
+    # Default empty strings are used for non-openclaw runs where the
+    # vars are referenced but the install task is skipped by
+    # `integrations | selectattr(...)`.
+    openclaw_brave_plugin_package = ""
     openclaw_brave_plugin_version = ""
     if resolved_type == "openclaw":
-        try:
-            import yaml as _yaml
+        from clawrium.core.lifecycle_canonical import (
+            CanonicalSyncError,
+            _load_openclaw_brave_pin,
+        )
 
-            manifest_path = (
-                Path(__file__).parent.parent
-                / "platform"
-                / "registry"
-                / "openclaw"
-                / "manifest.yaml"
-            )
-            manifest = _yaml.safe_load(manifest_path.read_text())
-            brave_cfg = (manifest.get("plugins") or {}).get("brave") or {}
-            openclaw_brave_plugin_package = (
-                brave_cfg.get("npm_package") or openclaw_brave_plugin_package
-            )
-            openclaw_brave_plugin_version = brave_cfg.get("version") or ""
-        except Exception as exc:
-            logger.warning(
-                "Failed to read openclaw plugin pins from manifest: %s", exc
-            )
+        try:
+            _pin = _load_openclaw_brave_pin()
+        except CanonicalSyncError as exc:
+            return False, str(exc)
+        openclaw_brave_plugin_package = _pin["npm_package"]
+        openclaw_brave_plugin_version = _pin["version"]
 
     # Build Ansible inventory with API key passed directly
     ansible_vars = {

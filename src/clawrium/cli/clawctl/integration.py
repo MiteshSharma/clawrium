@@ -271,9 +271,10 @@ def create(
         None,
         "--api-key",
         help=(
-            "Convenience: bearer key for single-required-credential types "
-            "(brave, linear, notion, ...). Avoids shell-history leaks vs "
-            "passing the value as a positional."
+            "Convenience flag: bearer key for single-required-credential "
+            "types (brave, linear, notion, ...). The value still appears "
+            "in shell history — pipe through `--api-key-stdin` to avoid "
+            "that."
         ),
     ),
     api_key_stdin: bool = typer.Option(
@@ -578,13 +579,16 @@ def rotate(
         )
 
     agents = find_agents_using_integration(name)
-    confirm_destructive(
-        prompt=(
-            f"Rotate {name!r} credentials and re-sync "
-            f"{len(agents)} agent(s)?"
-        ),
-        yes=yes,
-    )
+    # No agents → this is effectively an `edit` with no sync side
+    # effect; skip the destructive confirmation prompt.
+    if agents:
+        confirm_destructive(
+            prompt=(
+                f"Rotate {name!r} credentials and re-sync "
+                f"{len(agents)} agent(s)?"
+            ),
+            yes=yes,
+        )
 
     def apply(rec: dict) -> dict:
         rec["updated_at"] = _now_iso()
