@@ -1694,16 +1694,25 @@ def _render_openclaw_json(
     if discord_channel is not None:
         discord["enabled"] = True
         discord["allowFrom"] = list(discord_channel.allowed_users)
+        # Pin `groupPolicy: "allowlist"` explicitly so the channel-presence
+        # invariant below does not depend on openclaw's implicit default.
+        # The legacy `clm` wizard at `cli/agent.py` writes the same value
+        # when it constructs `channels_config["discord"]`; emitting it here
+        # keeps the canonical render path semantically aligned.
+        discord["groupPolicy"] = "allowlist"
         # Reshape flat allowed_guilds[] + allowed_channels[] into the
-        # nested {<guild>: {users: [...], channels: {<chan>: {allow: true}}}}
-        # structure openclaw's daemon expects.
+        # nested {<guild>: {users: [...], channels: {<chan>: {}}}} structure
+        # openclaw's daemon expects. Under `groupPolicy: "allowlist"`, mere
+        # presence in `channels` permits the channel — `{"allow": true}` was
+        # accepted by older openclaw but rejected as an additional property
+        # by 2026.5.28+ (`channels.discord.guilds.<id>.channels.<id>: must
+        # not have additional properties: "allow"`).
         guilds_block: dict = {}
         for guild_id in discord_channel.allowed_guilds:
             guilds_block[guild_id] = {
                 "users": list(discord_channel.allowed_users),
                 "channels": {
-                    chan_id: {"allow": True}
-                    for chan_id in discord_channel.allowed_channels
+                    chan_id: {} for chan_id in discord_channel.allowed_channels
                 },
             }
         discord["guilds"] = guilds_block
