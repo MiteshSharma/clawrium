@@ -242,6 +242,11 @@ src/clawrium/gui/frontend/
 docs/demos/**/*.mp4
 docs/demos/recordings/*
 !docs/demos/recordings/.gitkeep
+
+# ElevenLabs narration pipeline (docs/demos/lib/narrate.py).
+# Real API key + voice IDs live in .env; per-scene TTS clips are regenerated.
+docs/demos/lib/.env
+docs/demos/**/voice/
 /gtm/
 tests/platform/fixtures/.ws_cache/
 

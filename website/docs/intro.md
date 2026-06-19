@@ -11,6 +11,21 @@ keywords: [clawrium, AI assistant, fleet management, CLI tool, multi-host, agent
 
 [Documentation](https://ric03uec.github.io/clawrium/) · [Issues](https://github.com/ric03uec/clawrium/issues) · [Roadmap](https://github.com/users/ric03uec/projects/1) · [Discord](https://discord.gg/KzPuSxgQ98)
 
+## Watch: 3-minute quickstart
+
+<div style={{position: 'relative', paddingBottom: '56.25%', height: 0, overflow: 'hidden', maxWidth: '100%', marginBottom: '2rem'}}>
+  <iframe
+    style={{position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'}}
+    src="https://www.youtube.com/embed/qEqDnzJBaig"
+    title="Clawrium Quickstart — Install + Chat With Your First Agent (3 min)"
+    frameBorder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowFullScreen>
+  </iframe>
+</div>
+
+End-to-end walkthrough: install `clawctl`, register a host, deploy a [Hermes](https://github.com/NousResearch/hermes-agent) agent, attach a model provider, and chat with it. Full step-by-step write-up in the [Quickstart guide](./guides/quickstart.md).
+
 ## What is an Agent?
 
 A Clawrium **agent** is a general-purpose AI assistant that runs on a machine in your network. Unlike coding-specific tools, these agents are versatile assistants that can:
@@ -64,9 +79,8 @@ clawctl service init
 ```
 
 ```bash
-# Register a host. The first invocation prints the manual xclm setup
-# commands to run on the host (see the Host Setup guide); re-run this
-# command afterwards to actually register the host.
+# Register a host (the xclm management user must already exist on the host —
+# see the Host Setup guide for one-time host preparation).
 clawctl host create 192.168.1.100 --user xclm --alias homelab
 ```
 ```
@@ -91,8 +105,8 @@ nuc-01      oc-work        openclaw   anthropic  running   12h
 ```
 
 ```bash
-# Install an agent on a host
-clawctl agent create --type openclaw --host homelab --name my-assistant
+# Install an agent on a host (name is positional)
+clawctl agent create my-assistant --type openclaw --host homelab
 ```
 ```
 Installing openclaw on homelab...

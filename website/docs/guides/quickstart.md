@@ -8,6 +8,21 @@ keywords: [quickstart, tutorial, first agent, deploy, get started, 5 minutes]
 
 Deploy your first [OpenClaw](https://github.com/openclaw/openclaw) instance in under 5 minutes. This guide walks through the complete workflow from installation to a running agent.
 
+## Watch the walkthrough (3 min)
+
+<div style={{position: 'relative', paddingBottom: '56.25%', height: 0, overflow: 'hidden', maxWidth: '100%', marginBottom: '2rem'}}>
+  <iframe
+    style={{position: 'absolute', top: 0, left: 0, width: '100%', height: '100%'}}
+    src="https://www.youtube.com/embed/qEqDnzJBaig"
+    title="Clawrium Quickstart — Install + Chat With Your First Agent (3 min)"
+    frameBorder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowFullScreen>
+  </iframe>
+</div>
+
+The video walks through the same steps below end-to-end on a real host. The recording uses a **`hermes` agent** with a **`litellm` provider** (one of several supported agent + provider combinations); the written guide below uses **`openclaw` + `anthropic`** as the canonical example. The CLI surface is identical — only the `--type` flag value and provider name change.
+
 ## What You'll Need
 
 Before you start, verify you have:
@@ -79,45 +94,18 @@ Clawrium is ready! Next: clawctl host create <hostname> --user xclm --alias <nam
 
 ## Step 3: Prepare a Host
 
-Register the target host. On first run Clawrium generates a per-host
-keypair and prints the manual `xclm` setup commands you need to paste on
-the host (see the [Host Setup guide](host-setup.md) for full
-Linux + macOS instructions):
+Clawrium connects to remote hosts as a dedicated unprivileged management user named `xclm`. This user must be created on the target host once before registration. Follow the [Host Setup guide](host-setup.md) for the one-time `xclm` user provisioning on Linux or macOS — it's a single SSH session of `useradd`/`visudo` commands.
+
+## Step 4: Register the Host
+
+With `xclm` provisioned on the target, register the host into your fleet:
 
 ```bash
-clawctl host create 192.168.1.100 --user xclm --alias mybox
+clawctl host create 192.168.1.100 --user xclm --alias homelab
 ```
 
-Replace `192.168.1.100` with your target host's IP or hostname and
-`mybox` with a friendly alias.
+Replace `192.168.1.100` with your target host's IP or hostname and `homelab` with a friendly alias.
 
-```
-Generating SSH keypair for 192.168.1.100...
-✓ Keypair saved to ~/.config/clawrium/keys/192.168.1.100/
-
-Connecting to 192.168.1.100 as myuser...
-Password for myuser@192.168.1.100: ********
-
-Configuring xclm user on remote host...
-  Creating user 'xclm'...
-  Configuring passwordless sudo...
-  Adding SSH public key...
-✓ Host initialization complete
-
-Next: clawctl host create 192.168.1.100 --alias <friendly-name>
-```
-
-:::note Manual setup required?
-If automatic setup fails (e.g., password authentication disabled), Clawrium shows manual setup instructions. Follow them on the target host, then continue to the next step.
-:::
-
-## Step 4: Add the Host
-
-Add the initialized host to your fleet:
-
-```bash
-clawctl host create 192.168.1.100 --alias homelab
-```
 ```
 Connecting to 192.168.1.100 as xclm...
   Unknown host key for 192.168.1.100
@@ -145,7 +133,7 @@ homelab    192.168.1.100   x86_64         4       16.0          -
 
 ## Step 5: Install the Agent
 
-Install OpenClaw on your host:
+Install OpenClaw on your host (the agent name is positional):
 
 ```bash
 clawctl agent create my-assistant --type openclaw --host homelab
@@ -166,47 +154,59 @@ Next: clawctl agent configure my-assistant
 
 ## Step 6: Configure the Agent
 
-Run the configuration wizard:
+`clawctl agent configure` runs one configuration stage per invocation; the
+`--stage` flag selects which stage. Pass each stage explicitly — bare
+`clawctl agent configure <name>` exits with an error asking you to pick one.
+
+First, attach a provider. You'll need a registered provider — see
+`clawctl provider registry create --help` for one-shot provider setup, or
+reuse one already in the secret store.
 
 ```bash
-clawctl agent configure my-assistant
+clawctl agent configure my-assistant --stage providers --provider my-anthropic
 ```
 ```
-═══════════════════════════════════════════════════════════
-  OpenClaw Configuration: my-assistant
-═══════════════════════════════════════════════════════════
-
-Stage 1/4: Provider Setup
-─────────────────────────
-Select primary LLM provider:
-  1. OpenAI
-  2. Anthropic
-  3. OpenRouter
-  > 2
-
-Enter Anthropic API key: ********
-Testing connection... ✓ Connected
-
-Stage 2/4: Identity
-───────────────────
-Agent name [my-assistant]: 
-Description [A helpful AI assistant]: My homelab assistant
-
-Stage 3/4: Channels
-──────────────────
-Enable CLI channel? [Y/n]: y
-Enable Discord channel? [y/N]: n
-
-Stage 4/4: Validation
-────────────────────
-✓ Provider: Anthropic (claude-3-5-sonnet)
-✓ Channels: CLI
-✓ Configuration valid
-
-Configuration complete. Run 'clawctl agent start my-assistant' to start your agent.
+agent/my-assistant: configure stage=providers on homelab
+agent/my-assistant: [configure] Loaded provider API key from secrets
+agent/my-assistant: [configure] Running Ansible playbook...
+agent/my-assistant: [configure] Saving configuration to hosts.json...
+agent/my-assistant: stage providers complete
 ```
 
-## Step 7: Check Fleet Status
+Then run the identity stage to set personality / name metadata:
+
+```bash
+clawctl agent configure my-assistant --stage identity
+```
+
+Finally, validate the resulting configuration is internally consistent:
+
+```bash
+clawctl agent configure my-assistant --stage validate
+```
+
+:::note Channels
+The `channels` stage is deprecated. Manage channels via
+`clawctl channel registry create` followed by
+`clawctl agent channel attach`. See the [Channel reference](../reference/cli/index.md)
+for the full surface.
+:::
+
+## Step 7: Start the Agent
+
+`agent create` installs the systemd unit but leaves it stopped; `configure`
+provisions it but does not start it. Bring it up explicitly:
+
+```bash
+clawctl agent start my-assistant
+```
+```
+agent/my-assistant: [start] Starting systemd unit on homelab...
+agent/my-assistant: [start] Service active
+agent/my-assistant: running
+```
+
+## Step 8: Check Fleet Status
 
 Verify your fleet:
 
@@ -214,12 +214,12 @@ Verify your fleet:
 clawctl agent get
 ```
 ```
-HOST        AGENT          TYPE       PROVIDER   STATUS    UPTIME
-──────────────────────────────────────────────────────────────────
-homelab     my-assistant   openclaw   anthropic  running   1m
+NAME           TYPE       HOST       PROVIDER       STATUS    AGE
+─────────────────────────────────────────────────────────────────
+my-assistant   openclaw   homelab    my-anthropic   ready     1m
 ```
 
-## Step 8: Chat with Your Agent
+## Step 9: Chat with Your Agent
 
 Test your agent:
 
@@ -266,10 +266,10 @@ sudo ufw allow ssh
 
 ### Permission denied during `clawctl host create`
 
-The `xclm` management user hasn't been created on the target, or the per-host
-public key hasn't been added to `~xclm/.ssh/authorized_keys`. Follow the
-manual setup commands printed by `clawctl host create` on its first run, or
-see the [Host Setup guide](host-setup.md) for the full Linux + macOS steps.
+The `xclm` management user hasn't been created on the target, or the
+per-host public key hasn't been added to `~xclm/.ssh/authorized_keys`.
+See the [Host Setup guide](host-setup.md) for the Linux + macOS setup
+steps and run them on the target before retrying.
 
 ### Agent won't start
 
@@ -280,5 +280,6 @@ clawctl agent logs my-assistant
 ```
 
 Common issues:
-- Invalid API key (re-run `clawctl agent configure my-assistant --stage providers`)
-- Port already in use (check with `clawctl agent describe my-assistant`)
+- Invalid API key — re-run the provider stage with the right provider name:
+  `clawctl agent configure my-assistant --stage providers --provider <name>`
+- Port already in use — check with `clawctl agent describe my-assistant`
