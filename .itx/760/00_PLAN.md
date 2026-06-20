@@ -20,8 +20,8 @@ into three follow-up subtasks tracked separately.
 
 | # | Status | Issue → Resolution |
 |---|---|---|
-| **B1** | Fixed | `--workspace-only` violated AGENTS.md #437 no-idempotent-skip rule. **Resolution**: keep the flag (operator-requested), but make it unconditionally call `_zeroclaw_repair_after_start()` and emit `gateway_token_rotated` for zeroclaw agents. Workspace-only is NOT a "skip pairing" path; it's a "skip canonical render + skip restart" path. Pairing is preserved because zeroclaw's bearer-rotation invariant is independent of file drift. Pinned in §1.3, §3.1 U-pair, §3.2 I-pair-A/B. |
-| **B2** | Fixed | OS branching inside `workspace_sync.py` violated the dispatcher-only-OS-fork convention (memory `feedback_dispatcher_only_os_fork`). **Resolution**: split into `workspace_sync.py` (Linux) + `workspace_sync_macos.py` (stub, raises `WorkspaceMacOSNotImplemented`). The dispatcher in `lifecycle_canonical.py` selects the module by `host.os_family`. Linux file has no `os_family` check; macOS file is the entire seam. §2 Files-to-Modify, §3.1 U13, §3.2 I10 rewritten. |
+| **B1** | Fixed | `--workspace-only` = push workspace files via Ansible **and** rotate the zeroclaw bearer (also via the existing Ansible pair playbook). One line. No "skip pairing" branch. §1.3, I-pair-B. |
+| **B2** | Fixed | OS branching split per the project convention: per-agent `playbooks/workspace.yaml` (Linux) + `playbooks/workspace_macos.yaml` (deferred to macOS subtasks #4–#6, matching the `configure.yaml` / `configure_macos.yaml` pattern already used by openclaw and hermes). Python dispatcher uses the existing `core/playbook_resolver.py`, which already routes by `host.os_family`. §2 Files-to-Modify, §3.1 U13, §3.2 I10 rewritten. |
 | **B3** | Fixed | Bearer-rotation invariant not pinned in the new sync pipeline. **Resolution**: added I-pair-A and I-pair-B integration tests that capture pre/post `hosts.json.gateway.auth`, assert they differ, assert exactly one `gateway_token_rotated` NDJSON event, with no retry fallback. §3.2. |
 | **B4** | Fixed | `configure_agent` code path had zero test coverage. **Resolution**: extracted a shared `push_workspace_phase(...)` helper (also resolves W9), then added three integration tests (I12–I14, one per agent type) exercising the full `configure_agent` path with the same workspace-overlay assertions as the sync path. §2, §3.2. |
 | **B5** | Fixed | `install.py` mkdir scaffold had no test. **Resolution**: added U17 (per-type scaffold) and U18 (idempotent on pre-existing dir, owner+mode preserved). §3.1. |
@@ -35,15 +35,15 @@ into three follow-up subtasks tracked separately.
 | W3 | Fixed | NDJSON `state` field is a frozen enum `{queued, pushed, excluded, skipped, failed, complete}`. `reason` is a separate field carrying free-text. U-state-enum unit test pins the enum. |
 | W4 | Fixed | All operator-visible workspace paths routed through `sanitize_passthrough` (existing helper at `cli/output/_sanitize.py`) before emission. U-bidi unit test pins the sanitize call. |
 | W5 | Fixed | §2 explicitly lists Typer `help=` strings and the help-text invariants for `--workspace-only`, `--no-restart`, and the deprecated `--workspace` alias. U-help-text test asserts each flag's help body. |
-| W6 | Fixed | §1.5 documents the architectural decision: workspace push uses the **same paramiko channel as `lifecycle_canonical`** (which already bypasses Ansible for canonical render/diff/atomic-write). No new Ansible playbook is introduced. The `configure_agent` workspace push runs through the same `push_workspace_phase` helper as `sync_agent_canonical`, NOT through Ansible. macOS follow-up subtasks (#4–#6) extend the paramiko path, not Ansible. |
+| W6 | Fixed | **Ansible-only.** Reviewer was right. Per-agent `playbooks/workspace.yaml` does the file push via the `ansible.builtin.copy` module (handles mode/owner/group/`follow:no` natively — see W11–W14 below). No paramiko/SFTP from Python. Python side is a thin dispatcher: enumerate local workspace files → apply manifest excludes → call `playbook_resolver.resolve('workspace', host.os_family)` → invoke ansible-runner with the staged file list as an extravar. macOS subtasks add `workspace_macos.yaml` per agent. §1.5, §2. |
 | W7 | Fixed | Per-type destinations and excludes moved into `manifest.yaml` under `features.workspace_overlay.{destination_root, excludes}`. Loaded via the existing manifest loader. Hard-coded fallback removed. Third-party manifests can declare their own. §2, §3.1 U2–U4. |
 | W8 | Fixed | Hermes exclude list expanded: `config.yaml`, `.env`, `auth.json`, `state.db`, `sessions/`, `logs/`. `cron/` and `memories/` stay overlay-able by design (operator-defined cron jobs; memories already operator-editable via memory CLI). Documented in §1.1 table and pinned in U3. |
 | W9 | Fixed | Single `push_workspace_phase(...)` helper in `core/workspace_sync.py`. Both `sync_agent_canonical` and `configure_agent` call this helper — no dual implementation. §2 and §3.1 U-shared-helper. |
 | W10 | Fixed | Match semantics pinned in §1.1: relative path equality for file entries (`config.yaml` matches only `./config.yaml`, NOT `nested/config.yaml`); trailing-slash entries (`sessions/`) are directory-prefix excludes that match every descendant. U-match-semantics unit test covers both shapes. |
-| W11 | Fixed | §2 pins `shell=False`, argv-list form, `install -- <src> <dst>` to terminate flag parsing. Agent names validated against `^[a-z0-9][-a-z0-9]{0,62}$` at the validation layer in `core/names.py` (existing helper). U-name-injection and U-flag-injection unit tests added. |
-| W12 | Fixed | §2 specifies `os.open(path, O_NOFOLLOW)` + `fstat` re-check before each SFTP put. U-symlink-toctou regression test added. |
-| W13 | Fixed | Secret-pattern files (`*.key`, `*.pem`, `*.env`, `.env`, `*credentials*`, `*secret*`, `*token*`, `*password*`) chmod-floor to 0600 regardless of local mode. Doctor emits a warning if a non-secret-pattern file is dropped at >0644. §2 + U-secret-mode-floor. |
-| W14 | Fixed | Destination root resolved at push time via `getent passwd <agent_name>` over SSH (`pw_dir`), with assertion that the resolved path is under `/home/`. Hostile agent names rejected by the §W11 validator before reaching this layer; the runtime check is defense-in-depth. U-getpwnam-resolution unit test. |
+| W11 | Fixed | Ansible `ansible.builtin.copy` takes structured args (`src`, `dest`, `mode`, `owner`, `group`) — no shell interpolation, no flag-injection surface. Agent names still validated against `^[a-z0-9][-a-z0-9]{0,62}$` via existing `core/names.py` before reaching ansible-runner; the validator is the only attack surface left, and it's already covered by the existing name-injection tests. U-name-injection retained. |
+| W12 | Fixed | `ansible.builtin.copy` defaults to `follow: no` — does not follow symlinks. We pass `follow: no` explicitly in `workspace.yaml` to lock the behavior. Local symlinks are skipped at enumeration time (U6). The TOCTOU class is eliminated because the copy task is one atomic Ansible action, not a separate open/stat/push sequence. |
+| W13 | Fixed | Secret-pattern files (`*.key`, `*.pem`, `*.env`, `.env`, `*credentials*`, `*secret*`, `*token*`, `*password*`) get `mode: '0600'` floor via a per-file conditional in `workspace.yaml`. Non-secret files default to `mode: preserve`. U20 pins the floor. |
+| W14 | Fixed | Destination root is rendered as a Jinja template in `workspace.yaml` using Ansible's `ansible_user_dir` fact (the agent user's actual home dir, resolved on the host). No string interpolation in Python. The fact is computed by Ansible's setup module against the live host — getent-equivalent. The relevant assertion ("path under `/home/`") is moved to a playbook-level `assert` task that fails the run if `ansible_user_dir` doesn't start with `/home/` (Linux) — matching what the install/configure playbooks already do. |
 | W15 | Fixed | §1.1 explicitly scopes this iteration to hermes/openclaw/zeroclaw. `ethos` is in the registry but has no entry in `lifecycle_canonical._RENDERERS` — sync_agent_canonical itself raises for ethos today, so workspace sync inherits the same constraint. U1 asserts that every agent type WITH a canonical renderer also has a workspace-overlay manifest entry (the relevant pairing). Ethos remains intentionally absent until it joins the canonical pipeline. |
 | W16 | Fixed | §1.3: `--workspace-only --dry-run` is allowed as a preview mode — enumerate + show + do not push. I-dry-run-only test added in §3.2. |
 | W17 | Fixed | I-result-shape tests added covering `CanonicalSyncResult.workspace_files_pushed` in success / empty / failure cases. §3.2 I15. |
@@ -119,16 +119,16 @@ left untouched (idempotent — B5/U18).
 Existing `clawctl agent sync <name>` behavior is extended. Flag
 inventory after this issue:
 
-| Flag | Behavior | Notes |
-|---|---|---|
-| (none) | Default: canonical render + workspace overlay + restart + verify + (zeroclaw) repair | Workspace overlay runs after canonical write loop, before restart. |
-| `--workspace-only` | Workspace overlay only — no canonical render, no restart, no verify. **Zeroclaw bearer rotation still runs** (B1, AGENTS.md #437). | Useful for staging a workspace change without flapping the unit. Bearer rotation is preserved because it is independent of file drift. |
-| `--no-restart` | Canonical render + workspace overlay, no restart, no verify. | Renamed from existing `--workspace` (W1). |
-| `--workspace` | Deprecated alias for `--no-restart`. | Emits a yellow deprecation notice; removed in a future release. |
-| `--dry-run` | Validate + enumerate + show intent; no push, no host writes. | Existing behavior. |
-| `--diff` | Implies `--dry-run`; host-vs-rendered unified diff per file. Workspace files are NOT diffed (operator owns them) — they appear as "would push" lines instead. | Existing flag, extended for workspace. |
-| `--workspace-only --dry-run` | Allowed (W16). Preview workspace push only — enumerates files, emits `would-push` events, no SFTP. | New combination. |
-| `--workspace-only --diff` | Mutually exclusive — exits 2 with hint. | Existing `--diff` shape doesn't apply to operator-owned files. |
+| Flag | Behavior |
+|---|---|
+| (none) | Default: canonical render + workspace overlay playbook + restart + verify + (zeroclaw) repair. |
+| `--workspace-only` | Workspace overlay playbook + (zeroclaw) repair playbook. Nothing else. Files sync, bearer rotates. |
+| `--no-restart` | Canonical render + workspace overlay playbook, no restart. Renamed from existing `--workspace` (W1). |
+| `--workspace` | Deprecated alias for `--no-restart`; yellow notice. |
+| `--dry-run` | Existing behavior. Workspace overlay phase runs in `ansible-runner` check mode (`--check`). |
+| `--diff` | Existing. Workspace files appear as "would push" lines (operator owns them, no rendered counterpart). |
+| `--workspace-only --dry-run` | Allowed. Enumerate + invoke playbook in check mode. |
+| `--workspace-only --diff` | Mutually exclusive — exits 2. |
 
 ### 1.4 Phase ordering (W2)
 
@@ -149,33 +149,38 @@ only after phases 4 and 5 succeed. I8 + I-pair-A pin this.
 For `--workspace-only`:
 
 ```
-1. push workspace overlay
-2. repair gateway bearer (zeroclaw only)
+1. push workspace overlay (workspace.yaml playbook)
+2. repair gateway bearer (zeroclaw pair playbook)
 ```
 
-Repair runs unconditionally for zeroclaw because the bearer-rotation
-invariant is independent of file drift (AGENTS.md "Gateway Token
-Lifecycle"). Phases 2 and 4–5 from the default flow are explicitly
-skipped — the operator opted in.
+Both via Ansible. Files sync, bearer rotates. Done.
 
-### 1.5 Architectural choice: paramiko, not Ansible (W6)
+### 1.5 Architectural choice: Ansible (W6)
 
-Workspace push uses the **same paramiko channel** as `lifecycle_canonical`.
-The canonical sync pipeline already bypasses Ansible for its
-render/diff/atomic-write loop (rationale: in-process Python control over
-the secret-removal guard, per-file diff, and per-file SFTP semantics that
-ansible.builtin.copy cannot express cleanly). Workspace overlay reuses
-the same paramiko client, the same `_atomic_write` primitive (via the
-extracted helper), and the same SSH key resolution.
+Every host-side write in this feature goes through Ansible. There is
+**no paramiko SFTP** from Python.
 
-`configure_agent` calls the same `push_workspace_phase` helper as
-`sync_agent_canonical` — no dual implementation (W9, B4). The configure
-playbook itself remains Ansible-driven; the workspace push is a sibling
-Python call that runs after the playbook completes.
-
-macOS subtasks (#4–#6) extend the paramiko path with macOS-specific
-home-root resolution; no new Ansible playbook is introduced for either
-OS.
+- Each agent type ships a new `playbooks/workspace.yaml` (Linux) and
+  `playbooks/workspace_macos.yaml` (deferred to subtask). Same shape
+  as the existing `configure.yaml` / `configure_macos.yaml` split.
+- The playbook reads its file list from a single extravar
+  (`workspace_files: [{src: <abs-path-on-control>, rel: <relpath>}, ...]`)
+  staged into a tempdir under `${clawrium_config}/staging/workspace/<name>/`.
+- `ansible.builtin.copy` does the actual push, with `mode`, `owner`,
+  `group`, `follow: no` set on every task. Secret-pattern files get
+  `mode: '0600'` via a per-file conditional (W13).
+- Destination root is `{{ ansible_user_dir }}/<manifest-relative-root>`
+  (e.g. `{{ ansible_user_dir }}/.openclaw/workspace`), so the host's
+  own facts decide the home dir (W14).
+- Python side (`core/workspace_sync.py`) is a thin wrapper: enumerate
+  local workspace, apply manifest excludes, stage the file list, call
+  `playbook_resolver.resolve('workspace', host.os_family)` to get the
+  right playbook path, hand off to `ansible_runner`, stream stdout
+  events back through `on_event`.
+- The `_zeroclaw_repair_after_start()` path that runs for zeroclaw
+  syncs is **already Ansible-based** (the pair playbook). No change
+  there — `--workspace-only` just calls it as the second step after
+  the workspace playbook.
 
 ### 1.6 Example sessions
 
@@ -222,9 +227,12 @@ Warning: --workspace is deprecated; use --no-restart. Will be removed in a futur
 
 | Path | Change |
 |---|---|
-| `src/clawrium/core/workspace_sync.py` | **NEW**. Linux push path only. Exports `push_workspace_phase(client, host, agent_type, agent_name, workspace_overlay_spec, on_event) -> WorkspacePhaseResult`. Resolves destination root via `getent passwd <name>` (W14). Uses `O_NOFOLLOW` open + `fstat` (W12). Enforces 0600 floor for secret-pattern files (W13). All `sudo install` calls use `shell=False`, argv list, `--` separator (W11). All operator-visible paths sanitized via `cli/output/_sanitize.py:sanitize_passthrough` (W4). Match semantics: file-equal + dir-prefix (W10). **No `os_family` checks** — dispatcher routes by OS (B2). |
-| `src/clawrium/core/workspace_sync_macos.py` | **NEW**. Stub. `push_workspace_phase` raises `WorkspaceMacOSNotImplemented("workspace overlay deferred to macOS subtask"))`. macOS subtasks (#4–#6) flesh this out. |
-| `src/clawrium/core/lifecycle_canonical.py` | Dispatcher: `_WORKSPACE_BACKEND_BY_OS = {"linux": workspace_sync, "darwin": workspace_sync_macos}`. New `workspace` phase between the canonical `write` loop and `restart`. New flag `push_workspace: bool = True`. New field `workspace_files_pushed: tuple[str, ...]` and `workspace_files_excluded: tuple[str, ...]` on `CanonicalSyncResult`. Phase ordering matches §1.4. Workspace failure does NOT advance to restart (W2). |
+| `src/clawrium/core/workspace_sync.py` | **NEW**. Thin Python wrapper. Exports `push_workspace_phase(host, agent_type, agent_name, workspace_overlay_spec, on_event) -> WorkspacePhaseResult`. Enumerate local workspace, apply manifest excludes (file-equal + dir-prefix match, W10), filter symlinks + `.clawrium-*` dotfiles, stage `workspace_files` extravar list into `${clawrium_config}/staging/workspace/<name>/`, call `playbook_resolver.resolve('workspace', host.os_family)`, hand off to `ansible_runner.run()` with the standard host inventory. Stream ansible-runner events to `on_event`. All operator-visible paths sanitized via `cli/output/_sanitize.py:sanitize_passthrough` (W4). No SFTP, no paramiko, no `os_family` branch in this file — `playbook_resolver` is the OS seam (B2). |
+| `src/clawrium/platform/registry/openclaw/playbooks/workspace.yaml` | **NEW**. Receives `workspace_files` extravar. `ansible.builtin.copy` per file with `dest: "{{ ansible_user_dir }}/.openclaw/workspace/{{ item.rel }}"`, `mode: preserve` (or `'0600'` when item.rel matches secret-pattern globs, W13), `owner: "{{ agent_name }}"`, `group: "{{ agent_name }}"`, `follow: no` (W12). Asserts `ansible_user_dir` starts with `/home/` (W14). |
+| `src/clawrium/platform/registry/zeroclaw/playbooks/workspace.yaml` | **NEW**. Same shape as openclaw's; `dest: "{{ ansible_user_dir }}/.zeroclaw/workspace/{{ item.rel }}"`. |
+| `src/clawrium/platform/registry/hermes/playbooks/workspace.yaml` | **NEW**. Same shape; `dest: "{{ ansible_user_dir }}/.hermes/{{ item.rel }}"`. Manifest excludes are enforced Python-side before reaching the playbook, so the playbook sees only allowed files. |
+| `src/clawrium/platform/registry/{openclaw,zeroclaw,hermes}/playbooks/workspace_macos.yaml` | **NEW** (stubs). Single task: `fail: msg="workspace overlay deferred to macOS subtask"`. Subtasks #4–#6 flesh these out (root path becomes `{{ ansible_user_dir }}/...` which already works on darwin; the stubs exist so dispatcher routing is in place from day one). |
+| `src/clawrium/core/lifecycle_canonical.py` | New `workspace` phase between the canonical `write` loop and `restart`. Calls `workspace_sync.push_workspace_phase(...)` (which dispatches to the right playbook via `playbook_resolver`). New flag `push_workspace: bool = True`. New fields `workspace_files_pushed: tuple[str, ...]` and `workspace_files_excluded: tuple[str, ...]` on `CanonicalSyncResult`. Phase ordering matches §1.4. Workspace failure does NOT advance to restart (W2). |
 | `src/clawrium/cli/clawctl/agent/sync.py` | Add `--workspace-only`, `--no-restart` flags. Keep `--workspace` as deprecated alias emitting a yellow notice (W1). Mutual-exclusion: `--workspace-only --diff` rejected with exit 2; `--workspace-only --dry-run` allowed (W16). NDJSON state values are frozen enum `{queued, pushed, excluded, skipped, failed, complete}` + free-text `reason` (W3). Help text strings pinned in tests (W5). Phase line "push_workspace". |
 | `src/clawrium/cli/clawctl/agent/configure.py` | Mirror workspace push by calling `push_workspace_phase` (shared helper, W9/B4). Same Linux-only dispatcher routing as sync. |
 | `src/clawrium/core/install.py` | On `clawctl agent create`, `mkdir -p` `~/.config/clawrium/agents/<type>/<name>/workspace/` for every agent type with a `features.workspace_overlay` manifest entry. Idempotent on pre-existing dirs (B5/U18). |
@@ -235,8 +243,8 @@ Warning: --workspace is deprecated; use --no-restart. Will be removed in a futur
 | `tests/unit/core/test_workspace_sync.py` | **NEW**. See §3.1 — 22 tests. |
 | `tests/integration/test_workspace_overlay_ubuntu.py` | **NEW**. See §3.2 — 15 tests. |
 | `CHANGELOG.md` `[Unreleased]` | `### Added` entry for workspace overlay + `--workspace-only`. `### Changed` entry for `--workspace` → `--no-restart` rename + deprecation alias. |
-| `docs/operations/sync.md` (+ website mirror per CLAUDE.md rule) | Document the overlay model, per-type destinations (sourced from manifests, not hard-coded), exclude semantics, all three flags (`--workspace-only`, `--no-restart`, deprecated `--workspace`), and the paramiko-not-Ansible architectural choice. |
-| `AGENTS.md` | New "Workspace Overlay" section noting: (a) manifest-driven destination + excludes, (b) paramiko channel reuses canonical pipeline, (c) `--workspace-only` preserves zeroclaw bearer rotation per #437, (d) macOS deferred to per-type follow-up subtasks. |
+| `docs/operations/sync.md` (+ website mirror per CLAUDE.md rule) | Document the overlay model, per-type destinations (sourced from manifests), exclude semantics, the three flags (`--workspace-only`, `--no-restart`, deprecated `--workspace`), and the Ansible-playbook architecture. |
+| `AGENTS.md` | New "Workspace Overlay" section noting: (a) manifest-driven destination + excludes, (b) per-agent `playbooks/workspace.yaml` is the only host-write path, (c) `--workspace-only` syncs files and rotates the zeroclaw bearer (no skip), (d) macOS deferred to per-type follow-up subtasks. |
 
 ## 3. Test Plan
 
@@ -253,20 +261,20 @@ Warning: --workspace is deprecated; use --no-restart. Will be removed in a futur
 | U7 | `test_enumerate_skips_clawrium_prefixed_dotfiles` | `.clawrium-*` skipped (reserved for future control-plane state). |
 | U8 | `test_enumerate_rejects_path_traversal` | Resolved path escaping workspace root → raise. |
 | U9 | `test_enumerate_preserves_relative_path_structure` | `workspace/profiles/coder/SOUL.md` → relative path `profiles/coder/SOUL.md`. |
-| U10 | `test_push_preserves_local_mode_bits` | 0644 / 0600 / 0755 round-trip identically (mocked SFTP + `sudo install -m`). |
-| U11 | `test_push_chowns_to_agent_user` | `sudo install -o <name> -g <name>` argv asserted. |
-| U12 | `test_push_mkdir_p_with_correct_ownership` | Intermediate dirs (`profiles/coder/`) → 0700, owner `<name>`. |
-| U13 | `test_linux_module_has_no_os_family_check` | The Linux `workspace_sync` module never reads `os_family` — assertion via AST grep / `inspect.getsource` (B2). |
-| U14 | `test_empty_workspace_is_noop` | Empty workspace → 0 SFTP, 0 install, `files_pushed=()`. |
+| U10 | `test_extravar_payload_preserves_local_mode_bits` | The `workspace_files` extravar list carries `mode: '0644'` / `'0600'` / `'0755'` from local stat. Playbook is responsible for applying it (verified in §3.2/§3.3). |
+| U11 | `test_extravar_payload_carries_agent_owner_group` | Every entry has `owner: <agent_name>`, `group: <agent_name>`. |
+| U12 | `test_playbook_resolver_returns_correct_path_per_os` | `resolve('workspace', 'linux')` → `<registry>/<type>/playbooks/workspace.yaml`. `resolve('workspace', 'darwin')` → `..._macos.yaml`. Same dispatcher contract as `configure`. |
+| U13 | `test_workspace_sync_python_has_no_paramiko_import` | AST grep / `inspect.getsource` — `workspace_sync.py` does not import `paramiko` and does not call SFTP. Ansible is the only host-write channel (W6). |
+| U14 | `test_empty_workspace_is_noop` | Empty workspace → `ansible_runner.run` not called, `files_pushed=()`. |
 | U15 | `test_missing_workspace_dir_is_noop` | Non-existent local dir treated as empty, not error. |
 | U16 | `test_hermes_excluded_files_emit_events` | `WorkspaceExcluded(path="config.yaml", reason="hermes_canonical_managed")` emitted. |
 | U17 | `test_create_agent_scaffolds_workspace_dir_for_each_type` | `clawctl agent create` mkdirs the local workspace dir for hermes/openclaw/zeroclaw (B5). |
 | U18 | `test_create_agent_scaffold_is_idempotent_when_workspace_exists` | Pre-existing workspace with custom mode and files → not overwritten, no error (B5). |
 | U19 | `test_match_semantics_file_exact_vs_dir_prefix` | `config.yaml` excludes root file only; `sessions/` excludes `sessions/anything` (W10). |
-| U20 | `test_secret_pattern_files_floor_to_0600` | A `*.key`, `*.pem`, `*.env`, `.env`, `*credentials*`, `*secret*`, `*token*`, `*password*` file dropped at 0644 lands 0600 on host (W13). |
+| U20 | `test_extravar_marks_secret_pattern_files_with_0600` | A `*.key`/`*.pem`/`*.env`/`.env`/`*credentials*`/`*secret*`/`*token*`/`*password*` entry has `mode: '0600'` in the extravar regardless of local mode (W13). |
 | U21 | `test_agent_name_injection_rejected` | Names like `foo; rm -rf /`, `--reference=/etc/passwd`, `$(whoami)`, `foo/../etc` rejected by `core/names.py` validator at workspace_sync entry (W11). |
-| U22 | `test_destination_root_resolution_via_getpwnam_asserts_home_prefix` | Mocked SSH returns `/home/foo` → accepted. Mocked SSH returns `/etc` → raise (W14). |
-| U23 | `test_symlink_toctou_o_nofollow_fstat_recheck` | Test fixture swaps a regular file for a symlink between enumerate and push; push raises `WorkspaceSyncError("symlink race")` (W12). |
+| U22 | `test_workspace_playbook_uses_ansible_user_dir_fact` | Each per-type `workspace.yaml` references `{{ ansible_user_dir }}` for the dest root and includes an `assert ansible_user_dir.startswith('/home/')` task (W14). YAML structural test — no host needed. |
+| U23 | `test_workspace_playbook_uses_copy_with_follow_no` | Each per-type `workspace.yaml` calls `ansible.builtin.copy` with `follow: no` on every push task (W12). |
 | U24 | `test_ndjson_state_field_is_enum` | Every emitted event's `state` is one of `{queued, pushed, excluded, skipped, failed, complete}` (W3). |
 | U25 | `test_operator_visible_paths_are_bidi_sanitized` | A workspace path containing U+202E reaches NDJSON / text output with the bidi marker stripped (W4). |
 | U26 | `test_help_text_pinned` | Typer `--help` body contains the pinned strings for `--workspace-only`, `--no-restart`, and the deprecation notice for `--workspace` (W5). |
@@ -275,23 +283,25 @@ Warning: --workspace is deprecated; use --no-restart. Will be removed in a futur
 
 ### 3.2 Integration tests (`tests/integration/test_workspace_overlay_ubuntu.py`)
 
-All integration tests use the paramiko-mock fixture (same shape as
-`test_render_matrix.py`). They drive `sync_agent_canonical` and
-`configure_agent` end-to-end.
+All integration tests use the existing `ansible_runner` mock fixture
+(shared with the configure/install integration suites). They assert
+the right playbook is invoked with the right extravars, NOT internal
+SSH/SFTP details — Ansible owns the wire.
 
 | # | Test | What it asserts |
 |---|---|---|
-| I1 | `test_sync_pushes_openclaw_workspace_to_canonical_dir` | `workspace/IDENTITY.md` → `/home/<name>/.openclaw/workspace/IDENTITY.md` with correct mode/owner. |
-| I2 | `test_sync_zeroclaw_workspace_overlay_wins_over_seed` | Operator `SOUL.md` overwrites the canonical-seeded `SOUL.md` because workspace push runs AFTER canonical write. |
-| I3 | `test_sync_hermes_skips_excludes_pushes_rest` | Stage `profiles/coder/SOUL.md` + hostile `config.yaml` + hostile `.env` + hostile `sessions/x.json` + hostile `logs/y.log`. Assert only `profiles/coder/SOUL.md` is SFTP'd. Each excluded file emits a `WorkspaceExcluded` event. |
-| I4 | `test_workspace_only_skips_canonical_render_and_restart` | `--workspace-only` → canonical renderer never called, secret-removal guard never invoked, systemd restart never triggered. |
-| I5 | `test_workspace_only_with_empty_workspace_is_noop` | Empty workspace + `--workspace-only` → exits 0, `files_pushed=()`. |
-| I6 | `test_dry_run_skips_workspace_push` | `--dry-run` reports `would_push` events without invoking SFTP. |
-| I7 | `test_workspace_only_and_diff_are_mutually_exclusive` | Exits 2 with hint pointing to non-overlapping flag groups. |
-| I8 | `test_workspace_failure_does_not_advance_to_restart_or_repair` | Mocked SFTP raises on file 3 of 5. Canonical files written earlier still on remote; systemd NOT restarted; bearer NOT rotated (W2). `CanonicalSyncResult.success=False` with `error` referencing workspace phase. |
-| I9 | `test_workspace_push_emits_per_file_ndjson` | `-o json` emits one event per pushed file with `{path, remote_path, mode, owner, state="pushed"}`. |
-| I10 | `test_macos_host_dispatches_to_macos_module_and_emits_skipped` | `os_family="darwin"` routes through the dispatcher to `workspace_sync_macos.py`, which emits `state="skipped", reason="os_family_darwin_deferred"` (B2). |
-| I11 | `test_workspace_only_dry_run_combination` | `--workspace-only --dry-run` enumerates + emits `state="queued", reason="dry-run preview"` per file. Zero SFTP. Zero `sudo install` (W16). |
+
+| I1 | `test_sync_invokes_openclaw_workspace_playbook` | Mocked `ansible_runner.run` called with `playbook=<.../openclaw/playbooks/workspace.yaml>` and `extravars.workspace_files` containing `[{rel: "IDENTITY.md", src: "<staging>/IDENTITY.md", mode: "0644", owner: "<name>"}]`. |
+| I2 | `test_sync_zeroclaw_workspace_overlay_wins_over_seed_via_playbook_order` | Configure's seed playbook runs first; sync's `workspace.yaml` runs after. Mocked runner records call order; operator `SOUL.md` reaches the workspace playbook's extravar list. |
+| I3 | `test_sync_hermes_skips_excludes_before_extravar_staging` | Excludes are applied Python-side. Mocked runner's `workspace_files` extravar contains only `profiles/coder/SOUL.md`. The hostile files (`config.yaml`, `.env`, `auth.json`, `state.db`, `sessions/x.json`, `logs/y.log`) never appear in the extravar payload, and each emits a `WorkspaceExcluded` event. |
+| I4 | `test_workspace_only_skips_canonical_and_restart_playbook_calls` | `--workspace-only` → canonical render not called, no `restart.yaml`, no `verify`. Only `workspace.yaml` (and for zeroclaw, the pair playbook). |
+| I5 | `test_workspace_only_with_empty_workspace_skips_playbook_invocation` | Empty workspace + `--workspace-only` → `ansible_runner.run` NOT called for `workspace.yaml` (no files to push). Exits 0, `files_pushed=()`. |
+| I6 | `test_dry_run_invokes_workspace_playbook_in_check_mode` | `--dry-run` → `ansible_runner.run` called with `cmdline='--check'`. No host writes per Ansible check-mode contract. |
+| I7 | `test_workspace_only_and_diff_are_mutually_exclusive` | Exits 2. |
+| I8 | `test_workspace_playbook_failure_does_not_advance_to_restart_or_repair` | Mocked ansible-runner returns rc != 0 for `workspace.yaml`. Restart playbook NOT invoked; pair playbook NOT invoked (W2). `CanonicalSyncResult.success=False` references workspace phase. |
+| I9 | `test_workspace_push_emits_per_file_ndjson_from_ansible_events` | `-o json` translates ansible-runner's per-task events into NDJSON events with `state="pushed"` and the relpath. |
+| I10 | `test_macos_host_dispatches_to_workspace_macos_playbook` | `os_family="darwin"` → `playbook_resolver` returns `workspace_macos.yaml`. The stub playbook fails fast with the expected message; the dispatcher routing itself is verified (B2). |
+| I11 | `test_workspace_only_dry_run_combination` | `--workspace-only --dry-run` → `ansible_runner.run` called once with `playbook=workspace.yaml`, `cmdline='--check'`, no other playbooks called (W16). |
 | I-pair-A | `test_sync_zeroclaw_rotates_bearer_in_full_flow` | Full sync (canonical + workspace + restart): capture `hosts.json.gateway.auth` pre/post — they differ. Exactly one `gateway_token_rotated` event in the NDJSON stream. No retry fallback (B3). |
 | I-pair-B | `test_workspace_only_zeroclaw_still_rotates_bearer` | `--workspace-only` sync: capture `hosts.json.gateway.auth` pre/post — they differ. Exactly one `gateway_token_rotated` event. Proves B1 resolution: workspace-only does NOT skip pairing (B3). |
 | I12 | `test_configure_openclaw_pushes_workspace_on_first_install` | Run `configure_agent` for openclaw. Same workspace assertions as I1. |
@@ -520,8 +530,9 @@ memory `mac_test_host`).
   against the live daemon and that `hosts.json` reflects the new value
   atomically.
 - **Symlink TOCTOU.** O_NOFOLLOW + fstat re-check (W12). U23 regression.
-- **Mode preservation across SFTP.** Explicit chmod after `install`
-  with secret-pattern floor (W13). U10 + U20 pin both.
+- **Mode preservation.** `ansible.builtin.copy` honors the `mode` arg
+  on every push task; extravar carries local mode bits with a 0600
+  floor for secret-pattern files (W13). U10 + U20 pin both.
 - **No delete-on-host.** Additive sync per issue mandate. Documented in
   `docs/operations/sync.md`. Operator's local rm doesn't propagate.
 - **macOS module never exercised before subtask #4.** Mitigated by I10
