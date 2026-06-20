@@ -15,6 +15,48 @@ into three follow-up subtasks tracked separately.
 | Review | Rating | Blocking | Status | Agents |
 |---|---|---|---|---|
 | 1 | 2/5 | B1–B5 | All addressed in iter 1 below | lifecycle-core, test-coverage, cli-ux, platform-playbooks, security, render-engine |
+| 2 | 3/5 | B1 (iter-2) | All addressed in iter 2 below | lifecycle-core, test-coverage, cli-ux, platform-playbooks, security, render-engine |
+
+### Iter 2 — Blocking resolution
+
+| # | Status | Issue → Resolution |
+|---|---|---|
+| **B1 (iter-2)** | Fixed | `--no-restart` mode had no bearer-rotation pin or test. **Resolution**: §1.4 explicitly pins phase 6 (bearer repair) as **unconditional for zeroclaw across all three sync modes** (default, `--workspace-only`, `--no-restart`). Added `I-pair-C` (no-restart zeroclaw rotation) capturing pre/post `hosts.json.gateway.auth` and exactly one `gateway_token_rotated` event. AGENTS.md #437 invariant restored across the full flag matrix. |
+
+### Iter 2 — Warning resolutions
+
+| # | Status | Resolution |
+|---|---|---|
+| W1 (iter-2) | Fixed | Phase-6 stale-bearer window on verify failure pinned. The plan does NOT move repair before verify (calling `/pair/code` against a daemon whose systemd state is `activating` is racier than the stale-bearer trade-off). Instead §1.4 + §5 document explicitly: if restart succeeds but verify fails, repair is skipped; `hosts.json.gateway.auth` may hold the pre-restart bearer; operator must re-run sync after fixing the unit. Pinned in I8-verify-fail. |
+| W2 (iter-2) | Fixed | §1.4 splits phase 6 into 6a (repair) and 6b (write state=READY). 6b runs only if 6a succeeds. I-pair-state covers the repair-failure-mid-phase-6 case. |
+| W3 (iter-2) | Fixed | §1.4: `--workspace-only` step-2 (repair) runs only if step-1 (workspace.yaml playbook) returned rc==0. Workspace-push failure short-circuits the entire mode. Pinned in I8-wsonly-fail. |
+| W4 (iter-2) | Fixed | I-pair-D added: parametrized over `{openclaw, hermes}` — asserts `--workspace-only` does NOT emit `gateway_token_rotated` and does NOT invoke the zeroclaw pair playbook for non-zeroclaw types. |
+| W5 (iter-2) | Partially fixed | Reviewer was partially wrong: `clawctl agent shell` is shipping under #761 (plan already merged to main) and will be available by the time #760 is executed and E2E-d. Kept `clawctl agent shell` for host-side file verification. The other two flagged items are real and fixed: `clawctl agent create` does install + initial configure in one step (no separate `agent install`); `clawctl agent delete --yes` (not `remove`). Doctor remains `clawctl agent doctor`. |
+| W6 (iter-2) | Fixed | `--workspace` is now a **hard error** that prints both candidates (`--workspace-only` for push-only, `--no-restart` for canonical+overlay-no-restart) and exits 2 immediately. No silent semantic divergence behind a yellow deprecation. The error message text is pinned in U-deprecated-error. |
+| W7 (iter-2) | Fixed | Removed in favor of W6's hard-error path. The deprecated-flag exit goes through `cli/output/errors.py:emit_error`, which produces a structured error in JSON/YAML modes and a stderr banner in text mode. U-deprecated-error pins JSON-mode output produces zero stdout bytes. |
+| W8 (iter-2) | Fixed | Mutex rejection (`--workspace-only --diff`) routed through `cli/output/errors.py:emit_error` with a structured payload `{error: "mutex", flags: ["--workspace-only", "--diff"]}`. I7-json pins JSON mode returns a single parseable error object. |
+| W9 (iter-2) | Fixed | Bidi sanitization expanded to **every operator-controlled string** in NDJSON event payloads (`path`, `remote_path`, `reason`, `owner`, `agent_name`, ansible-runner stderr excerpts). U25 broadened with parametrized fields. |
+| W10 (iter-2) | Fixed | §2 explicit: update the Typer `help=` short string in `cli/clawctl/agent/__init__.py:agent_app.command("sync")` registration AND the long-description docstring in `sync.py` to mention workspace overlay. U-help-text extended to assert both. |
+| W11 (iter-2) | Fixed | `ansible_user_dir` resolves to the SSH-connecting user (`xclm`), not the agent user. **Resolution**: the workspace playbook uses `become: true` + `become_user: "{{ agent_name }}"` and then references `ansible_user_dir` *inside* that become context. Same pattern as the existing `skills_apply.yaml` and `memory_write.yaml` playbooks. Verified against `hermes/playbooks/skills_apply.yaml:27` which uses `"/home/{{ agent_name }}/.hermes/skills/clawrium"` — we use the same `/home/{{ agent_name }}/...` pattern explicitly rather than `ansible_user_dir` after become. U22 rewritten accordingly. |
+| W12 (iter-2) | Fixed | `workspace.yaml` adds an `ansible.builtin.assert` task before each copy loop: `that: ["'..' not in item.rel", "not item.rel.startswith('/')"]`. Defense-in-depth against any future Python-side enumeration bypass. U-playbook-relpath-assert YAML structural test. |
+| W13 (iter-2) | Fixed | Hermes excludes extended to include SQLite companion files: `state.db`, `state.db-journal`, `state.db-wal`, `state.db-shm`. Pinned in U3 with the exact set. |
+| W14 (iter-2) | Fixed | §5 risk note added: workspace overlay races with daemon writes for `memories/` and `cron/` on hermes. Recommended operator workflow (`clawctl agent stop` → sync → `clawctl agent start`) documented in `docs/operations/sync.md`. No code-level mutex — this is a doc/UX risk acknowledgment, not a safety mechanism. |
+| W15 (iter-2) | Fixed | U-manifest-parse added: parametrized over `{block missing, excludes null, excludes empty list, excludes with trailing-slash entry, malformed entry}`. Tests the `WorkspaceOverlaySpec` dataclass parser, not the resolved values. |
+| W16 (iter-2) | Fixed | Staging dir managed via Python `tempfile.TemporaryDirectory` context manager. U29 (cleanup on success), U30 (cleanup on exception mid-ansible-runner). The "leak a sync's worth of files per failed run" disk-leak class is eliminated. |
+| W17 (iter-2) | Fixed | U5 rewritten: invokes `render_hermes(stub_inputs)` and walks the actual `RenderedFiles.files` keys; asserts each key under the workspace destination root is in the hermes exclude list. No fixture. Catches the drift class the test is designed to prevent. Mirror tests for render_openclaw / render_zeroclaw (which currently have empty workspace excludes — the test asserts their renderers emit no paths under their respective workspace roots). |
+| W18 (iter-2) | Fixed | §5 risk #5 rewritten to match implementation: "Symlinks rejected at Python enumeration (`os.path.islink` filter); `ansible.builtin.copy follow: no` is the second line of defense. There is no `O_NOFOLLOW`/`fstat` re-check — TOCTOU between Python enumerate and Ansible copy is bounded by the staging-dir lifetime (Python re-copies into `tempfile.TemporaryDirectory`, so the file Ansible sees is the staged copy, not the operator's path)." This is actually stronger than O_NOFOLLOW because the operator's path is never read by Ansible. |
+| W19 (iter-2) | Fixed | I8 extended: failure event payload asserted against frozen enum — `phase="push_workspace"`, `state="failed"`, `reason` non-empty. A regression to `state="error"` fails the test. |
+| W20 (iter-2) | Fixed | I16 added: `clawctl agent sync ws-hermes --diff` with workspace files present emits one `state="queued", reason="dry-run preview"` event per staged file with `path` + `remote_path` populated. |
+| S1 | Adopted | §2 configure.py row updated: "existing unconditional `_do_pair()` call preserved; workspace push is additive." |
+| S2 | Adopted | `destination_root` passed as extravar (`workspace_dest_root`) from the manifest to the playbook. Each `workspace.yaml` reads it from extravars rather than hardcoding the path suffix. Eliminates manifest/playbook drift. |
+| S3 | Adopted | Python dispatcher short-circuits darwin with a `WorkspaceSkipped(reason="macos_workspace_overlay_pending")` event before invoking ansible-runner. The macOS stub playbook stays as belt-and-suspenders. |
+| S4 | Adopted | U13 extended: AST grep also bans `sys.platform`, `platform.system()`, and `os_family ==` literals in `workspace_sync.py`. |
+| S5 | Adopted | §1.3 expanded with the exact `help=` strings for each flag. |
+| S6 | Adopted | §2: NDJSON events are CLI-only this iteration. GUI relay is out of scope for #760; tracked in a future issue when the GUI grows a workspace surface. |
+| S7 | Adopted | §5 trust-boundary note added: SSH key is the auth boundary; anyone with workspace overlay access already has shell access. |
+| S8 | Adopted | §2 + §5: secret-pattern mode floor is **always** applied — operator-supplied mode cannot relax 0600 for secret-pattern names. Filename heuristic is defense-in-depth, not a security boundary. |
+
+---
 
 ### Iter 1 — Blocking resolutions
 
@@ -85,14 +127,19 @@ Pinned values for this iteration:
 |---|---|---|
 | **openclaw** | `~/.openclaw/workspace` | (none) |
 | **zeroclaw** | `~/.zeroclaw/workspace` | (none) |
-| **hermes** | `~/.hermes` | `config.yaml`, `.env`, `auth.json`, `state.db`, `sessions/`, `logs/` |
+| **hermes** | `~/.hermes` | `config.yaml`, `.env`, `auth.json`, `state.db`, `state.db-journal`, `state.db-wal`, `state.db-shm`, `sessions/`, `logs/` |
 
-Why hermes excludes `state.db`/`sessions/`/`logs/` in addition to the
-canonical-render trio: those are daemon-runtime state files that the
-hermes process is actively writing — operator overwrite would corrupt
-session history or invalidate the gateway. `cron/` and `memories/` are
-intentionally NOT excluded — cron jobs are operator-defined and
-memories are already operator-editable through the memory CLI.
+Why hermes excludes `state.db`/`state.db-{journal,wal,shm}`/`sessions/`/`logs/`
+in addition to the canonical-render trio: those are daemon-runtime
+state files that the hermes process is actively writing — operator
+overwrite would corrupt session history, SQLite transactions (WAL
+companions, W13 iter-2), or invalidate the gateway. `cron/` and
+`memories/` are intentionally NOT excluded — cron jobs are operator-
+defined and memories are already operator-editable through the memory
+CLI. **W14 iter-2 caveat**: workspace overlay races with daemon writes
+for `memories/` and `cron/`. Recommended workflow is `clawctl agent
+stop` → sync → `clawctl agent start` when overlaying these subtrees.
+Documented in §5 and `docs/operations/sync.md`. No code-level mutex.
 
 Match semantics (W10):
 
@@ -130,30 +177,95 @@ inventory after this issue:
 | `--workspace-only --dry-run` | Allowed. Enumerate + invoke playbook in check mode. |
 | `--workspace-only --diff` | Mutually exclusive — exits 2. |
 
-### 1.4 Phase ordering (W2)
+### 1.4 Phase ordering (W2, W1/W2/W3 iter-2)
 
-Pinned sequence for the default `clawctl agent sync` invocation:
+Pinned sequence for the **default** `clawctl agent sync`:
 
 ```
 1. validate local state
-2. push canonical config (provider, skills, channels, env) ← existing
-3. push workspace overlay                                  ← NEW
+2. push canonical config (provider, skills, channels, env)  ← existing
+3. push workspace overlay (workspace.yaml playbook)         ← NEW
 4. restart unit
 5. verify health
-6. repair gateway bearer (zeroclaw only) + transition state
+6a. repair gateway bearer (zeroclaw only)
+6b. transition state to READY (only if 6a succeeds)
 ```
 
-Failure in phase 3 short-circuits phases 4–6. Repair (phase 6) runs
-only after phases 4 and 5 succeed. I8 + I-pair-A pin this.
-
-For `--workspace-only`:
+Sequence for **`--no-restart`**:
 
 ```
-1. push workspace overlay (workspace.yaml playbook)
-2. repair gateway bearer (zeroclaw pair playbook)
+1. validate local state
+2. push canonical config
+3. push workspace overlay
+6a. repair gateway bearer (zeroclaw only)  ← unconditional (B1 iter-2)
+6b. transition state to READY
 ```
 
-Both via Ansible. Files sync, bearer rotates. Done.
+Sequence for **`--workspace-only`**:
+
+```
+3. push workspace overlay
+6a. repair gateway bearer (zeroclaw only)  ← runs only if 3 succeeded
+```
+
+Pins (B1 iter-2 / W1 iter-2 / W2 iter-2 / W3 iter-2):
+
+- **Phase 6a is unconditional for zeroclaw across all three sync modes.**
+  AGENTS.md #437 admits no idempotent-skip path. Default, `--no-restart`,
+  and `--workspace-only` all run 6a as long as the upstream phases for
+  that mode succeeded. I-pair-A / I-pair-B / I-pair-C cover the three
+  modes; I-pair-D asserts the negative case (no rotation for non-zeroclaw).
+- **Phase 6a is skipped only when the mode's upstream phases failed**:
+  for default, that's phases 2/3/4/5; for `--no-restart`, phases 2/3;
+  for `--workspace-only`, phase 3.
+- **Stale-bearer window on verify failure**: in default mode, if phase
+  4 (restart) succeeds but phase 5 (verify) fails, phase 6a is skipped.
+  The daemon has minted a fresh bearer in-memory; `hosts.json.gateway.auth`
+  still holds the pre-restart value. The operator must re-run sync after
+  fixing the unit to bring hosts.json back in sync. Documented in §5.
+  Repair is NOT moved before verify because calling `/pair/code` against
+  a daemon in `activating` state has its own failure modes (port not
+  bound yet) that are racier than the documented stale window.
+- **Phase 6b runs only on 6a success**: if repair fails, state is NOT
+  transitioned to READY. Subsequent `clawctl agent start` will surface
+  the non-READY state instead of silently claiming healthy on stale auth.
+  I-pair-state pins this.
+
+### 1.4.1 Help text strings (W10 iter-2, S5)
+
+Exact strings to land in `cli/clawctl/agent/sync.py`:
+
+```python
+workspace_only: bool = typer.Option(
+    False, "--workspace-only",
+    help=(
+        "Push workspace overlay only (rotates zeroclaw bearer). "
+        "Skips canonical render, restart, verify. "
+        "Mutually exclusive with --diff."
+    ),
+)
+no_restart: bool = typer.Option(
+    False, "--no-restart",
+    help=(
+        "Canonical render + workspace overlay; skip restart and verify. "
+        "Still rotates zeroclaw bearer."
+    ),
+)
+# --workspace (existing) → hard error path:
+workspace_deprecated: bool = typer.Option(
+    False, "--workspace",
+    help=(
+        "[REMOVED] Use --no-restart for canonical+overlay-no-restart, "
+        "or --workspace-only for overlay-only."
+    ),
+)
+```
+
+`agent_app.command("sync", help=...)` short string:
+
+```
+"Sync local control-plane state and workspace overlay to the agent."
+```
 
 ### 1.5 Architectural choice: Ansible (W6)
 
@@ -321,41 +433,39 @@ Agent test names: `ws-openclaw`, `ws-zeroclaw`, `ws-hermes`.
 
 #### 3.3.1 Provisioning sequence (run per agent type)
 
-```bash
-# 1. Register — must scaffold ~/.config/clawrium/agents/<type>/<name>/workspace/
-clawctl agent create ws-openclaw  --type openclaw  --host wolf-i
-clawctl agent create ws-zeroclaw  --type zeroclaw  --host wolf-i
-clawctl agent create ws-hermes    --type hermes    --host wolf-i
+`clawctl agent create` runs install + initial configure in one step
+— there is no separate `agent install` subcommand. Host-side file
+verification uses `clawctl agent shell <name> -- <cmd>`, which ships
+under issue #761 (plan merged to main) and is expected to be available
+by the time #760 is executed. `clawctl agent exec` forwards to the
+agent's native binary and is not suitable for `cat`/`stat`.
 
-# Assert local workspace scaffold exists
+```bash
+# 1. Create — runs install + initial configure, scaffolds local workspace dir
+clawctl agent create ws-openclaw --type openclaw --host wolf-i \
+  --provider clawrium-gtm-litellm --yes
+clawctl agent create ws-zeroclaw --type zeroclaw --host wolf-i \
+  --provider clawrium-gtm-litellm --yes
+clawctl agent create ws-hermes --type hermes --host wolf-i \
+  --provider clawrium-gtm-litellm --yes
+
+# Assert local workspace scaffold
 test -d ~/.config/clawrium/agents/openclaw/ws-openclaw/workspace
 test -d ~/.config/clawrium/agents/zeroclaw/ws-zeroclaw/workspace
 test -d ~/.config/clawrium/agents/hermes/ws-hermes/workspace
 
-# 2. Attach provider (reuse existing wolf-i records)
-for a in ws-openclaw ws-zeroclaw ws-hermes; do
-  clawctl agent provider attach $a --provider clawrium-gtm-litellm
-done
-
-# 3. Install binaries + systemd units
-clawctl agent install ws-openclaw
-clawctl agent install ws-zeroclaw
-clawctl agent install ws-hermes
-
-# 4. Configure — runs canonical render, first restart, AND first
-#    workspace push (which is a no-op on empty scaffold)
-clawctl agent configure ws-openclaw
-clawctl agent configure ws-zeroclaw
-clawctl agent configure ws-hermes
-
-# 5. Baseline sanity
+# 2. Baseline sanity — every agent must be healthy before workspace tests
 clawctl agent doctor ws-openclaw
 clawctl agent doctor ws-zeroclaw
 clawctl agent doctor ws-hermes
 ```
 
-Any failure here blocks the workspace E2E — file as separate provisioning
-bug, not as part of #760.
+If `agent create` doesn't run install+configure for a given type
+(some types may still require an explicit `clawctl agent configure
+<name>` follow-up to attach channels/providers in stages), run
+`clawctl agent configure <name>` before the doctor check. Any
+provisioning failure here blocks the workspace E2E and gets filed
+as a separate bug, not as part of #760.
 
 #### 3.3.2 Workspace overlay verification (per agent)
 
@@ -479,9 +589,9 @@ zeroclaw). For zeroclaw, repeat once more for redundancy.
 #### 3.3.4 Cleanup
 
 ```bash
-clawctl agent remove ws-openclaw --yes
-clawctl agent remove ws-zeroclaw --yes
-clawctl agent remove ws-hermes   --yes
+clawctl agent delete ws-openclaw --yes
+clawctl agent delete ws-zeroclaw --yes
+clawctl agent delete ws-hermes   --yes
 ```
 
 The existing `wolf-i` openclaw agent stays as-is (separate
