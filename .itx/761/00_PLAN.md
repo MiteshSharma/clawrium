@@ -163,6 +163,7 @@ src/clawrium/platform/shell/__init__.py      # marker
 src/clawrium/platform/shell/shell.yaml       # single playbook (not per-agent-type)
 tests/cli/clawctl/agent/test_shell.py        # CLI-layer tests
 tests/core/test_agent_shell.py               # core-layer tests
+tests/platform/test_shell_playbook.py        # YAML-parse invariants on shell.yaml
 ```
 
 ### Files to modify
@@ -195,10 +196,15 @@ def run_agent_shell(
 Behavior:
 
 1. Validate `agent_name` against `^[a-z][a-z0-9_-]{0,31}$`
-   (defense-in-depth before extravars interpolation).
+   (defense-in-depth before extravars interpolation — the CLI also
+   validates the same regex to fail fast, but core re-validates so
+   non-CLI callers cannot bypass).
 2. Validate `cmd_argv` is a non-empty list.
-3. Resolve `effective_timeout`:
-   `1800 if timeout in (0, None) else min(int(timeout), 1800)`.
+3. Resolve `effective_timeout` (all clamping lives in CORE, not CLI;
+   CLI passes the raw user value through unmodified):
+   - `None`, `0`, negative → `1800` (no client-side timeout, hard cap)
+   - positive → `min(int(timeout), 1800)`
+   - matrix asserted in test K16
 4. `joined = shlex.join(cmd_argv)` — safe shell-quoted single string.
 5. `host = get_host(hostname)`; resolve SSH key via
    `core_keys.get_host_private_key(host["key_id"] or hostname)`.
@@ -289,46 +295,129 @@ Mirrors `exec.py`'s shape with its own context-settings + handler:
 
 - `SHELL_CONTEXT_SETTINGS = {"ignore_unknown_options": True, "allow_extra_args": True}`
 - `--timeout INT` is a Typer option (default 120). Parsed before `--`.
-- Empty `ctx.args` → friendly error (exit 2) suggesting the usage line.
-- Resolves the agent via `safe_resolve_agent(name)` — only to get
-  hostname + agent unix name. **Does not consult `SUPPORTED_CLAW_TYPES`**;
-  any agent record is shellable since we're not delegating to a
-  type-specific binary.
-- Calls `run_agent_shell(...)`, writes stdout/stderr (each sanitized
-  with `sanitize_passthrough`), exits with rc.
+  A Typer **callback** rejects negative values with exit 2 + message
+  `"--timeout must be >= 0 (use 0 for 'no client timeout')"` — fail
+  fast before any agent resolution or SSH work (test C6).
+- Empty `ctx.args` → friendly error (exit 2) suggesting the usage line
+  (test C1); `run_agent_shell` is NOT called.
+- Validate `name` against `_AGENT_NAME_RE` at the CLI seam before
+  agent resolution (test C13) — fail fast even though core re-validates.
+  Duplicate-by-design: belt-and-braces against a tampered hosts.json
+  alias or a non-CLI caller bypass.
+- Resolves the agent via `safe_resolve_agent(name)`. If it returns
+  `None` → exit nonzero + `"agent '<name>' not found"` on stderr;
+  `run_agent_shell` NOT called (test C12). **Does not consult
+  `SUPPORTED_CLAW_TYPES`** — any agent record is shellable since
+  we're not delegating to a type-specific binary.
+- Calls `run_agent_shell(hostname=..., agent_name=..., cmd_argv=...,
+  timeout=<raw user value>)` — CLI does NOT clamp; clamping is a
+  core invariant (tests C4, C5, K16).
+- Writes stdout/stderr each sanitized with `sanitize_passthrough`;
+  exits with the returned rc.
 
 ### Tests
 
-**`tests/cli/clawctl/agent/test_shell.py`** (Typer `CliRunner`):
+Test bullets are stated as **exact-args assertions**, not weak
+`.assert_called()` shapes. The ATX iter-1 review correctly flagged that
+"wiring works" prose can pass even when the timeout is silently
+zeroed — so every CLI bullet below names the exact kwargs the mock
+must see.
 
-- no-args error (exit 2)
-- `--` passthrough wiring
-- `--timeout` parsed and forwarded to `run_agent_shell`
-- `--timeout 0` resolves to 1800 in the call
-- `--timeout 9999` clamps to 1800 in the call
-- stdout/stderr passthrough wiring (uses `sanitize_passthrough`)
-- exit-code propagation (including 124 timeout, 127 not-found)
-- `--help` shows clawctl help (forwarding `--help` requires it inside
-  the quoted cmd)
+#### Host-record fixture (used by both CLI and core tests)
 
-**`tests/core/test_agent_shell.py`** (mock `ansible_runner.run`):
+Minimum required keys (anything less raises `TypeError` /
+`KeyError` at runtime — exhaustively listed here so test files can
+copy this dict verbatim):
 
-- event parsing for `SHELL_STDOUT` / `SHELL_STDERR` / `SHELL_RC` only
-  — assert `EXEC_*` events are NOT consumed
-- base64 decode failures → empty stdout/stderr, rc preserved
-- missing rc → rc=255 fallback
-- runner timeout status → friendly message + rc 124
-- unreachable host
-- missing SSH key
-- missing host record
-- `_AGENT_NAME_RE` rejection
-- artifact cleanup on success AND failure
-- `shlex.join` correctness for argv with spaces, single + double quotes,
-  `$VAR`, backticks, `&&`/`|`
-- timeout clamp: `0 → 1800`, `9999 → 1800`, `60 → 60`
+```python
+HOST_FIXTURE = {
+    "hostname": "wolf-i",       # required by inventory build
+    "user": "xclm",             # ansible_user
+    "port": 22,                 # ansible_port
+    "key_id": "wolf-i",         # passed to core_keys.get_host_private_key
+    "alias": "wolf-i",          # used in log_dir name (must pass _LOG_DIR_SAFE_RE)
+}
+```
 
-No shared fixtures with `test_agent_exec.py` — keep flows independent
-end-to-end.
+Tests must NOT share fixtures with `test_agent_exec.py` — each flow
+declares its own to keep the duplication intentional.
+
+#### `tests/cli/clawctl/agent/test_shell.py` (Typer `CliRunner`)
+
+| # | Case | Exact assertion |
+|---|------|-----------------|
+| C1 | no-args error | `result.exit_code == 2` AND `"no command provided" in result.stderr` AND `run_agent_shell` NOT called |
+| C2 | basic passthrough | `run_agent_shell.assert_called_once_with(hostname="wolf-i", agent_name="wolf-i", cmd_argv=["ls","-la"], timeout=120)` |
+| C3 | `--timeout 600 -- make test` | mock called with `timeout=600` (exact kwarg, not "any int") |
+| C4 | `--timeout 0` | mock called with `timeout=0` — clamp lives in core, NOT CLI; CLI passes the raw user value through unmodified |
+| C5 | `--timeout 9999` | mock called with `timeout=9999` — same reason as C4 |
+| C6 | `--timeout -1` | `result.exit_code == 2` AND `"--timeout must be >= 0" in result.stderr` AND `run_agent_shell` NOT called (Typer callback rejects before core) |
+| C7 | stdout passthrough | mock returns `("hello\n","",0)` → `result.stdout == "hello\n"` AND `sanitize_passthrough` called once with `"hello\n"` (assert via `patch("clawrium.cli.clawctl.agent.shell.sanitize_passthrough")`) |
+| C8 | stderr passthrough | mock returns `("","oops\n",1)` → `result.stderr == "oops\n"` AND `result.exit_code == 1` |
+| C9 | exit-code propagation: success | mock returns `("","",0)` → `result.exit_code == 0` |
+| C10 | exit-code propagation: 124 timeout | mock returns `("","remote command timed out after 5s\n",124)` → `result.exit_code == 124` AND `"timed out after 5s" in result.stderr` (locks the documented UX wording from §1) |
+| C11 | exit-code propagation: 127 not-found | mock returns `("","/bin/bash: line 1: foo: command not found\n",127)` → `result.exit_code == 127` |
+| C12 | agent not found | `safe_resolve_agent` returns `None` → `result.exit_code != 0` AND `"agent 'foo' not found" in result.stderr` AND `run_agent_shell` NOT called (no SSH work attempted) |
+| C13 | CLI-layer agent-name regex rejection | invalid name (`"FOO"`, `"agent name"`, `"../etc"`) → `result.exit_code == 2` AND `run_agent_shell` NOT called (fail-fast at CLI before any inventory/SSH work, even though core also re-validates) |
+| C14 | `--help` shows clawctl help | `result.stdout` contains `"NON-INTERACTIVE ONLY"` from the docstring; does NOT call `run_agent_shell` |
+
+#### `tests/core/test_agent_shell.py` (mock `ansible_runner.run`)
+
+| # | Case | Exact assertion |
+|---|------|-----------------|
+| K1 | event parsing | result with `SHELL_STDOUT=aGk=` / `SHELL_STDERR=` / `SHELL_RC=0` → returns `("hi","",0)`. Also include a stray `EXEC_STDOUT=...` event in the stream and assert it is NOT consumed (return tuple stdout stays empty for that prefix) |
+| K2 | base64 decode failure (stdout) | `SHELL_STDOUT=not-base64!!!` → `stdout == ""`, rc still propagated from `SHELL_RC` |
+| K3 | base64 decode failure (stderr) | symmetric to K2 |
+| K4 | missing rc | events emit STDOUT+STDERR but no `SHELL_RC=` → returns `(stdout, stderr, 255)` |
+| K5 | runner timeout status | mock `result.status == "timeout"` → returns `("", "remote command timed out after Ns", 124)` (assert message text exactly, including the `N` substitution) |
+| K6 | unreachable host | inject `runner_on_unreachable` event → returns `("", err_with_"unreachable", 255)` |
+| K7 | missing host record | `get_host` returns `None` → returns `("", "host 'h' not found", 255)`; `ansible_runner.run` NOT called |
+| K8 | missing SSH key | `core_keys.get_host_private_key` returns `None` → returns `("", err_with_"SSH key", 255)`; `ansible_runner.run` NOT called |
+| K9 | `_AGENT_NAME_RE` rejection | invalid name → `AgentShellError` raised before any I/O |
+| K10 | playbook missing | playbook path does not exist → returns `("", "Playbook not found: ...", 255)`; `ansible_runner.run` NOT called |
+| K11 | artifact cleanup on success | after success, assert `private_data_dir` no longer exists on disk |
+| K12 | artifact cleanup on failure (`finally` branch) | mock `ansible_runner.run` raises `RuntimeError("boom")` → returns `("", "ansible-runner error: boom", 255)` AND `private_data_dir` does NOT exist on disk (cleanup runs in `finally`) |
+| K13 | `private_data_dir` mode | after run, assert `os.stat(saved_path).st_mode & 0o777 == 0o700` (capture path before cleanup via `side_effect` that records the call kwargs) |
+| K14 | runner timeout buffer | for `effective_timeout` of `120`, `60`, `1800` → `ansible_runner.run` was called with `timeout=150`, `90`, `1830` respectively (the documented `+30` buffer is invariant, not magic) |
+| K15 | `shlex.join` correctness | for each of `["echo","a b"]`, `["echo","it's"]`, `['echo','"x"']`, `["echo","$HOME"]`, `["sh","-c","ls | head"]`, `["a","&&","b"]` → assert the `cmd_str` extravar matches `shlex.join(input)` and parses to the same argv under `shlex.split` |
+| K16 | timeout clamp matrix | `(None,0,-1,1,60,1800,1801,9999) → (1800,1800,1800,1,60,1800,1800,1800)` — assert via extravar `shell_timeout` AND via the `ansible_runner.run(timeout=...)` arg (which is `effective+30`) |
+| K17 | TOCTOU on `private_data_dir` create | monkeypatch `Path.mkdir` to raise `FileExistsError` on first call → returns `("", err_with_"workdir", 255)` AND no orphan directory left on disk |
+| K18 | large stdout round-trip (64KB) | base64-encode 64KB of `os.urandom`-style bytes, assert byte-exact decode back |
+| K19 | non-UTF-8 in stdout (documented lossy boundary) | Ansible decodes `stdout` upstream as utf-8 with `errors='replace'`, so non-UTF-8 bytes become U+FFFD by the time we b64-encode them. This test asserts the **documented behavior**: input `b'\xff\xfe hi'` arrives as the replacement-char string, not byte-exact. The plan acknowledges this as a known boundary, not a regression. |
+
+#### `tests/platform/test_shell_playbook.py` (YAML-parse, no runner)
+
+Loads `src/clawrium/platform/shell/shell.yaml` with `yaml.safe_load`
+and asserts security invariants directly on the parsed structure —
+this catches regressions where a future edit silently drops `no_log`
+or changes the kill-path. No ansible-runner invocation; pure static
+inspection.
+
+| # | Case | Exact assertion |
+|---|------|-----------------|
+| P1 | `no_log: true` on the command task | the task whose name starts with `"Run command"` has `no_log` exactly `True` |
+| P2 | `become_user: "{{ agent_name }}"` on the command task | same task has `become: true` AND `become_user == "{{ agent_name }}"` |
+| P3 | `/usr/bin/timeout` is argv[0] | `task["ansible.builtin.command"]["argv"][0] == "/usr/bin/timeout"` (regressions that swap to `shell:` or drop the wrapper fail here) |
+| P4 | `bash -lc` is the inner shell | argv contains `["/bin/bash","-lc"]` in order |
+| P5 | `agent_name` regex validation task is present | a task with `ansible.builtin.fail` and `when` referencing `agent_name is not match(...)` exists |
+| P6 | `failed_when: false` AND `changed_when: false` | command task does not let nonzero rc bubble up to Ansible (we propagate rc ourselves via `SHELL_RC`) |
+
+### Known boundaries (documented, not bugs)
+
+- **Non-UTF-8 stdout/stderr from the remote command is lossy.**
+  Ansible's `command` module decodes child output as UTF-8 with
+  `errors='replace'` before handing it to us, so any non-UTF-8 byte
+  sequences arrive as U+FFFD replacement chars by the time the
+  playbook b64-encodes them. Test K19 asserts this documented
+  behavior so a future Ansible upgrade that changes the contract
+  surfaces immediately as a test failure, not a silent corruption.
+  Operators needing byte-exact binary output should redirect to a
+  file remotely and `scp` it down — out of scope for `shell` v1.
+- **`/usr/bin/timeout` must exist on the host.** Linux distros we
+  ship to all include coreutils; if a host doesn't, the playbook
+  fails loudly. macOS subissue revisits.
+- **No streaming.** Output arrives at task completion. `make test`
+  may feel unresponsive; documented in `--help`.
 
 ### Security recap
 
@@ -424,3 +513,46 @@ update plan write it in a plan file. commit and send a pr
 **Output**: `.itx/761/00_PLAN.md` — high-level implementation plan
 for `clawctl agent shell` v1 (Linux-only login-bash command runner
 via ansible-runner over SSH).
+
+### Planning — ATX iter 2 (test-plan sharpening)
+
+**Stage**: planning
+**Skill**: Stop-hook ATX review on plan file
+**Timestamp**: 2026-06-20T00:00:00Z
+**Model**: claude-opus-4-7
+
+Iter 1 rated 3/5 with 4 warnings + 5 suggestions (no blockers).
+Iter 2 addresses all of them in the plan itself (no code yet):
+
+| # | Type | Issue | Resolution |
+|---|------|-------|------------|
+| W1 | Warning | No regression test for `no_log: true` on the shell command task | New test file `tests/platform/test_shell_playbook.py` (cases P1–P6) asserts `no_log: true`, `become_user`, `/usr/bin/timeout` argv[0], `bash -lc`, agent_name regex task, `failed_when/changed_when: false` via YAML parse |
+| W2 | Warning | No test for `private_data_dir` mode 0o700 or the `+30` runner timeout buffer | New core cases K13 (mode 0o700 via `os.stat`) and K14 (assert `ansible_runner.run(timeout=effective+30)` for `120/60/1800 → 150/90/1830`) |
+| W3 | Warning | CLI test bullets too vague — `.assert_called()` would pass under silent zeroing | Whole CLI table restated as **exact-args assertions** (`run_agent_shell.assert_called_once_with(..., timeout=600)` etc.); 14 cases C1–C14 |
+| W4 | Warning | CLI test list omits "agent not found" and CLI-layer regex rejection | C12 (`safe_resolve_agent` returns None → friendly error, `run_agent_shell` NOT called) and C13 (CLI-layer `_AGENT_NAME_RE` rejection) added; CLI sketch updated to spell out the fail-fast checks |
+| S1 | Suggestion | No race/TOCTOU test for `private_data_dir` create + cleanup-on-raise | K12 (`finally`-branch cleanup when `ansible_runner.run` raises) and K17 (`Path.mkdir` raises `FileExistsError` → clean failure, no orphan) added |
+| S2 | Suggestion | No large-stdout or non-UTF-8 test | K18 (64KB byte-exact round-trip) and K19 added; the lossy U+FFFD boundary for non-UTF-8 explicitly documented under new "Known boundaries" section |
+| S3 | Suggestion | Timeout clamp test missing `None`, `-1`, `1800` boundary | Clamp matrix K16 now covers `(None,0,-1,1,60,1800,1801,9999) → (1800,1800,1800,1,60,1800,1800,1800)`; clamp behavior spec in core sketch updated; CLI rejects negative with exit 2 (C6) before even reaching core |
+| S4 | Suggestion | Plan didn't enumerate the minimum host-record fixture shape | "Host-record fixture" subsection added with the exact dict (hostname/user/port/key_id/alias) for verbatim copy into test files |
+| S5 | Suggestion | No assertion on the 124-timeout friendly message text | C10 now asserts `"timed out after 5s" in result.stderr` AND `exit_code == 124`; K5 asserts the exact message string with the `N` substitution |
+
+Additional plan tightening prompted by the review:
+
+- Clamp location explicitly pinned to **core, not CLI** (was
+  ambiguous in iter 1). C4/C5 and K16 are now consistent.
+- "Known boundaries" section added so non-UTF-8 and missing-`timeout`
+  cases are documented design choices, not future bugs.
+- CLI sketch grew explicit bullets for negative-timeout callback,
+  agent-name fail-fast, and "no clamping at CLI" — each linked to
+  its test case ID for traceability.
+
+```prompt
+Stop hook feedback: ATX Review — .itx/761/00_PLAN.md
+Test-Coverage Rating: 3/5
+No blocking issues. 4 warnings and 5 suggestions.
+[full review pasted in PR thread]
+```
+
+**Output**: in-place revision of `.itx/761/00_PLAN.md` — 14 CLI
+cases, 19 core cases, 6 YAML-parse cases, explicit host fixture,
+"known boundaries" section.
