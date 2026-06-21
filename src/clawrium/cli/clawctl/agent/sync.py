@@ -481,6 +481,53 @@ def sync(
                     "on other machines will need to reconnect.[/yellow]"
                 )
             return
+        if stage == "gateway_auth_stale":
+            # Issue #760 Phase 2 (#768) W11 iter-3 stale-bearer banner.
+            # `lifecycle_canonical.sync_agent_canonical` emits this
+            # event right before raising when a successful restart was
+            # followed by a failed re-pair: the daemon will enforce a
+            # bearer the on-disk `hosts.json.gateway.auth` no longer
+            # matches. The error itself surfaces via the
+            # CanonicalSyncError path; this banner gives the operator a
+            # head-start on the diagnosis before that error lands.
+            import json as _json
+            import sys as _sys
+
+            from rich.console import Console
+            from rich.markup import escape as rich_escape
+
+            stderr_console = Console(stderr=True)
+
+            agent_label = None
+            detail_text = ""
+            try:
+                payload = _json.loads(message)
+                if isinstance(payload, dict):
+                    raw_key = payload.get("agent_key")
+                    if isinstance(raw_key, str) and raw_key:
+                        agent_label = raw_key
+                    raw_detail = payload.get("detail")
+                    if isinstance(raw_detail, str):
+                        detail_text = raw_detail
+            except (_json.JSONDecodeError, TypeError):
+                pass
+            label = (
+                rich_escape(agent_label) if agent_label else "zeroclaw agent"
+            )
+            stderr_console.print(
+                f"  [yellow]⚠ Gateway bearer for {label} is now stale on "
+                f"disk: the daemon is running but `hosts.json.gateway.auth` "
+                f"may not match the bearer it will enforce. Re-run "
+                f"`clawctl agent sync` or `clawctl agent restart` to "
+                f"recover.[/yellow]"
+            )
+            if detail_text:
+                stderr_console.print(
+                    f"    [dim]repair detail: {rich_escape(detail_text)}"
+                    f"[/dim]"
+                )
+            _sys.stderr.flush()
+            return
         stream_action(resource=resource, message=f"{stage}: {message}")
 
     try:
