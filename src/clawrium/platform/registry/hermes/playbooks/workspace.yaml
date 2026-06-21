@@ -67,6 +67,14 @@
         quiet: true
 
     - name: Assert staging_dir is a non-empty absolute path under the clawrium staging tree
+      # ATX iter-2 S_NEW_4: after S6 switched the copy task to read
+      # `item.src` (the absolute staged path computed Python-side),
+      # `staging_dir` is no longer consumed by the copy task. This
+      # assert remains the structural anchor: the per-file `item.src`
+      # assert below pins each entry's source to live under
+      # `staging_dir + '/'`. Dropping this assert without also
+      # dropping the per-file pin would weaken the defense-in-depth
+      # posture — keep both or remove both, do not split them.
       ansible.builtin.assert:
         that:
           - staging_dir is string
@@ -120,6 +128,32 @@
           - "'..' not in (item.rel.split('/'))"
         fail_msg: >-
           workspace file entry has unsafe rel: '{{ item.rel | default('<unset>') }}'
+        quiet: true
+      loop: "{{ workspace_files }}"
+      loop_control:
+        label: "{{ item.rel | default('<unset>') }}"
+
+    - name: Assert each workspace file entry's src lives under staging_dir
+      # ATX iter-2 S_NEW_1 fix: after S6 switched the copy task to read
+      # `item.src` (the absolute staged path computed Python-side), the
+      # implicit containment binding that `{{ staging_dir }}/{{ item.rel }}`
+      # carried was lost. Without this per-file assert, a future
+      # regression in `_stage_files` — or any caller injecting
+      # `workspace_files` extravars — could set `item.src` to an
+      # arbitrary absolute path (e.g. `/home/<ssh_user>/.ssh/id_rsa`)
+      # and Ansible would copy it without complaint. This re-anchors
+      # the playbook-side guarantee that the staged source lives under
+      # the asserted `staging_dir`, regardless of how Python computes
+      # `entry.src` in the future.
+      ansible.builtin.assert:
+        that:
+          - item.src is string
+          - item.src | length > 0
+          - item.src.startswith(staging_dir ~ '/')
+          - "'..' not in (item.src.split('/'))"
+        fail_msg: >-
+          workspace file entry has unsafe src: '{{ item.src | default('<unset>') }}'
+          (must start with '{{ staging_dir }}/')
         quiet: true
       loop: "{{ workspace_files }}"
       loop_control:

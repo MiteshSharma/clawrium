@@ -243,26 +243,32 @@ def test_e3_hostile_symlink_with_excluded_name_pins_ordering(
 def test_toctou_late_arrival_absent_from_staging_and_playbook_extravars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Hook-review S — test-coverage TOCTOU; ATX iter-1 W2 fix.
+    """Hook-review S — test-coverage TOCTOU; ATX iter-1 W2 + iter-2
+    W_NEW_2 + S_NEW_3 fix.
 
-    The architectural invariant under test: the playbook reads from
-    the staging tempdir, NEVER the operator's original workspace path.
-    So a file matching an exclude pattern injected AFTER enumeration
-    but BEFORE the push completes is bounded by the staging-dir
-    lifetime and never reaches the host.
+    Pins the Python-side TOCTOU invariant: files injected into the
+    operator workspace AFTER `enumerate_workspace_files` returned but
+    BEFORE `_stage_files` completes MUST NOT reach the staging
+    tempdir or the `workspace_files` extravar payload. A regression
+    that streamed-walked the operator workspace at staging time
+    (instead of iterating the pre-computed `entries` list) would
+    notice the late arrival and copy it; this test catches that.
 
-    Drive `push_workspace_phase` end-to-end with a stubbed
-    `ansible_runner.run`. At runner-invocation time:
-      1. Inject `state.db` into the operator workspace AFTER
-         enumeration returned (simulating the late arrival).
-      2. Capture the `workspace_files` extravar payload that the
-         runner sees.
-      3. Capture a snapshot of the staging dir contents.
+    Note on scope: the playbook-side guarantee (the `ansible.builtin.copy`
+    task reads from `item.src`/staging, not from any operator-controlled
+    path) is encoded by the S6 + S_NEW_1 changes in `workspace.yaml`
+    and is asserted by `test_hermes_workspace_playbook_filters_excludes_per_file`
+    and the per-file `item.src` assert task. This test stubs
+    `ansible_runner.run`, so the playbook does not execute here; that
+    layer's invariant lives in the YAML, not in this test.
 
-    A regression that streamed-walked the operator's workspace at
-    copy time (instead of the staging dir) would either let the late
-    arrival into the staging tempdir or pass it through extravars —
-    both assertions below would fail.
+    Strategy: monkeypatch `_stage_files` with a wrapper that drops
+    `state.db` into the operator workspace **before** delegating to
+    the real implementation. The real `_stage_files` iterates
+    `entries` from the prior enumeration; a regression that
+    re-walked the workspace at stage time would notice the new file
+    and copy it. We assert it does NOT show up in either the staging
+    contents or the extravar payload the (stubbed) runner sees.
     """
     from clawrium.core import config as config_module
     from clawrium.core import workspace_sync as ws_module
@@ -289,6 +295,21 @@ def test_toctou_late_arrival_absent_from_staging_and_playbook_extravars(
     )
     (tmp_path / "fake-key").write_text("fake key data")
 
+    # Inject the hostile file BETWEEN enumeration and staging — the
+    # real TOCTOU window. The wrapper drops `state.db` then delegates
+    # to the original `_stage_files` (which receives the entries list
+    # produced by the earlier enumeration, NOT a fresh walk).
+    real_stage_files = ws_module._stage_files
+    injected_paths: list[Path] = []
+
+    def _stage_files_with_race(entries, staging_dir):
+        race_target = workspace / "state.db"
+        race_target.write_text("hostile mid-stage SQLite")
+        injected_paths.append(race_target)
+        return real_stage_files(entries, staging_dir)
+
+    monkeypatch.setattr(ws_module, "_stage_files", _stage_files_with_race)
+
     captured = {"extravars": None, "staging_contents": None}
 
     class _StubRunResult:
@@ -296,10 +317,6 @@ def test_toctou_late_arrival_absent_from_staging_and_playbook_extravars(
         rc = 0
 
     def _stub_run(*_args, **kwargs):
-        # The late arrival happens NOW — between Python staging and
-        # the (stubbed) Ansible run.
-        (workspace / "state.db").write_text("hostile late-arriving SQLite")
-
         extravars = kwargs["extravars"]
         captured["extravars"] = extravars
         staging_dir = Path(extravars["staging_dir"])
@@ -327,16 +344,20 @@ def test_toctou_late_arrival_absent_from_staging_and_playbook_extravars(
     # The push itself succeeded (stubbed runner returns OK).
     assert result.success is True
 
-    # Late arrival was injected:
-    assert (workspace / "state.db").exists(), (
-        "test setup error — state.db should have been injected by the runner stub"
+    # The wrapper fired at the real TOCTOU window:
+    assert injected_paths and injected_paths[0].exists(), (
+        "test setup error — the _stage_files wrapper never ran, "
+        "so the TOCTOU window was not actually exercised"
     )
 
     # The staging dir snapshot captured at runner-invocation time:
-    # `state.db` MUST NOT be present. Only `good.md` should be.
+    # `state.db` MUST NOT be present. The injection happened AFTER
+    # enumeration, so the `entries` list `_stage_files` walks does
+    # not include it. Only `good.md` should be in the staging dir.
     assert captured["staging_contents"] == ["good.md"], (
-        f"staging dir leak: {captured['staging_contents']!r} contains "
-        f"a late-arriving file — the staging step is NOT TOCTOU-safe"
+        f"staging dir leak at the enumerate→stage TOCTOU window: "
+        f"{captured['staging_contents']!r} contains a late-arriving "
+        f"file — a regression has streamed-walked the operator workspace"
     )
 
     # The extravar payload the playbook would have used: same property.
@@ -344,8 +365,9 @@ def test_toctou_late_arrival_absent_from_staging_and_playbook_extravars(
         f["rel"] for f in captured["extravars"]["workspace_files"]
     )
     assert workspace_files_rels == ["good.md"], (
-        f"extravar leak: workspace_files contains a late-arriving rel "
-        f"{workspace_files_rels!r} — the playbook would have copied it"
+        f"extravar leak at the enumerate→stage TOCTOU window: "
+        f"workspace_files contains a late-arriving rel "
+        f"{workspace_files_rels!r}"
     )
 
     # And the result-level pin: `state.db` is not in files_pushed

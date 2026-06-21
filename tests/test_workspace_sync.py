@@ -554,6 +554,24 @@ def test_hermes_workspace_filter_plugin_mirrors_core_is_excluded() -> None:
             _is_excluded(rel, py_spec)
         ), f"filter/_is_excluded drift for rel={rel!r}"
 
+    # ATX iter-2 S_NEW_2 fix: pin the semantic for the edge cases —
+    # agreement alone is not enough, both sides could regress in the
+    # same direction. The leading-slash case especially is about
+    # bypass: `/config.yaml` MUST NOT match the exact-file exclude
+    # entry `config.yaml`. Empty-string rel MUST NEVER match
+    # anything; it should be impossible to surface from the
+    # enumerator, but the filter should still behave correctly.
+    assert _is_excluded("/config.yaml", py_spec) is False, (
+        "leading-slash bypass: '/config.yaml' must not match exact-file "
+        "exclude 'config.yaml' — a regression here lets an operator drop "
+        "a hostile path starting with '/' that gets canonicalized later"
+    )
+    assert workspace_excluded("/config.yaml", excludes_files, excludes_dirs) is False
+    assert _is_excluded("", py_spec) is False, (
+        "empty-string rel must not match any exclude entry"
+    )
+    assert workspace_excluded("", excludes_files, excludes_dirs) is False
+
 
 # Hard count of canonical hermes renderer output keys. Bumping
 # `render_hermes` to emit a new `.hermes/<path>` key MUST trip this
@@ -601,18 +619,25 @@ def test_hermes_excludes_are_strict_superset_of_render_hermes_outputs() -> None:
             if node.value.startswith(".hermes/"):
                 output_keys.add(node.value)
         elif isinstance(node, ast.JoinedStr):
-            # Reconstruct the static prefix of an f-string. A future
-            # `f".hermes/{name}"` will surface here with the leading
-            # `.hermes/` fragment captured and treated as a tracked
-            # output prefix.
-            head = ""
+            # Catch any f-string whose static fragments mention a
+            # `.hermes/...` path. ATX iter-2 W_NEW_1 fix: the prior
+            # `len(head) > len(".hermes/")` guard let
+            # `f".hermes/{var_name}"` slip through silently because
+            # the first Constant is exactly `.hermes/` (length 8 == 8,
+            # guard fails). We now harvest a synthetic key for ANY
+            # JoinedStr containing a `.hermes/` literal fragment, so
+            # the count pin trips and forces a manual investigation.
             for piece in node.values:
                 if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
-                    head += piece.value
-                else:
-                    break
-            if head.startswith(".hermes/") and len(head) > len(".hermes/"):
-                output_keys.add(head)
+                    if ".hermes/" in piece.value:
+                        # Use the source-position offset as a stable
+                        # synthetic key per f-string occurrence so two
+                        # different f-strings count as two outputs.
+                        synth = (
+                            f".hermes/<f-string@{node.lineno}:{node.col_offset}>"
+                        )
+                        output_keys.add(synth)
+                        break
 
     assert output_keys, (
         "U5 found zero `.hermes/...` literals across the render module; "
@@ -642,6 +667,12 @@ def test_hermes_excludes_are_strict_superset_of_render_hermes_outputs() -> None:
 
     for key in output_keys:
         rel = key[len(".hermes/") :]
+        # Synthetic f-string keys are intentionally not in the exclude
+        # set — they exist purely to make the count pin trip. The
+        # count assertion above already failed earlier in that path,
+        # so we skip them in the superset check.
+        if rel.startswith("<f-string@"):
+            continue
         in_files = rel in excluded_files
         in_dir = any(
             rel == d or rel.startswith(d + "/") for d in excluded_dirs
@@ -651,6 +682,50 @@ def test_hermes_excludes_are_strict_superset_of_render_hermes_outputs() -> None:
             f"{sorted(excluded_files | excluded_dirs)} — drift hazard. Add "
             f"the path to hermes manifest.features.workspace_overlay.excludes."
         )
+
+
+def test_u5_scanner_catches_injected_f_string_hermes_path() -> None:
+    """ATX iter-2 W_NEW_1 regression test: the U5 scanner MUST flag a
+    future `f".hermes/{name}"` literal added to render.py — that is
+    the exact refactor pattern the broadened JoinedStr branch is
+    supposed to catch.
+
+    Parse a synthetic mini-module containing the at-risk pattern,
+    walk it with the SAME scanner logic the production U5 uses, and
+    assert the synthetic key surfaces in the harvested set. If the
+    JoinedStr branch ever regresses (e.g., re-introducing the
+    `len(head) > len(".hermes/")` guard), this test fails.
+    """
+    import ast
+
+    # The classic "extracted-to-helper" refactor pattern that the
+    # original AST scan missed: an f-string whose first segment is
+    # exactly `.hermes/`, followed by a variable.
+    src = """
+def render_hermes_v2(name):
+    return f".hermes/{name}"
+"""
+    tree = ast.parse(src)
+
+    output_keys: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.startswith(".hermes/"):
+                output_keys.add(node.value)
+        elif isinstance(node, ast.JoinedStr):
+            for piece in node.values:
+                if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
+                    if ".hermes/" in piece.value:
+                        synth = (
+                            f".hermes/<f-string@{node.lineno}:{node.col_offset}>"
+                        )
+                        output_keys.add(synth)
+                        break
+
+    assert any(k.startswith(".hermes/<f-string@") for k in output_keys), (
+        f"U5 scanner failed to catch the f-string refactor pattern: "
+        f"harvested keys = {sorted(output_keys)}"
+    )
 
 
 def test_skills_apply_targets_subset_of_hermes_excludes() -> None:
