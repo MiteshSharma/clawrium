@@ -14,6 +14,22 @@ cut. The `itx:release` skill archives this section into a new
 
 ### BREAKING
 
+- **`clawctl audit show`, `clawctl audit tail`, and `clawctl audit
+  stats` now require explicit scope** (#780). Each of these read
+  verbs exits 2 unless invoked with either `--agent <name>` (filter
+  to one agent's entries) or `--all` (the unscoped global view that
+  also surfaces legacy rows written before the `agent_name` schema
+  field existed). The two flags are mutually exclusive. There is no
+  automated migration — operators and any scripts, cron jobs, or
+  skills that ran these commands unscoped MUST update to pass
+  `--all` for the previous behavior, or `--agent <name>` to scope
+  to a single agent. The new `clawctl agent audit <name>` command
+  is the recommended per-agent read surface and is equivalent to
+  `clawctl audit show --agent <name>`. The `--actor`, `--result`,
+  `--session-id`, `--grep`, `--last`, `--date`, and `--json` flags
+  on `show` retain their old semantics and compose with the new
+  scope flag.
+
 - **`clawctl agent sync --workspace` is removed.** Use `--no-restart`
   for canonical render + workspace overlay without a unit restart, or
   `--workspace-only` to push the operator overlay alone. There is no
@@ -57,6 +73,32 @@ cut. The `itx:release` skill archives this section into a new
   automated migration — the upgrade must be initiated explicitly.
 
 ### Added
+
+- **`clawctl agent audit <name>` — agent-scoped audit trail** (#780).
+  A new read-only command that filters `clawctl audit` output to one
+  agent's entries via a positional `<name>`. Composable with
+  `--actor`, `--result`, `--session-id`, `--grep`, `--last`,
+  `--date`, and `--json`. Legacy rows (no `agent_name` field)
+  intentionally do not surface — only the unscoped global view
+  (`clawctl audit show --all`) shows them. Unlike every other
+  `clawctl agent <verb> <name>` surface, this command does NOT
+  reject `<name>` values that are missing from `hosts.json` — the
+  audit trail outlives the agent, so inspecting a deleted agent's
+  history is a first-class use case. When the result is empty AND
+  the name is not currently registered, a one-line stderr notice
+  (`Note: '<name>' is not a registered agent…`) flags likely typos;
+  exit code stays 0.
+
+- **`agent_name` field on the audit-trail schema** (#780).
+  `clawctl audit log` accepts `--agent <name>` to populate the new
+  field; downstream `clawctl audit show / tail / stats` accept
+  `--agent <name>` to filter and `--all` to bypass scoping. The
+  schema version stays at `"1"` because the change is additive and
+  reads are tolerant — pre-#780 rows render as "unscoped" and only
+  appear under `--all`. `audit stats` adds a `By agent:` breakdown.
+  Formatter output gains a fixed-width agent column so scoped and
+  unscoped rows align in mixed listings; agent names are
+  bidi-sanitized before terminal emission.
 
 - **Workspace overlay sync (openclaw + zeroclaw + hermes, Ubuntu).**
   Files dropped under `~/.config/clawrium/agents/<type>/<name>/workspace/`
@@ -145,6 +187,19 @@ cut. The `itx:release` skill archives this section into a new
   silently fallen through to a system-PATH binary on Darwin.
 
 ### Fixed
+
+- **`clawctl audit show --grep <pattern>` no longer raises a Python
+  traceback** when the pattern is not a valid regex (#780). A
+  malformed pattern (e.g. `--grep '['`) now exits 2 with
+  `Error: invalid --grep regex: <details>` and a hint, matching the
+  rest of the audit error surface.
+
+- **`clawctl audit show --date <value>` validates the value as
+  `^[0-9]{8}$`** (#780). A typo like `--date 2026-06-21` previously
+  produced a silently empty result by interpolating a non-existent
+  log filename; it now exits 2 with `Error: --date must be 8 digits
+  (YYYYMMDD); got '2026-06-21'` and an example hint. The same
+  validation applies to `clawctl agent audit <name> --date <value>`.
 
 - openclaw renderer no longer emits `{"allow": true}` for entries in
   `channels.discord.guilds.<id>.channels.<id>`. openclaw 2026.5.28+

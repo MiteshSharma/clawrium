@@ -14,6 +14,7 @@ from __future__ import annotations
 import typer
 
 from clawrium.cli.clawctl.agent import (
+    audit as _audit,
     chat as _chat,
     channel as _channel,
     configure as _configure,
@@ -103,3 +104,7 @@ agent_app.add_typer(_skill.skill_app, name="skill")
 agent_app.add_typer(_secret.secret_app, name="secret")
 agent_app.add_typer(_memory.memory_app, name="memory")
 agent_app.add_typer(_registry.registry_app, name="registry")
+agent_app.command(
+    name="audit",
+    help="Show audit trail entries scoped to one agent.",
+)(_audit.audit)
