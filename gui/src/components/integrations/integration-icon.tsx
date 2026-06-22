@@ -23,10 +23,14 @@ export function IntegrationIcon({
 }: IntegrationIconProps) {
   const src = ICON_PATHS[type];
 
+  // The icon is decorative: every call site renders the integration's
+  // type label next to it (see integration-card.tsx). Mark both branches
+  // as `aria-hidden` so screen readers do not read the type twice.
   if (!src) {
     return (
       <div
-        aria-label={`${type} icon`}
+        role="img"
+        aria-hidden="true"
         className={`flex items-center justify-center rounded-md bg-slate-100 text-slate-600 text-[10px] font-semibold uppercase ${className ?? ""}`}
         style={{ width: size, height: size }}
       >
@@ -41,7 +45,8 @@ export function IntegrationIcon({
     // eslint-disable-next-line @next/next/no-img-element
     <img
       src={src}
-      alt={`${type} logo`}
+      alt=""
+      aria-hidden="true"
       width={size}
       height={size}
       className={className}

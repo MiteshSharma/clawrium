@@ -1,0 +1,12 @@
+{
+  "session_id": "c0180349-e1cc-493c-88ce-d5a781bca5f2",
+  "transport": "cli",
+  "commit_sha": "ebaf11fba0dcb598949103c471ed0924f00bad08",
+  "iteration": 1,
+  "last_rating": 0,
+  "last_blockers": [],
+  "last_status": "timed_out",
+  "last_summary": "Review failed: review timed out: after 5m0s",
+  "started_at": "2026-06-22T23:41:40Z",
+  "updated_at": "2026-06-22T23:45:30Z"
+}
