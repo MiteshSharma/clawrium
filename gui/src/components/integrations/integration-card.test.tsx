@@ -31,6 +31,25 @@ describe("IntegrationCard", () => {
     expect(screen.getByText("github")).toBeInTheDocument();
   });
 
+  it("renders the official vendor icon (not the legacy two-letter badge)", () => {
+    const { container } = render(
+      <IntegrationCard
+        integration={makeIntegration()}
+        agentsUsing={0}
+        onEdit={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    const img = container.querySelector('img[src^="/integration-icons/"]');
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute("src", "/integration-icons/github.svg");
+    // Guard against the fallback two-letter chip rendering instead of
+    // the official icon for a known type.
+    expect(
+      container.querySelector('[data-testid="integration-icon-fallback"]'),
+    ).toBeNull();
+  });
+
   it("renders 'credentials configured' when all required keys are set", () => {
     render(
       <IntegrationCard

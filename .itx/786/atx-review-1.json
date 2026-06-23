@@ -1,0 +1,45 @@
+Requesting review for /home/devashish/workspace/ric03uec/clawrium-issue-786...
+{"time":"2026-06-22T16:39:26.998712824-07:00","level":"INFO","msg":"request_review: starting","project_root":"/home/devashish/workspace/ric03uec/clawrium"}
+{"time":"2026-06-22T16:39:27.021886069-07:00","level":"INFO","msg":"request_review: task created","project_port":30011,"task_id":"c0180349-e1cc-493c-88ce-d5a781bca5f2"}
+ATX review in progress. Using high effort (per-project) — leader may invoke up to 6 of 7 specialists.
+Task created (id: c0180349-e1cc-493c-88ce-d5a781bca5f2), polling for completion...
+Waiting for review... (0s elapsed)
+Waiting for review... (1s elapsed)
+Waiting for review... (3s elapsed)
+Waiting for review... (7s elapsed)
+Waiting for review... (15s elapsed)
+Waiting for review... (25s elapsed)
+Waiting for review... (35s elapsed)
+Waiting for review... (45s elapsed)
+Waiting for review... (55s elapsed)
+Waiting for review... (1m5s elapsed)
+Waiting for review... (1m15s elapsed)
+Waiting for review... (1m25s elapsed)
+Waiting for review... (1m35s elapsed)
+Waiting for review... (1m45s elapsed)
+Waiting for review... (1m55s elapsed)
+Waiting for review... (2m5s elapsed)
+Waiting for review... (2m15s elapsed)
+Waiting for review... (2m25s elapsed)
+Waiting for review... (2m35s elapsed)
+Waiting for review... (2m45s elapsed)
+Waiting for review... (2m55s elapsed)
+Waiting for review... (3m5s elapsed)
+Waiting for review... (3m15s elapsed)
+Waiting for review... (3m25s elapsed)
+Waiting for review... (3m35s elapsed)
+Waiting for review... (3m45s elapsed)
+Waiting for review... (3m55s elapsed)
+Waiting for review... (4m5s elapsed)
+Waiting for review... (4m15s elapsed)
+Waiting for review... (4m25s elapsed)
+Waiting for review... (4m35s elapsed)
+Waiting for review... (4m45s elapsed)
+Waiting for review... (4m55s elapsed)
+{"time":"2026-06-22T16:44:32.261079914-07:00","level":"WARN","msg":"request_review: poll failed","task_id":"c0180349-e1cc-493c-88ce-d5a781bca5f2","error":"review timed out: after 5m0s"}
+{
+  "status": "error",
+  "blocking": false,
+  "summary": "Review failed: review timed out: after 5m0s",
+  "rating": 0
+}

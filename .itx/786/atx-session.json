@@ -1,0 +1,12 @@
+{
+  "session_id": "b1111d7e-a5b9-4c7a-9877-3686672baa7c",
+  "transport": "cli",
+  "commit_sha": "a5c5646b8671700a0db493e8764d1bc3edb17ec2",
+  "iteration": 2,
+  "last_rating": 4,
+  "last_blockers": [],
+  "last_status": "cleared",
+  "last_summary": "Rating 4/5 \u2014 all W1-W5 resolved; 6 non-blocking suggestions; S1-S5 addressed in follow-up commit.",
+  "started_at": "2026-06-22T23:41:40Z",
+  "updated_at": "2026-06-23T00:00:08Z"
+}
